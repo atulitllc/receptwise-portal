@@ -25,6 +25,8 @@ const assert = require('node:assert');
 const ASSISTANT = process.env.VAPI_ASSISTANT_ID;
 const PHONE_ID = process.env.VAPI_PHONE_NUMBER_ID;
 const httpCalls = [];
+const trelloCards = {};
+let trelloSeq = 0;
 
 function jsonRes(status, body) {
   return {
@@ -66,6 +68,36 @@ global.fetch = async (url, opts = {}) => {
   if (target.includes('/call')) return jsonRes(200, []);
   if (target.includes('api.twilio.com')) {
     return jsonRes(200, { incoming_phone_numbers: [{ sid: 'PN123', phone_number: '+17817057179', status: 'in-use' }] });
+  }
+  if (target.includes('api.trello.com')) {
+    const u = new URL(target);
+    if (u.pathname === '/1/members/me/boards') {
+      return jsonRes(200, [
+        { id: 'aaaaaaaaaaaaaaaaaaaaaaaa', name: 'Reception', closed: false },
+        { id: 'bbbbbbbbbbbbbbbbbbbbbbbb', name: 'Archive', closed: true }
+      ]);
+    }
+    if (u.pathname === '/1/members/me') return jsonRes(200, { id: 'member1', fullName: 'Studio Admin', username: 'studioadmin' });
+    if (/^\/1\/boards\/[a-f0-9]+\/lists$/i.test(u.pathname)) {
+      return jsonRes(200, [
+        { id: 'cccccccccccccccccccccccc', name: 'New leads', closed: false },
+        { id: 'dddddddddddddddddddddddd', name: 'Done', closed: true }
+      ]);
+    }
+    if (u.pathname === '/1/cards' && method === 'POST') {
+      trelloSeq += 1;
+      const id = trelloSeq.toString(16).padStart(24, 'e');
+      const card = JSON.parse(opts.body);
+      trelloCards[id] = card;
+      return jsonRes(200, { id, name: card.name, desc: card.desc, idList: card.idList });
+    }
+    const cardPath = u.pathname.match(/^\/1\/cards\/([a-f0-9]+)$/i);
+    if (cardPath && method === 'PUT') {
+      const card = JSON.parse(opts.body);
+      trelloCards[cardPath[1]] = Object.assign({}, trelloCards[cardPath[1]], card);
+      return jsonRes(200, { id: cardPath[1], name: card.name, desc: card.desc });
+    }
+    return jsonRes(404, { message: 'trello ' + method + ' ' + u.pathname });
   }
   return jsonRes(404, { message: 'not mocked' });
 };
@@ -119,7 +151,7 @@ describe('control panel API', () => {
   before(async () => {
     await db.migrate();
     await db.query(`TRUNCATE TABLE
-      assistant_backups, oauth_states, bookings, calls, integrations, audit_log,
+      trello_cards, assistant_backups, oauth_states, bookings, calls, integrations, audit_log,
       phone_numbers, assistants, business_setup, businesses, sessions, users
       RESTART IDENTITY CASCADE`);
     await auth.ensureBootstrapAdmin();
@@ -345,5 +377,265 @@ describe('control panel API', () => {
     assert.equal(soon.status, 400);
     const linkedin = saved.json.accounts.find((a) => a.provider === 'linkedin');
     assert.equal(linkedin.status, 'coming_soon');
+    const listed = await request('GET', '/api/businesses/receptwise/integrations', { cookie });
+    assert.equal(listed.status, 200, listed.text);
+    assert.equal(listed.json.trello.configured, false);
+    assert.equal(JSON.stringify(listed.json).includes('token_enc'), false);
+  });
+
+  it('stores a Trello key encrypted and never returns it', async () => {
+    const key = 'cd'.repeat(16);
+    const token = 'ab'.repeat(32);
+    const before = httpCalls.length;
+    const bad = await request('PUT', '/api/businesses/receptwise/trello/credentials', {
+      cookie,
+      body: { apiKey: 'short', token }
+    });
+    assert.equal(bad.status, 400);
+    assert.equal(httpCalls.length, before);
+
+    const saved = await request('PUT', '/api/businesses/receptwise/trello/credentials', {
+      cookie,
+      body: { apiKey: key, token }
+    });
+    assert.equal(saved.status, 200, saved.text);
+    assert.equal(saved.json.source, 'saved');
+    assert.equal(saved.json.status, 'saved');
+    const body = JSON.stringify(saved.json);
+    assert.equal(body.includes(key), false);
+    assert.equal(body.includes(token), false);
+    const row = await db.query("SELECT token_enc FROM integrations WHERE provider = 'trello'");
+    assert.ok(row.rows[0].token_enc);
+    assert.equal(row.rows[0].token_enc.includes(key), false);
+    assert.equal(row.rows[0].token_enc.includes(token), false);
+    const cryptoBox = require('../src/cryptoBox');
+    const stored = JSON.parse(cryptoBox.decrypt(row.rows[0].token_enc));
+    assert.equal(stored.apiKey, key);
+    assert.equal(stored.token, token);
+    assert.equal(httpCalls.length, before);
+  });
+
+  it('tests the Trello connection and saves a board, list, and rules', async () => {
+    const key = 'cd'.repeat(16);
+    const token = 'ab'.repeat(32);
+    httpCalls.length = 0;
+    const tested = await request('POST', '/api/businesses/receptwise/trello/test', { cookie });
+    assert.equal(tested.status, 200, tested.text);
+    assert.equal(tested.json.status, 'connected');
+    assert.equal(tested.json.memberName, 'Studio Admin');
+    assert.equal(JSON.stringify(tested.json).includes(token), false);
+    const me = httpCalls.find((c) => c.url.includes('/1/members/me') && !c.url.includes('/boards'));
+    assert.ok(me);
+    const meUrl = new URL(me.url);
+    assert.equal(meUrl.searchParams.get('key'), key);
+    assert.equal(meUrl.searchParams.get('token'), token);
+    assert.equal(me.opts.headers['User-Agent'], 'ReceptWise-Control-Panel/1.0');
+
+    const boards = await request('GET', '/api/businesses/receptwise/trello/boards', { cookie });
+    assert.equal(boards.status, 200, boards.text);
+    assert.deepEqual(boards.json.boards.map((b) => b.name), ['Reception']);
+
+    const lists = await request('GET', '/api/businesses/receptwise/trello/boards/aaaaaaaaaaaaaaaaaaaaaaaa/lists', { cookie });
+    assert.equal(lists.status, 200, lists.text);
+    assert.deepEqual(lists.json.lists.map((l) => l.name), ['New leads']);
+
+    const rules = await request('PUT', '/api/businesses/receptwise/trello', {
+      cookie,
+      body: {
+        boardId: 'aaaaaaaaaaaaaaaaaaaaaaaa',
+        listId: 'cccccccccccccccccccccccc',
+        rules: { booking: true, missedCall: true }
+      }
+    });
+    assert.equal(rules.status, 200, rules.text);
+    assert.equal(rules.json.boardName, 'Reception');
+    assert.equal(rules.json.listName, 'New leads');
+    assert.equal(rules.json.rules.booking, true);
+    assert.equal(rules.json.rules.missedCall, true);
+    assert.equal(JSON.stringify(rules.json).includes(key), false);
+  });
+
+  it('opens a Trello card for a booking, skips a duplicate, and updates when it changes', async () => {
+    const now = new Date().toISOString();
+    const posts = () => httpCalls.filter((c) => c.method === 'POST' && c.url.includes('/1/cards') && !c.url.includes('/1/cards/'));
+    httpCalls.length = 0;
+    const report = (summary, start) => ({
+      message: {
+        type: 'end-of-call-report',
+        endedReason: 'customer-ended-call',
+        durationSeconds: 80,
+        startedAt: now,
+        endedAt: now,
+        call: {
+          id: 'call-trello-booked',
+          assistantId: ASSISTANT,
+          phoneNumberId: PHONE_ID,
+          type: 'inboundPhoneCall',
+          status: 'ended',
+          customer: { number: '+16175550199' }
+        },
+        analysis: {
+          summary,
+          structuredData: {
+            name: 'Sam Ortiz',
+            business: 'Harbor Cafe',
+            phone: '+16175550199',
+            booked_start: start,
+            booking_confirmed: true
+          }
+        }
+      }
+    });
+    const first = await request('POST', '/webhooks/vapi', {
+      headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+      body: report('Sam Ortiz booked a demo for Harbor Cafe.', '2026-10-06T15:00:00-04:00')
+    });
+    assert.equal(first.status, 200, first.text);
+    assert.equal(posts().length, 1);
+    const created = JSON.parse(posts()[0].opts.body);
+    assert.equal(created.idList, 'cccccccccccccccccccccccc');
+    assert.equal(created.name, 'Booking · Sam Ortiz');
+    assert.match(created.desc, /Caller: Sam Ortiz/);
+    assert.match(created.desc, /Phone: \(617\) 555-0199/);
+    assert.match(created.desc, /Business: Harbor Cafe/);
+    assert.match(created.desc, /Summary: Sam Ortiz booked a demo for Harbor Cafe\./);
+    assert.match(created.desc, /https:\/\/panel\.example\.test\/dashboard\.html\?call=call-trello-booked/);
+    assert.equal(posts()[0].opts.headers['User-Agent'], 'ReceptWise-Control-Panel/1.0');
+
+    const again = await request('POST', '/webhooks/vapi', {
+      headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+      body: report('Sam Ortiz booked a demo for Harbor Cafe.', '2026-10-06T15:00:00-04:00')
+    });
+    assert.equal(again.status, 200, again.text);
+    assert.equal(posts().length, 1);
+    assert.equal(httpCalls.filter((c) => c.method === 'PUT' && c.url.includes('/1/cards/')).length, 0);
+
+    const moved = await request('POST', '/webhooks/vapi', {
+      headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+      body: report('Sam Ortiz moved the Harbor Cafe demo.', '2026-10-07T16:00:00-04:00')
+    });
+    assert.equal(moved.status, 200, moved.text);
+    assert.equal(posts().length, 1);
+    const updates = httpCalls.filter((c) => c.method === 'PUT' && c.url.includes('/1/cards/'));
+    assert.equal(updates.length, 1);
+    const updated = JSON.parse(updates[0].opts.body);
+    assert.match(updated.desc, /Sam Ortiz moved the Harbor Cafe demo\./);
+    assert.match(updated.desc, /Oct/);
+    const metrics = await request('GET', '/api/metrics?business=receptwise', { cookie });
+    assert.ok(metrics.json.activity.some((item) => item.text === 'Created a Trello card for a booking (Sam Ortiz).'));
+    assert.ok(metrics.json.activity.some((item) => item.text === 'Updated the Trello card for a booking (Sam Ortiz).'));
+    const cards = await db.query("SELECT count(*)::int AS n FROM trello_cards WHERE event_kind = 'booking'");
+    assert.equal(cards.rows[0].n, 1);
+  });
+
+  it('opens one Trello card for a missed call and skips when that rule is off', async () => {
+    const now = new Date().toISOString();
+    const missedBody = (id) => ({
+      message: {
+        type: 'end-of-call-report',
+        endedReason: 'customer-did-not-answer',
+        durationSeconds: 4,
+        startedAt: now,
+        endedAt: now,
+        call: {
+          id,
+          assistantId: ASSISTANT,
+          type: 'inboundPhoneCall',
+          status: 'ended',
+          customer: { number: '+16175550100' }
+        },
+        analysis: {
+          summary: 'Riley Chen did not stay on the line.',
+          structuredData: { name: 'Riley Chen', phone: '+16175550100', business: 'North Cafe' }
+        }
+      }
+    });
+    httpCalls.length = 0;
+    const missed = await request('POST', '/webhooks/vapi', {
+      headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+      body: missedBody('call-trello-missed')
+    });
+    assert.equal(missed.status, 200, missed.text);
+    const posts = httpCalls.filter((c) => c.method === 'POST' && new URL(c.url).pathname === '/1/cards');
+    assert.equal(posts.length, 1);
+    const card = JSON.parse(posts[0].opts.body);
+    assert.equal(card.name, 'Missed call · Riley Chen');
+    assert.match(card.desc, /Phone: \(617\) 555-0100/);
+    assert.match(card.desc, /Business: North Cafe/);
+    assert.match(card.desc, /Riley Chen did not stay on the line\./);
+    assert.match(card.desc, /dashboard\.html\?call=call-trello-missed/);
+
+    const off = await request('PUT', '/api/businesses/receptwise/trello', {
+      cookie,
+      body: {
+        boardId: 'aaaaaaaaaaaaaaaaaaaaaaaa',
+        listId: 'cccccccccccccccccccccccc',
+        rules: { booking: true, missedCall: false }
+      }
+    });
+    assert.equal(off.status, 200, off.text);
+    const before = httpCalls.filter((c) => c.method === 'POST' && new URL(c.url).pathname === '/1/cards').length;
+    const second = await request('POST', '/webhooks/vapi', {
+      headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+      body: missedBody('call-trello-missed-2')
+    });
+    assert.equal(second.status, 200, second.text);
+    const after = httpCalls.filter((c) => c.method === 'POST' && new URL(c.url).pathname === '/1/cards').length;
+    assert.equal(after, before);
+  });
+
+  it('uses TRELLO_API_KEY and TRELLO_TOKEN when no key is saved', async () => {
+    const config = require('../src/config');
+    const removed = await request('DELETE', '/api/businesses/receptwise/trello/credentials', { cookie });
+    assert.equal(removed.status, 200, removed.text);
+    assert.equal(removed.json.source, null);
+    config.trello.apiKey = 'e1e2e3e4e5e6e7e8';
+    config.trello.token = 'f1f2f3f4f5f6f7f8';
+    try {
+      const status = await request('GET', '/api/businesses/receptwise/trello', { cookie });
+      assert.equal(status.json.source, 'env');
+      assert.equal(JSON.stringify(status.json).includes('f1f2f3f4f5f6f7f8'), false);
+      const rules = await request('PUT', '/api/businesses/receptwise/trello', {
+        cookie,
+        body: {
+          boardId: 'aaaaaaaaaaaaaaaaaaaaaaaa',
+          listId: 'cccccccccccccccccccccccc',
+          rules: { booking: true, missedCall: true }
+        }
+      });
+      assert.equal(rules.status, 200, rules.text);
+      httpCalls.length = 0;
+      const now = new Date().toISOString();
+      const booked = await request('POST', '/webhooks/vapi', {
+        headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+        body: {
+          message: {
+            type: 'end-of-call-report',
+            endedReason: 'customer-ended-call',
+            startedAt: now,
+            endedAt: now,
+            call: {
+              id: 'call-trello-env',
+              assistantId: ASSISTANT,
+              type: 'inboundPhoneCall',
+              status: 'ended',
+              customer: { number: '+16175550188' }
+            },
+            analysis: {
+              summary: 'Env key booking.',
+              structuredData: { name: 'Env Caller', business: 'Env Cafe', phone: '+16175550188', booked_start: '2026-10-08T11:00:00-04:00', booking_confirmed: true }
+            }
+          }
+        }
+      });
+      assert.equal(booked.status, 200, booked.text);
+      const post = httpCalls.find((c) => c.method === 'POST' && new URL(c.url).pathname === '/1/cards');
+      assert.ok(post);
+      assert.equal(new URL(post.url).searchParams.get('key'), 'e1e2e3e4e5e6e7e8');
+      assert.equal(new URL(post.url).searchParams.get('token'), 'f1f2f3f4f5f6f7f8');
+    } finally {
+      config.trello.apiKey = '';
+      config.trello.token = '';
+    }
   });
 });

@@ -15,6 +15,7 @@ const metrics = require('./metrics');
 const phoneView = require('./phoneView');
 const social = require('./social');
 const meta = require('./integrations/meta');
+const trelloSync = require('./trelloSync');
 
 // The portal pages live at the repo root (also published as the GitHub Pages demo).
 const SITE_ROOT = path.join(__dirname, '..', '..');
@@ -75,7 +76,8 @@ function createApp() {
       const call = Object.assign({}, msg.call || {});
       if (msg.type === 'status-update' && msg.status) call.status = msg.status;
       if (msg.type === 'end-of-call-report') call.status = 'ended';
-      await calls.upsertCall(call, msg.type === 'end-of-call-report' ? msg : null);
+      const stored = await calls.upsertCall(call, msg.type === 'end-of-call-report' ? msg : null);
+      if (stored) await trelloSync.onCallStored(stored);
     }
     res.json({ ok: true });
   }));
@@ -174,7 +176,29 @@ function createApp() {
     res.json(await phoneView.liveNumbers(req.biz));
   }));
   api.get('/businesses/:slug/integrations', withBiz, wrap(async (req, res) => {
-    res.json(await social.listForBusiness(req.biz.id));
+    const accounts = await social.listForBusiness(req.biz.id);
+    res.json(Object.assign(accounts, { trello: await trelloSync.publicStatus(req.biz.id) }));
+  }));
+  api.get('/businesses/:slug/trello', withBiz, wrap(async (req, res) => {
+    res.json(await trelloSync.publicStatus(req.biz.id));
+  }));
+  api.put('/businesses/:slug/trello/credentials', withBiz, wrap(async (req, res) => {
+    res.json(await trelloSync.saveCredentials(req.biz, req.body || {}, req.user.id));
+  }));
+  api.delete('/businesses/:slug/trello/credentials', withBiz, wrap(async (req, res) => {
+    res.json(await trelloSync.removeCredentials(req.biz, req.user.id));
+  }));
+  api.post('/businesses/:slug/trello/test', withBiz, wrap(async (req, res) => {
+    res.json(await trelloSync.testConnection(req.biz, req.user.id));
+  }));
+  api.get('/businesses/:slug/trello/boards', withBiz, wrap(async (req, res) => {
+    res.json(await trelloSync.listBoards(req.biz));
+  }));
+  api.get('/businesses/:slug/trello/boards/:boardId/lists', withBiz, wrap(async (req, res) => {
+    res.json(await trelloSync.listLists(req.biz, req.params.boardId));
+  }));
+  api.put('/businesses/:slug/trello', withBiz, wrap(async (req, res) => {
+    res.json(await trelloSync.saveDestination(req.biz, req.body || {}, req.user.id));
   }));
   api.put('/businesses/:slug/integrations/:provider', withBiz, wrap(async (req, res) => {
     res.json(await social.recordManual(req.biz, req.params.provider, req.body || {}, req.user.id));

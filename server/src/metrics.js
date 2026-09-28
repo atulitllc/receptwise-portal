@@ -29,7 +29,7 @@ function safeUrl(url) {
 function providerLabel(id) {
   return {
     instagram: 'Instagram', facebook: 'Facebook', google_business: 'Google Business Profile',
-    linkedin: 'LinkedIn', x: 'X', tiktok: 'TikTok', youtube: 'YouTube', meta: 'Meta'
+    linkedin: 'LinkedIn', x: 'X', tiktok: 'TikTok', youtube: 'YouTube', meta: 'Meta', trello: 'Trello'
   }[id] || id || 'account';
 }
 
@@ -49,6 +49,15 @@ function auditText(action, detail) {
   }
   if (action === 'integration.removed') return 'Removed the ' + providerLabel(d.provider) + ' record.';
   if (action === 'call.sync') return 'Synced calls from Vapi (' + (d.synced || 0) + ').';
+  if (action === 'trello.credentials_saved') return 'Saved a Trello key for this business.';
+  if (action === 'trello.credentials_removed') return 'Removed the saved Trello key.';
+  if (action === 'trello.tested') return 'Tested the Trello connection' + (d.memberName ? ' (' + d.memberName + ')' : '') + '.';
+  if (action === 'trello.rules') return 'Set Trello cards to ' + (d.boardName || 'a board') + ' / ' + (d.listName || 'a list') + '.';
+  if (action === 'trello.card_created') {
+    const kind = d.event === 'booking' ? 'a booking' : 'a missed call';
+    return 'Created a Trello card for ' + kind + (d.caller ? ' (' + d.caller + ')' : '') + '.';
+  }
+  if (action === 'trello.card_updated') return 'Updated the Trello card for a booking' + (d.caller ? ' (' + d.caller + ')' : '') + '.';
   return '';
 }
 
@@ -92,7 +101,10 @@ async function activityList(businessId) {
   const audits = await db.query(
     `SELECT a.created_at, a.action, a.detail, b.slug, b.name, b.timezone
      FROM audit_log a LEFT JOIN businesses b ON b.id = a.business_id
-     ${auditWhere ? auditWhere + ' AND' : 'WHERE'} a.action IN ('settings.update', 'integration.recorded', 'integration.connected', 'integration.removed', 'call.sync')
+     ${auditWhere ? auditWhere + ' AND' : 'WHERE'} a.action IN (
+       'settings.update', 'integration.recorded', 'integration.connected', 'integration.removed', 'call.sync',
+       'trello.credentials_saved', 'trello.credentials_removed', 'trello.tested', 'trello.rules',
+       'trello.card_created', 'trello.card_updated')
      ORDER BY a.created_at DESC LIMIT 20`, params);
 
   const items = [];

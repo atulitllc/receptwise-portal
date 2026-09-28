@@ -77,6 +77,10 @@ services:
         sync: false
       - key: META_OAUTH_SCOPES
         value: pages_show_list,pages_read_engagement,instagram_basic,business_management
+      - key: TRELLO_API_KEY
+        sync: false
+      - key: TRELLO_TOKEN
+        sync: false
 
 databases:
   - name: receptwise-db

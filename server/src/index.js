@@ -14,7 +14,8 @@ async function main() {
     console.log('ReceptWise server on :' + config.port,
       '| twilio', config.twilio.configured ? 'on' : 'off',
       '| vapi', config.vapi.configured ? 'on' : 'off',
-      '| sms', config.smsEnabled ? 'on' : 'off');
+      '| sms', config.smsEnabled ? 'on' : 'off',
+      '| trello', config.trello.configured ? 'on' : 'off');
   });
 }
 

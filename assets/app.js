@@ -46,6 +46,7 @@
     recorded: "Recorded",
     coming_soon: "Coming soon",
     not_connected: "Not connected",
+    saved: "Key saved",
     not_verified: "Not connected",
     attached: "Attached",
     unassigned: "Not attached",
@@ -1811,6 +1812,10 @@
     "record-integration": function () {
       toast("This demo does not connect accounts.");
     },
+    "trello-save-key": function () { toast("This demo does not connect Trello."); },
+    "trello-test": function () { toast("This demo does not connect Trello."); },
+    "trello-save-rules": function () { toast("This demo does not connect Trello."); },
+    "trello-remove": function () { toast("This demo does not connect Trello."); },
     "remove-integration": function () {
       toast("This demo does not connect accounts.");
     },
@@ -1976,6 +1981,46 @@
         renderIntegrations(document.getElementById("view"));
       }).catch(liveFail);
     },
+    "trello-save-key": function (el) {
+      var key = document.getElementById("trello-key");
+      var token = document.getElementById("trello-token");
+      api("PUT", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/trello/credentials", {
+        apiKey: key ? key.value : "",
+        token: token ? token.value : ""
+      }).then(function () {
+        if (key) key.value = "";
+        if (token) token.value = "";
+        toast("Key saved on the server.");
+        renderIntegrations(document.getElementById("view"));
+      }).catch(liveFail);
+    },
+    "trello-test": function (el) {
+      el.disabled = true;
+      api("POST", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/trello/test").then(function (data) {
+        toast(data.memberName ? "Connected as " + data.memberName + "." : "Connection succeeded.");
+        renderIntegrations(document.getElementById("view"));
+      }).catch(function (err) { el.disabled = false; liveFail(err); });
+    },
+    "trello-save-rules": function (el) {
+      var board = document.getElementById("trello-board");
+      var list = document.getElementById("trello-list");
+      var booking = document.getElementById("trello-booking");
+      var missed = document.getElementById("trello-missed");
+      api("PUT", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/trello", {
+        boardId: board ? board.value : "",
+        listId: list ? list.value : "",
+        rules: { booking: !!(booking && booking.checked), missedCall: !!(missed && missed.checked) }
+      }).then(function () {
+        toast("Board and rules saved.");
+        renderIntegrations(document.getElementById("view"));
+      }).catch(liveFail);
+    },
+    "trello-remove": function (el) {
+      api("DELETE", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/trello/credentials").then(function () {
+        toast("Saved Trello key removed.");
+        renderIntegrations(document.getElementById("view"));
+      }).catch(liveFail);
+    },
     "sync-dashboard": function (el) {
       el.disabled = true;
       api("POST", "api/calls/sync", {}).then(function (data) {
@@ -2033,6 +2078,11 @@
       reader.readAsText(el.files[0]);
     } else if (el.dataset.action === "bill-file") {
       toast(el.files && el.files[0] ? "Bill attached for the port request." : "No file selected.");
+    } else if (el.dataset.action === "trello-board") {
+      if (!LIVE) return;
+      var listBox = document.getElementById("trello-list");
+      if (listBox) listBox.innerHTML = '<option value="">Loading lists…</option>';
+      loadTrelloLists(el.dataset.id || pageBizId(), el.value, "");
     } else if (el.dataset.action === "go-business") {
       var pageName = document.body.dataset.page || "phone";
       var file = pageName === "settings" ? "settings.html" : pageName === "integrations" ? "integrations.html" : "phone.html";
@@ -2095,11 +2145,14 @@
     var bookings = m.bookings || {};
     var ints = (window.RW_LIVE && window.RW_LIVE.integrations) || {};
     var banner = ints.vapi ? "" : '<div class="banner warn">Vapi is not connected. Set VAPI_API_KEY to sync calls and push receptionist settings. Calls already stored here still count.</div>';
+    var focusCall = "";
+    try { focusCall = new URLSearchParams(location.search).get("call") || ""; } catch (e) { focusCall = ""; }
     var recent = (m.recentCalls || []).map(function (call) {
       var who = call.callerName ? esc(call.callerName) + "<div class='help'>" + esc(call.from) + "</div>" : esc(call.from);
       var rec = /^https?:\/\//.test(call.recordingUrl || "") ? '<a href="' + esc(call.recordingUrl) + '" target="_blank" rel="noopener">Play</a>' : "—";
       var tone = call.outcome === "Booked" ? "connected" : call.outcome === "Missed" ? "action" : "neutral";
-      return "<tr><td>" + esc(call.time) + "</td><td>" + who + "</td><td>" + esc(call.businessName || "") + "</td><td>" +
+      var focus = focusCall && focusCall === call.id ? ' class="call-focus"' : "";
+      return "<tr" + focus + "><td>" + esc(call.time) + "</td><td>" + who + "</td><td>" + esc(call.businessName || "") + "</td><td>" +
         '<span class="pill ' + tone + '">' + esc(call.outcome || "—") + "</span>" +
         "</td><td>" + esc(call.duration || "—") + "</td><td>" + esc(call.summary || "—") + "</td><td>" + rec + "</td></tr>";
     }).join("");
@@ -2127,6 +2180,8 @@
       '</tbody></table></div></section><section class="card"><div class="card-h"><h2>Activity</h2></div><div class="card-b">' +
       (activity || '<div class="empty">Calls, bookings, settings changes, and integration changes show up here.</div>') +
       "</div></section></div>" + legal();
+    var focused = view.querySelector(".call-focus");
+    if (focused && focused.scrollIntoView) focused.scrollIntoView({ block: "center" });
   }
 
   function phoneStateBanner(data) {
@@ -2278,6 +2333,72 @@
     };
   }
 
+  function trelloGuide(open) {
+    return '<details class="card guide"' + (open ? " open" : "") + '><summary>How to get your Trello key and token</summary><div class="card-b"><ol>' +
+      '<li>Sign in to Trello and open <a href="https://trello.com/power-ups/admin" target="_blank" rel="noopener">Power-Up admin</a>.</li>' +
+      "<li>Create a Power-Up, or open one you already use for this panel. Copy its API key.</li>" +
+      '<li>Open the key\'s authorize link in the same browser. Put your key in place of YOUR_KEY:' +
+      '<div class="code">https://trello.com/1/authorize?expiration=never&amp;name=ReceptWise&amp;scope=read,write&amp;response_type=token&amp;key=YOUR_KEY</div>' +
+      "Allow access. Trello shows a token. Copy it. Treat the token like a password.</li>" +
+      "<li>Paste the API key and the token below and save them. Or set TRELLO_API_KEY and TRELLO_TOKEN on the server instead of pasting. A pasted key is encrypted on the server and is not shown again.</li>" +
+      "<li>Click Test connection. Choose the board and the list where cards should go. Turn on cards for new bookings, missed calls, or both, and save.</li>" +
+      "</ol></div></details>";
+  }
+
+  function optionList(items, selected, blank) {
+    var html = '<option value="">' + esc(blank) + "</option>";
+    (items || []).forEach(function (item) {
+      html += '<option value="' + esc(item.id) + '"' + (item.id === selected ? " selected" : "") + ">" + esc(item.name) + "</option>";
+    });
+    return html;
+  }
+
+  function loadTrelloLists(id, boardId, selected) {
+    var list = document.getElementById("trello-list");
+    if (!list || !boardId) return;
+    api("GET", "api/businesses/" + encodeURIComponent(id) + "/trello/boards/" + encodeURIComponent(boardId) + "/lists").then(function (data) {
+      list.innerHTML = optionList(data.lists, selected, "Choose a list");
+    }).catch(liveFail);
+  }
+
+  function loadTrelloBoards(id, trello) {
+    if (!trello || !trello.configured) return;
+    api("GET", "api/businesses/" + encodeURIComponent(id) + "/trello/boards").then(function (data) {
+      var board = document.getElementById("trello-board");
+      if (!board) return;
+      board.innerHTML = optionList(data.boards, trello.boardId, "Choose a board");
+      if (trello.boardId) loadTrelloLists(id, trello.boardId, trello.listId);
+    }).catch(liveFail);
+  }
+
+  function trelloCard(trello, id) {
+    var t = trello || { status: "not_connected", statusLabel: "Not connected", rules: { booking: true, missedCall: true } };
+    var who = t.memberName ? esc(t.memberName) + (t.memberUsername ? " (@" + esc(t.memberUsername) + ")" : "") : esc(t.statusLabel || "Not connected");
+    var note = '<p class="help">Paste a key and token, or set TRELLO_API_KEY and TRELLO_TOKEN on the server. Nothing is marked connected until Test connection succeeds.</p>';
+    if (t.status === "connected" && t.boardName && t.listName) note = '<p class="help">Cards go to ' + esc(t.boardName) + " / " + esc(t.listName) + ".</p>";
+    else if (t.status === "connected") note = '<p class="help">Choose a board and a list so new bookings and missed calls can open cards.</p>';
+    else if (t.source === "env") note = '<p class="help">Using the server key. Test the connection, then choose a board and a list.</p>';
+    else if (t.source === "saved") note = '<p class="help">The key is saved on the server and is not shown here. Test the connection before choosing a board.</p>';
+    var keyHolder = t.source === "saved" ? "Saved. Paste a new key to replace it." : "From the Power-Up admin page";
+    var tokenHolder = t.source === "saved" ? "Saved. Paste a new token to replace it." : "From the authorize link";
+    var remove = t.source === "saved" ? ' <button class="btn btn-sm" type="button" data-action="trello-remove" data-id="' + esc(id) + '">Remove saved key</button>' : "";
+    var rules = t.rules || {};
+    return trelloGuide(!t.configured) +
+      '<article class="card int-card"><div class="card-b"><div class="setting-row"><div><h2>Trello</h2><div class="help">' + who + "</div></div>" + pill(t.status || "not_connected") + "</div>" +
+      note +
+      '<div class="grid-2"><div class="field"><label for="trello-key">API key</label><input class="ctrl" id="trello-key" type="password" autocomplete="off" placeholder="' + esc(keyHolder) + '"></div>' +
+      '<div class="field"><label for="trello-token">Token</label><input class="ctrl" id="trello-token" type="password" autocomplete="off" placeholder="' + esc(tokenHolder) + '"></div></div>' +
+      '<div class="head-actions"><button class="btn btn-sm" type="button" data-action="trello-save-key" data-id="' + esc(id) + '">Save key</button>' +
+      '<button class="btn btn-primary btn-sm" type="button" data-action="trello-test" data-id="' + esc(id) + '">Test connection</button>' + remove + "</div>" +
+      '<div class="grid-2" style="margin-top:12px"><div class="field"><label for="trello-board">Board</label><select class="ctrl" id="trello-board" data-action="trello-board" data-id="' + esc(id) + '"><option value="' + esc(t.boardId || "") + '">' + esc(t.boardName || "Load boards after a successful test") + "</option></select></div>" +
+      '<div class="field"><label for="trello-list">List</label><select class="ctrl" id="trello-list"><option value="' + esc(t.listId || "") + '">' + esc(t.listName || "Choose a board first") + "</option></select></div></div>" +
+      '<div class="checks"><label class="day"><input type="checkbox" id="trello-booking"' + (rules.booking !== false ? " checked" : "") + "> Create a card for each new booking</label>" +
+      '<label class="day"><input type="checkbox" id="trello-missed"' + (rules.missedCall !== false ? " checked" : "") + "> Create a card for each missed call</label></div>" +
+      '<button class="btn btn-sm" type="button" data-action="trello-save-rules" data-id="' + esc(id) + '">Save board and rules</button>' +
+      '<p class="help">A booking card is updated when the time or summary changes. A missed-call card is created once. The key and token stay on the server.</p>' +
+      "</div></article>";
+  }
+
   function integrationCard(account, id) {
     var soon = account.status === "coming_soon";
     var manual = "";
@@ -2306,7 +2427,9 @@
     if (params.get("error")) flash = '<div class="banner bad">' + esc(params.get("error")) + "</div>";
     if (!LIVE) {
       view.innerHTML = '<div class="page-head"><div><h1>Integrations</h1><p class="sub">Social accounts for this business</p></div></div>' +
-        '<div class="banner warn">Needs Meta app setup on the live control panel. This demo does not connect Instagram, Facebook, or Google.</div>' +
+        '<div class="banner warn">Needs Meta app setup on the live control panel. This demo does not connect Instagram, Facebook, Google, or Trello.</div>' +
+        trelloGuide(true) +
+        '<article class="card int-card"><div class="card-b"><h2>Trello</h2><p class="help">Not connected. This demo does not store a key or open cards.</p></div></article>' +
         '<article class="card int-card"><div class="card-b"><h2>Instagram</h2><p class="help">Not connected</p></div></article>' +
         '<article class="card int-card"><div class="card-b"><h2>Facebook</h2><p class="help">Not connected</p></div></article>' +
         '<article class="card int-card"><div class="card-b"><h2>Google Business Profile</h2><p class="help">Not connected</p></div></article>' +
@@ -2324,7 +2447,8 @@
       else if (!data.encryption) setup = '<div class="banner warn">The Meta app is set, but TOKEN_ENCRYPTION_KEY is missing, so tokens cannot be stored.</div>';
       else if (!data.redirectReady) setup = '<div class="banner warn">Set APP_BASE_URL so the Meta redirect URL can be built.</div>';
       view.innerHTML = '<div class="page-head"><div><h1>Integrations</h1><p class="sub">Connected only after the provider says so</p></div>' + bizSelect() + "</div>" +
-        flash + setup + (data.accounts || []).map(function (account) { return integrationCard(account, id); }).join("") + legal();
+        flash + setup + trelloCard(data.trello, id) + (data.accounts || []).map(function (account) { return integrationCard(account, id); }).join("") + legal();
+      loadTrelloBoards(id, data.trello);
     }).catch(function (err) {
       view.innerHTML = '<div class="banner bad">' + esc(err.message) + "</div>" + legal();
     });

@@ -117,7 +117,11 @@ async function syncCalls(biz) {
   if (!assistant || !assistant.vapi_assistant_id) return { synced: 0 };
   const list = await vapi.listCalls({ assistantId: assistant.vapi_assistant_id, limit: 100 });
   const items = Array.isArray(list) ? list : (list.results || list.data || []);
-  for (const c of items) await calls.upsertCall(c, null);
+  const trelloSync = require('./trelloSync');
+  for (const c of items) {
+    const stored = await calls.upsertCall(c, null);
+    if (stored) await trelloSync.onCallStored(stored);
+  }
   return { synced: items.length };
 }
 

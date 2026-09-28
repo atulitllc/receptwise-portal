@@ -17,6 +17,8 @@ const settings = require('../src/settings');
 const { presentNumbers } = require('../src/phoneView');
 const cryptoBox = require('../src/cryptoBox');
 const meta = require('../src/integrations/meta');
+const { buildCard } = require('../src/trelloSync');
+const { authorizeUrl, redact } = require('../src/integrations/trello');
 
 test('integrations are inert without keys', async () => {
   assert.throws(() => vapi.assertConfigured(), /VAPI_API_KEY/);
@@ -133,6 +135,31 @@ test('token encryption round trip', () => {
   const enc = cryptoBox.encrypt('page-token-value');
   assert.notEqual(enc, 'page-token-value');
   assert.equal(cryptoBox.decrypt(enc), 'page-token-value');
+});
+
+test('trello card text names the caller and links back to the call', () => {
+  const card = buildCard({
+    kind: 'booking',
+    callerName: 'Sam Ortiz',
+    phone: '(617) 555-0199',
+    business: 'Harbor Cafe',
+    timeLabel: 'Mon, Oct 6, 3:00 PM',
+    summary: 'Booked a demo.',
+    callUrl: 'https://panel.example.test/dashboard.html?call=abc'
+  });
+  assert.equal(card.name, 'Booking · Sam Ortiz');
+  assert.match(card.desc, /Harbor Cafe/);
+  assert.match(card.desc, /Booked a demo\./);
+  assert.match(card.desc, /https:\/\/panel\.example\.test\/dashboard\.html\?call=abc/);
+  const missed = buildCard({ kind: 'missed_call', callerName: '', callId: 'call-1' });
+  assert.equal(missed.name, 'Missed call · Unknown caller');
+  assert.match(missed.desc, /Call id: call-1/);
+  const url = authorizeUrl('my-key');
+  assert.match(url, /^https:\/\/trello\.com\/1\/authorize\?/);
+  assert.match(url, /expiration=never/);
+  assert.match(url, /response_type=token/);
+  assert.match(url, /key=my-key/);
+  assert.equal(redact('https://api.trello.com/1/members/me?key=secret&token=tok'), 'https://api.trello.com/1/members/me?key=redacted&token=redacted');
 });
 
 test('meta dialog URL uses the business login config when set', () => {

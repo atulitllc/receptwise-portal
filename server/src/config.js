@@ -51,6 +51,12 @@ const config = {
     redirectUri: env.META_REDIRECT_URI || '',
     scopes: env.META_OAUTH_SCOPES || 'pages_show_list,pages_read_engagement,instagram_basic,business_management'
   },
+  // Optional server-wide Trello key. A key pasted in the panel is stored encrypted per business and wins over these.
+  trello: {
+    apiKey: env.TRELLO_API_KEY || '',
+    token: env.TRELLO_TOKEN || '',
+    baseUrl: 'https://api.trello.com'
+  },
   // Pilot client #1 is ReceptWise itself. Ids are overridable; they are not secrets.
   pilot: {
     assistantId: env.VAPI_ASSISTANT_ID || 'c3c8899c-e42d-494b-bf47-3af37f942341',
@@ -63,5 +69,6 @@ const config = {
 config.twilio.configured = Boolean(config.twilio.accountSid && config.twilio.authToken);
 config.vapi.configured = Boolean(config.vapi.apiKey);
 config.meta.configured = Boolean(config.meta.appId && config.meta.appSecret);
+config.trello.configured = Boolean(config.trello.apiKey && config.trello.token);
 
 module.exports = config;

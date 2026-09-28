@@ -11,7 +11,7 @@ node --env-file=.env src/index.js
 npm test
 ```
 
-`npm test` covers the receptionist settings payload (mocked Vapi PATCH), webhook persistence, and dashboard metrics. It needs the Postgres URL in `TEST_DATABASE_URL` or `postgres://rw:rwlocal@127.0.0.1:5432/rw_test`.
+`npm test` covers the receptionist settings payload (mocked Vapi PATCH), webhook persistence, dashboard metrics, and Trello cards (mocked Trello HTTP). It needs the Postgres URL in `TEST_DATABASE_URL` or `postgres://rw:rwlocal@127.0.0.1:5432/rw_test`.
 
 Migrations in `migrations/` run on boot. The first admin is created from `ADMIN_EMAIL` / `ADMIN_PASSWORD` when `users` is empty. Add later teammates with `npm run create-user -- email "Name" team` (it prompts for the password).
 
@@ -31,9 +31,15 @@ Session cookie plus `X-RW-Client: portal` on every write. `GET /api/health` does
 | GET | `/api/businesses/:slug/phone` | live Vapi/Twilio status, or a not-connected state |
 | GET/PUT | `/api/businesses/:slug/settings` | save and push greeting, hours, booking rules, transfer, FAQ |
 | GET/PUT/DELETE | `/api/businesses/:slug/integrations/:provider` | manual handle, or remove it |
+| GET | `/api/businesses/:slug/trello` | connection status. The key and token are never included. |
+| PUT/DELETE | `/api/businesses/:slug/trello/credentials` | store or remove a pasted key and token (encrypted) |
+| POST | `/api/businesses/:slug/trello/test` | `GET /1/members/me` |
+| GET | `/api/businesses/:slug/trello/boards` | open boards |
+| GET | `/api/businesses/:slug/trello/boards/:boardId/lists` | open lists |
+| PUT | `/api/businesses/:slug/trello` | board, list, and per-event card rules |
 | GET | `/api/integrations/meta/start?business=slug` | Facebook Login for Business |
 | GET | `/api/integrations/meta/callback` | OAuth return. Tokens are encrypted. |
-| POST | `/webhooks/vapi` | `X-Vapi-Secret`. Stores end-of-call reports. |
+| POST | `/webhooks/vapi` | `X-Vapi-Secret`. Stores end-of-call reports and opens Trello cards when a list is saved. |
 | POST | `/api/businesses/:slug/assistant/publish` | full assistant publish (existing path) |
 | POST | `/api/businesses/:slug/calls/sync` | backfill one business |
 

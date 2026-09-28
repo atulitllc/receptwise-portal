@@ -34,8 +34,9 @@ The company that owns the product is **[Placeholder]** in the footer and on the 
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | Phone page adds Twilio status for each number. Admins can still buy a number from the business page. |
 | `VAPI_WEBHOOK_SECRET` plus the Vapi server URL | End-of-call reports are stored (summary, caller, outcome, recording, bookings from `structuredData`). |
 | `META_APP_ID`, `META_APP_SECRET`, `TOKEN_ENCRYPTION_KEY`, and a public `APP_BASE_URL` | Facebook Login for Business stores the Page and Instagram tokens encrypted. The page shows the account name. |
+| `TRELLO_API_KEY`, `TRELLO_TOKEN`, or a key pasted on Integrations, plus `TOKEN_ENCRYPTION_KEY` for a pasted key | Test connection, choose a board and list, and open a card for each new booking and missed call. A booking card is updated when the booking changes. |
 
-Without those keys the panel stays honest: phone says **Not connected**, settings save locally and are not pushed, integrations say **Needs Meta app setup**. Recording a handle does not mark the account connected. LinkedIn, X, TikTok, and YouTube stay **Coming soon**. Texting stays off (`SMS_ENABLED=false`).
+Without those keys the panel stays honest: phone says **Not connected**, settings save locally and are not pushed, integrations say **Needs Meta app setup**, and Trello says **Not connected**. Recording a handle does not mark the account connected. A pasted Trello key is stored encrypted and is not sent back to the browser. LinkedIn, X, TikTok, and YouTube stay **Coming soon**. Texting stays off (`SMS_ENABLED=false`).
 
 ## What still needs setup
 
@@ -43,6 +44,7 @@ Without those keys the panel stays honest: phone says **Not connected**, setting
 - **Vapi server URL.** In the Vapi assistant, set the server URL to `https://<your-host>/webhooks/vapi` and send header `X-Vapi-Secret` with the same value as `VAPI_WEBHOOK_SECRET`. The free web service sleeps, so use **Sync from Vapi** after it wakes up.
 - **Calendar tools.** The pilot assistant already has `check_availability` and `book_demo`. `VAPI_CALENDAR_TOOL_IDS` is that pair. A later client needs its own tools; the settings push keeps whatever tool ids are already on that assistant.
 - **Voice.** The live assistant already uses ElevenLabs. `VAPI_VOICE_ID` is only required when publishing a brand-new assistant from the business page.
+- **Trello.** Create a Power-Up API key and token (steps below), paste them on Integrations, or set `TRELLO_API_KEY` and `TRELLO_TOKEN`. Choose a board and a list. Cards are not created until that list is saved. Set `APP_BASE_URL` so each card links back to the call.
 
 Pilot client 1 is seeded as ReceptWise (Malden, MA) and linked to assistant `c3c8899c-e42d-494b-bf47-3af37f942341` and number `+1 781-705-7179` (`60a44606-c827-4f01-b381-852e247a8003`). Override those with `VAPI_ASSISTANT_ID`, `VAPI_PHONE_NUMBER_ID`, and `PILOT_PHONE_E164` if they change.
 
@@ -96,6 +98,22 @@ Free Postgres expires 30 days after creation. Export it with `pg_dump` or move o
 | `META_LOGIN_CONFIG_ID` | yes | Optional Facebook Login for Business configuration id |
 | `META_REDIRECT_URI` | no | Optional override of the OAuth redirect |
 | `META_OAUTH_SCOPES` | no | Used when `META_LOGIN_CONFIG_ID` is empty |
+| `TRELLO_API_KEY` | yes | Trello Power-Up API key. Optional if a key is pasted per business. |
+| `TRELLO_TOKEN` | yes | Trello token from the key's authorize link. Optional if a token is pasted per business. |
+
+## How to get your Trello key and token
+
+1. Sign in to Trello and open [Power-Up admin](https://trello.com/power-ups/admin).
+2. Create a Power-Up, or open one you already use for this panel. Copy its API key.
+3. Open the key's authorize link in the same browser. Put your key in place of `YOUR_KEY`:
+
+   `https://trello.com/1/authorize?expiration=never&name=ReceptWise&scope=read,write&response_type=token&key=YOUR_KEY`
+
+   Allow access. Trello shows a token. Copy it. Treat the token like a password.
+4. Paste the API key and the token on the Integrations page and save them. Or set `TRELLO_API_KEY` and `TRELLO_TOKEN` on the server instead of pasting. A pasted key is encrypted on the server and is not shown again.
+5. Click **Test connection**. Choose the board and the list where cards should go. Turn on cards for new bookings, missed calls, or both, and save.
+
+A new booking opens a card with the caller's name, phone, business, time, call summary, and a link to that call in the panel. The same card is updated when the booking changes. A missed call opens one card and is not duplicated. Each create and update is written to the activity feed.
 
 Server-side Vapi and Twilio requests send `User-Agent: ReceptWise-Control-Panel/1.0` because Vapi rejects some default clients with HTTP 403.
 
