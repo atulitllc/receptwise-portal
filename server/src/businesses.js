@@ -1,0 +1,285 @@
+'use strict';
+// Data access for businesses + mapping DB rows to the shape the portal UI (assets/app.js) renders.
+const db = require('./db');
+
+const STEPS = [
+  ['number', 'AI number'],
+  ['test', 'Receptionist test call'],
+  ['forwarding', 'Forwarding'],
+  ['calendar', 'Calendar'],
+  ['texting', 'Texting registration'],
+  ['email', 'Email domain'],
+  ['reviews', 'Google review link'],
+  ['gbp', 'Google Business Profile'],
+  ['social', 'Facebook and Instagram'],
+  ['website', 'Website'],
+  ['billing', 'Billing']
+];
+const STEP_KEYS = STEPS.map((s) => s[0]);
+const TEXTING_HOLD = 'Texting stays off until the final company tax ID is on file. Calls still work. Email is used instead.';
+
+// Profile keys the UI may write. Anything else in a PUT body is ignored.
+const PROFILE_KEYS = [
+  'address', 'website', 'hours', 'staff', 'locations', 'tier', 'plan', 'price', 'minutesCap', 'setupFee',
+  'card', 'nextInvoice', 'trial', 'owner', 'phone', 'greeting', 'voice', 'languages', 'transfer',
+  'capabilities', 'services', 'faqs', 'blurb', 'template', 'domainStatus', 'reviewLink', 'socialAccounts',
+  'reviews', 'posts', 'campaigns', 'contacts', 'suppressed', 'activity', 'paused'
+];
+
+function slugify(name) {
+  return String(name || '').toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'business';
+}
+
+function pickProfile(input) {
+  const out = {};
+  for (const k of PROFILE_KEYS) if (input && input[k] !== undefined) out[k] = input[k];
+  // Phone "aiNumber" is owned by the server (phone_numbers table), never by the client.
+  if (out.phone && typeof out.phone === 'object') {
+    out.phone = Object.assign({}, out.phone);
+    delete out.phone.aiNumber;
+  }
+  return out;
+}
+
+function defaultSteps(overrides) {
+  const base = {
+    number: { status: 'pending', detail: 'No AI number yet. Get one from the Receptionist tab once Twilio and Vapi are connected.' },
+    test: { status: 'pending', detail: 'Test call has not been run.' },
+    forwarding: { status: 'pending', detail: 'Forwarding is not turned on yet.', owner: 'Client' },
+    calendar: { status: 'pending', detail: 'Calendar is not connected yet.', owner: 'Client' },
+    texting: { status: 'action', detail: TEXTING_HOLD },
+    email: { status: 'pending', detail: 'SPF and DKIM are not checked yet.' },
+    reviews: { status: 'pending', detail: 'Google review link is not on file.' },
+    gbp: { status: 'pending', detail: 'Google Business Profile access is not confirmed.', owner: 'Client' },
+    social: { status: 'pending', detail: 'Facebook and Instagram are not connected yet.', owner: 'Client' },
+    website: { status: 'pending', detail: 'Website is not published.' },
+    billing: { status: 'pending', detail: 'Billing is not set up.' }
+  };
+  return Object.assign(base, overrides || {});
+}
+
+async function upsertSteps(client, businessId, steps) {
+  for (const key of Object.keys(steps)) {
+    if (!STEP_KEYS.includes(key)) continue;
+    const s = steps[key] || {};
+    const status = ['pending', 'action', 'connected'].includes(s.status) ? s.status : 'pending';
+    await client.query(
+      `INSERT INTO business_setup (business_id, step_key, status, detail, owner, is_next, data, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+       ON CONFLICT (business_id, step_key) DO UPDATE SET status = EXCLUDED.status, detail = EXCLUDED.detail,
+         owner = EXCLUDED.owner, is_next = EXCLUDED.is_next, data = business_setup.data || EXCLUDED.data, updated_at = now()`,
+      [businessId, key, status, String(s.detail || ''), s.owner === 'Client' ? 'Client' : 'Team', Boolean(s.next), s.data || {}]
+    );
+  }
+}
+
+async function setStep(businessId, key, status, detail, data) {
+  await upsertSteps({ query: db.query }, businessId, { [key]: { status, detail, data } });
+}
+
+async function uniqueSlug(client, base) {
+  let slug = base;
+  for (let i = 2; i < 100; i++) {
+    const { rows } = await client.query('SELECT 1 FROM businesses WHERE slug = $1', [slug]);
+    if (!rows.length) return slug;
+    slug = base + '-' + i;
+  }
+  return base + '-' + Date.now();
+}
+
+async function createBusiness(input, userId) {
+  const name = String(input.name || '').trim();
+  if (!name) { const e = new Error('Business name is required.'); e.status = 400; throw e; }
+  return db.tx(async (c) => {
+    const slug = await uniqueSlug(c, slugify(input.slug || name));
+    const { rows } = await c.query(
+      `INSERT INTO businesses (slug, name, category, city, timezone, status, pilot, profile, created_by)
+       VALUES ($1, $2, $3, $4, $5, 'setup', $6, $7, $8) RETURNING *`,
+      [slug, name, String(input.category || ''), String(input.city || ''), tzFromLabel(input.timezone),
+        Boolean(input.pilot), pickProfile(input), userId || null]
+    );
+    const biz = rows[0];
+    // Client-supplied checklist is advisory; the number/test steps are server-owned.
+    const fromClient = {};
+    (input.checklist || []).forEach((row) => {
+      if (row && row.key && !['number', 'test'].includes(row.key)) fromClient[row.key] = row;
+    });
+    await upsertSteps(c, biz.id, defaultSteps(fromClient));
+    await c.query('INSERT INTO audit_log (user_id, business_id, action) VALUES ($1, $2, $3)', [userId || null, biz.id, 'business.create']);
+    return biz;
+  });
+}
+
+async function updateBusiness(slug, input, userId) {
+  const biz = await getBySlug(slug);
+  if (!biz) return null;
+  const profile = Object.assign({}, biz.profile, pickProfile(input));
+  const fields = {
+    name: input.name !== undefined ? String(input.name).trim() || biz.name : biz.name,
+    category: input.category !== undefined ? String(input.category) : biz.category,
+    city: input.city !== undefined ? String(input.city) : biz.city,
+    timezone: input.timezone !== undefined ? tzFromLabel(input.timezone) : biz.timezone,
+    status: ['setup', 'live', 'paused'].includes(input.status) ? input.status : biz.status
+  };
+  const { rows } = await db.query(
+    `UPDATE businesses SET name = $2, category = $3, city = $4, timezone = $5, status = $6, profile = $7, updated_at = now()
+     WHERE id = $1 RETURNING *`,
+    [biz.id, fields.name, fields.category, fields.city, fields.timezone, fields.status, profile]
+  );
+  await db.query('INSERT INTO audit_log (user_id, business_id, action, detail) VALUES ($1, $2, $3, $4)',
+    [userId || null, biz.id, 'business.update', { keys: Object.keys(input || {}).slice(0, 40) }]);
+  return rows[0];
+}
+
+async function getBySlug(slug) {
+  const { rows } = await db.query('SELECT * FROM businesses WHERE slug = $1 AND status <> \'archived\'', [slug]);
+  return rows[0] || null;
+}
+
+const TZ_LABELS = {
+  'Eastern Time': 'America/New_York', 'Central Time': 'America/Chicago', 'Mountain Time': 'America/Denver',
+  'Pacific Time': 'America/Los_Angeles', 'Arizona Time': 'America/Phoenix', 'Alaska Time': 'America/Anchorage', 'Hawaii Time': 'Pacific/Honolulu'
+};
+function tzFromLabel(v) {
+  if (!v) return 'America/New_York';
+  if (TZ_LABELS[v]) return TZ_LABELS[v];
+  return /^[A-Za-z]+\/[A-Za-z_]+$/.test(v) ? v : 'America/New_York';
+}
+function tzLabel(tz) {
+  for (const k of Object.keys(TZ_LABELS)) if (TZ_LABELS[k] === tz) return k;
+  return tz;
+}
+
+function prettyPhone(e164) {
+  const d = String(e164 || '').replace(/\D/g, '');
+  const ten = d.length === 11 && d[0] === '1' ? d.slice(1) : d;
+  if (ten.length !== 10) return e164 || '';
+  return '(' + ten.slice(0, 3) + ') ' + ten.slice(3, 6) + '-' + ten.slice(6);
+}
+
+function fmtWhen(date, tz) {
+  if (!date) return '';
+  return new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(date));
+}
+function fmtDuration(sec) {
+  if (sec == null) return '';
+  const s = Math.max(0, Math.round(sec));
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+
+function callToUi(c, tz) {
+  const lines = (Array.isArray(c.messages) ? c.messages : [])
+    .filter((m) => m && (m.role === 'assistant' || m.role === 'bot' || m.role === 'user') && (m.message || m.content))
+    .map((m) => [m.role === 'user' ? 'Caller' : 'Receptionist', m.message || m.content]);
+  return {
+    time: fmtWhen(c.started_at || c.created_at, tz),
+    from: prettyPhone(c.direction === 'outbound' ? c.to_number : c.from_number) || 'Unknown',
+    duration: fmtDuration(c.duration_sec),
+    outcome: c.outcome || (c.status === 'ended' ? 'Answered' : (c.status || '')),
+    flag: c.ended_reason && /error|fail/i.test(c.ended_reason) ? c.ended_reason : '',
+    summary: c.summary || '',
+    lines,
+    recordingUrl: c.recording_url || ''
+  };
+}
+
+// Full UI object for one business row.
+async function toUi(biz) {
+  const tz = biz.timezone || 'America/New_York';
+  const [steps, phones, calls, bookings, stats] = await Promise.all([
+    db.query('SELECT * FROM business_setup WHERE business_id = $1', [biz.id]),
+    db.query('SELECT * FROM phone_numbers WHERE business_id = $1 AND status = \'active\' ORDER BY id DESC LIMIT 1', [biz.id]),
+    db.query('SELECT * FROM calls WHERE business_id = $1 ORDER BY coalesce(started_at, created_at) DESC LIMIT 50', [biz.id]),
+    db.query('SELECT * FROM bookings WHERE business_id = $1 ORDER BY starts_at DESC NULLS LAST LIMIT 50', [biz.id]),
+    db.query(
+      `SELECT
+         coalesce(sum(duration_sec) FILTER (WHERE started_at >= date_trunc('month', now() AT TIME ZONE $2) AT TIME ZONE $2), 0)::int AS month_sec,
+         count(*) FILTER (WHERE started_at >= date_trunc('day', now() AT TIME ZONE $2) AT TIME ZONE $2)::int AS today
+       FROM calls WHERE business_id = $1`, [biz.id, tz]),
+  ]);
+  const bookedToday = await db.query(
+    `SELECT count(*)::int AS n FROM bookings WHERE business_id = $1 AND created_at >= date_trunc('day', now() AT TIME ZONE $2) AT TIME ZONE $2`, [biz.id, tz]);
+  const p = biz.profile || {};
+  const byKey = {};
+  steps.rows.forEach((r) => { byKey[r.step_key] = r; });
+  const checklist = STEPS.map(([key, label]) => {
+    const r = byKey[key];
+    return { key, label, status: r ? r.status : 'pending', detail: r ? r.detail : 'Not started', owner: r ? r.owner : 'Team', next: r ? r.is_next : false };
+  });
+  const phone = Object.assign({ mode: 'forward', carrier: '', forwardType: 'missed', businessNumber: '', tests: [] }, p.phone || {});
+  phone.aiNumber = phones.rows[0] ? prettyPhone(phones.rows[0].e164) : '';
+  return Object.assign({
+    owner: { name: '', mobile: '', email: '' },
+    greeting: '', voice: '', languages: ['English'], transfer: '',
+    capabilities: { book: true, reschedule: true, cancel: true, transfer: true, textLink: false },
+    services: [], faqs: [], reviews: [], posts: [], campaigns: [], activity: [],
+    socialAccounts: { facebook: '', instagram: '', gbp: '' },
+    tier: 'Small', plan: 'Growth', price: 0, minutesCap: 1000, staff: 1, locations: 1,
+    card: '', nextInvoice: '', trial: '', address: '', website: '', hours: '', blurb: '', template: '',
+    domainStatus: '', reviewLink: '', contacts: 0, suppressed: 0, setupFee: 0
+  }, p, {
+    id: biz.slug,
+    dbId: Number(biz.id),
+    name: biz.name,
+    category: biz.category,
+    city: biz.city,
+    timezone: tzLabel(tz),
+    status: p.paused ? 'paused' : biz.status,
+    pilot: biz.pilot,
+    phone,
+    texts: 0,
+    minutesUsed: Math.round((stats.rows[0].month_sec || 0) / 60),
+    callsToday: stats.rows[0].today,
+    bookingsToday: bookedToday.rows[0].n,
+    calls: calls.rows.map((c) => callToUi(c, tz)),
+    bookings: bookings.rows.map((b) => ({
+      when: fmtWhen(b.starts_at, tz), customer: b.customer || '', service: b.service || '', source: b.source, status: b.status
+    })),
+    checklist,
+    live: true
+  });
+}
+
+async function listUi() {
+  const { rows } = await db.query('SELECT * FROM businesses WHERE status <> \'archived\' ORDER BY pilot DESC, created_at');
+  return Promise.all(rows.map(toUi));
+}
+
+// Pilot client #1. Real details only: Malden, MA. Owner and numbers stay blank until PK fills them in.
+async function seedPilot() {
+  const { rows } = await db.query('SELECT count(*)::int AS n FROM businesses');
+  if (rows[0].n > 0) return;
+  await createBusiness({
+    name: 'ReceptWise',
+    slug: 'receptwise',
+    category: 'Professional services',
+    city: 'Malden, MA',
+    timezone: 'America/New_York',
+    pilot: true,
+    address: 'Malden, MA',
+    website: '',
+    hours: 'Mon–Fri 9:00 AM – 6:00 PM',
+    tier: 'Small', plan: 'Growth', price: 0, minutesCap: 700, setupFee: 0, staff: 1, locations: 1,
+    card: 'Pilot · no card charged', nextInvoice: 'Pilot · $0', trial: 'Pilot',
+    owner: { name: '', mobile: '', email: '' },
+    phone: { mode: 'forward', carrier: '', forwardType: 'missed', businessNumber: '', tests: [] },
+    greeting: 'Thanks for calling ReceptWise. I\'m the virtual assistant, and this call may be recorded. I can explain what we do, book a free 20-minute demo, or connect you with the team.',
+    voice: '', languages: ['English'], transfer: '',
+    capabilities: { book: true, reschedule: true, cancel: true, transfer: true, textLink: false },
+    services: [{ name: 'Intro demo', length: '20 min', price: '$0' }],
+    faqs: [
+      { q: 'What does ReceptWise do?', a: 'We answer the phone, book appointments, follow up for Google reviews, post on social, and host a simple website for local businesses.' },
+      { q: 'Can I keep my current number?', a: 'Yes. We forward it to the receptionist, or we can move it later if you want that.' }
+    ],
+    blurb: 'An AI front desk and marketing service for local businesses.',
+    template: 'Professional services',
+    domainStatus: 'Not connected yet.',
+    activity: [{ time: 'Setup', text: 'Pilot business created on the live server.' }]
+  }, null);
+  console.log('Seeded pilot business: ReceptWise (Malden, MA)');
+}
+
+module.exports = {
+  STEPS, STEP_KEYS, slugify, createBusiness, updateBusiness, getBySlug, toUi, listUi, seedPilot,
+  setStep, prettyPhone, callToUi, tzFromLabel
+};
