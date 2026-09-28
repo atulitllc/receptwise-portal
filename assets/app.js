@@ -73,8 +73,8 @@
       carrier: "verizon",
       forwardType: "missed",
       businessNumber: "",
-      areaCode: "415",
-      chosenNumber: "(415) 555-0148",
+      areaCode: window.RW_LIVE ? "781" : "415",
+      chosenNumber: window.RW_LIVE ? "(781) 555-0148" : "(415) 555-0148",
       lookupNote: "",
       clientDone: false,
       testStatus: "idle",
@@ -135,12 +135,60 @@
     catch (e) { toast("This browser blocked saving the session."); return false; }
   }
 
+  // Live mode: the Render server injects window.RW_LIVE (signed-in user + integration status)
+  // and real businesses into data.js. On GitHub Pages RW_LIVE is undefined and the demo runs as before.
+  var LIVE = !!window.RW_LIVE;
+
+  function api(method, url, body) {
+    return fetch(url, {
+      method: method,
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-RW-Client": "portal" },
+      body: body ? JSON.stringify(body) : undefined
+    }).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (data) {
+        if (!res.ok) {
+          var err = new Error(data.error || ("Request failed (" + res.status + ")."));
+          err.data = data;
+          err.status = res.status;
+          throw err;
+        }
+        return data;
+      });
+    });
+  }
+
+  function liveFail(err) {
+    if (err && err.status === 401) { location.replace("index.html"); return; }
+    toast(err && err.message ? err.message : "Something went wrong.");
+  }
+
+  function replaceBiz(updated) {
+    if (!updated) return;
+    var list = window.RW_DATA.businesses || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === updated.id) { list[i] = updated; return; }
+    }
+    list.push(updated);
+  }
+
+  function persistBiz(b, message) {
+    return api("PUT", "api/businesses/" + encodeURIComponent(b.id), b).then(function (data) {
+      replaceBiz(data.business);
+      if (message) toast(message);
+      if (currentRender) currentRender();
+      return data.business;
+    });
+  }
+
   function session() {
+    if (LIVE) return window.RW_LIVE.user || null;
     try { return JSON.parse(storageGet("rw_session") || "null"); }
     catch (e) { return null; }
   }
 
   function createdList() {
+    if (LIVE) return [];
     if (extraCache) return extraCache;
     try { extraCache = JSON.parse(storageGet("rw_created") || "[]"); }
     catch (e) { extraCache = []; }
@@ -244,7 +292,8 @@
 
   function forwardingHelp(carrier, forwardType, aiNumber) {
     var n = digits(aiNumber);
-    if (n.length < 10) n = "4155550148";
+    var missing = n.length < 10;
+    if (missing) n = "4155550148";
     var lines = [];
     var off = [];
     var note = "Dial this from the business phone itself, then place the test call.";
@@ -292,10 +341,11 @@
     } else {
       note = "Cable, internet phone, and office systems (Comcast, Spectrum, RingCentral, and others) are changed in the provider's website or app. Forward those calls to " + pretty(n) + ".";
     }
-    return { lines: lines, off: off, note: note, warn: warn, number: pretty(n) };
+    return { lines: lines, off: off, note: note, warn: warn, number: pretty(n), missing: missing };
   }
 
   function codeBlock(help, alt) {
+    if (LIVE && help.missing) return '<div class="note calm">Forwarding codes appear here once the AI number is set up.</div>';
     var html = '<div class="code-card"><strong>Dial from the business phone</strong>';
     html += '<p class="help">AI number used in these codes: ' + esc(help.number) + "</p>";
     help.lines.forEach(function (line) {
@@ -353,6 +403,7 @@
   }
 
   function legal() {
+    if (LIVE) return '<p class="page-legal">ReceptWise is a product of [Placeholder].</p>';
     return '<p class="page-legal">ReceptWise is a product of [Placeholder]. Sample data. Nothing here places a real call or charges a card.</p>';
   }
 
@@ -521,9 +572,9 @@
     var alerts = allAlerts().slice(0, 6).map(function (alert) {
       return '<a class="alert-row" href="client.html?id=' + encodeURIComponent(alert.id) + '"><strong>' + esc(alert.name) + "</strong><span>" + esc(alert.text) + "</span></a>";
     }).join("");
-    var max = 48;
     var days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    var counts = [36, 29, 41, 48, 33, 18, calls || 41];
+    var counts = LIVE ? (window.RW_DATA.callsByDay || [0, 0, 0, 0, 0, 0, calls]) : [36, 29, 41, 48, 33, 18, calls || 41];
+    var max = LIVE ? Math.max(4, Math.max.apply(null, counts)) : 48;
     var bars = counts.map(function (n, i) {
       var d = new Date();
       d.setDate(d.getDate() - (6 - i));
@@ -702,6 +753,7 @@
         "</div>" +
         '<div class="field"><label>Area code</label><div class="inline">' + input("areaCode", wizard.areaCode, "415") +
         '<button class="btn" type="button" data-action="show-numbers">Show numbers</button></div><div class="help">Used to list local numbers.</div></div>' +
+        (LIVE ? '<div class="note calm">Live mode: these numbers are examples. The real number is bought from the business page (Overview > AI number) after the business is created.</div>' : "") +
         '<div class="field"><label>AI receptionist number</label><div class="choice-grid">' + numbers.map(function (num) {
           return choice("chosenNumber", num, num, "Local · voice");
         }).join("") + "</div></div>";
@@ -1065,8 +1117,11 @@
         "<div class='help'>" + esc(call.summary) + "</div></span><span>" + pill(call.outcome === "Booked" ? "connected" : call.flag ? "action" : "neutral") + "</span></button>" +
         (open ? '<div class="transcript">' + (call.lines || []).map(function (line) {
           return '<div class="line"><b>' + esc(line[0]) + "</b>" + esc(line[1]) + "</div>";
-        }).join("") + '<div class="help">Recording sample · kept 90 days. ' + esc(call.duration) + (call.flag ? " · " + esc(call.flag) : "") + "</div>" +
-        '<button class="btn btn-sm" type="button" data-action="play-call">Play recording</button><div class="scrub"><i></i></div></div>' : "") + "</div>";
+        }).join("") + (LIVE
+          ? '<div class="help">' + esc(call.duration) + (call.flag ? " · " + esc(call.flag) : "") + "</div>" +
+            (/^https:\/\//.test(call.recordingUrl || "") ? '<audio controls preload="none" src="' + esc(call.recordingUrl) + '" style="width:100%"></audio>' : "") + "</div>"
+          : '<div class="help">Recording sample · kept 90 days. ' + esc(call.duration) + (call.flag ? " · " + esc(call.flag) : "") + "</div>" +
+            '<button class="btn btn-sm" type="button" data-action="play-call">Play recording</button><div class="scrub"><i></i></div></div>') : "") + "</div>";
     }).join("") || '<div class="empty">No calls yet.</div>';
     return '<div class="split"><section class="card"><div class="card-h"><h2>Receptionist</h2><span class="pill neutral">Draft until you publish</span></div><div class="card-b">' +
       '<div class="field"><label>Greeting</label><textarea class="ctrl" id="greet">' + esc(b.greeting) + "</textarea></div>" +
@@ -1082,7 +1137,9 @@
         return "<li>" + esc(service.name) + " · " + esc(service.length) + " · " + esc(service.price) + "</li>";
       }).join("") + "</ul>" + (b.faqs || []).map(function (faq) {
         return "<p><strong>" + esc(faq.q) + "</strong><br>" + esc(faq.a) + "</p>";
-      }).join("") + '</div></section><section class="card"><div class="card-h"><h2>Call log</h2></div><div class="card-b">' + calls + "</div></section></div>";
+      }).join("") + '</div></section><section class="card"><div class="card-h"><h2>Call log</h2>' +
+      (LIVE ? '<button class="btn btn-sm" type="button" data-action="live-sync-calls" data-id="' + esc(b.id) + '">Refresh calls</button>' : "") +
+      '</div><div class="card-b">' + calls + "</div></section></div>";
   }
 
   function tabBookings(b) {
@@ -1183,7 +1240,7 @@
     var title = document.getElementById("top-title");
     if (!b) {
       if (title) title.textContent = "Business";
-      view.innerHTML = '<div class="card"><div class="empty">That business is not in the sample data. <a href="clients.html">Back to businesses</a></div></div>' + legal();
+      view.innerHTML = '<div class="card"><div class="empty">' + (LIVE ? "That business was not found." : "That business is not in the sample data.") + ' <a href="clients.html">Back to businesses</a></div></div>' + legal();
       return;
     }
     if (title) title.textContent = b.name;
@@ -1285,11 +1342,11 @@
       "<h1>Set up a local business without leaving the panel.</h1><p>Phone, receptionist, calendar, reviews, social, and website. One monthly bill for the owner.</p><ul>" +
       "<li>Answer calls, book the open time, and hand off when someone asks for a person</li><li>Forward the number already on the door, or buy a new one</li>" +
       "<li>Track every connection: confirmed, pending, or needs action</li></ul>" +
-      '<p class="legal">ReceptWise is a product of [Placeholder]. This is a clickable prototype with sample data.</p></section>' +
+      '<p class="legal">ReceptWise is a product of [Placeholder].' + (LIVE ? "" : " This is a clickable prototype with sample data.") + '</p></section>' +
       '<section class="login-panel"><form class="login-card" data-action="login"><h2>Sign in</h2><p class="sub">Internal team only.</p>' +
       '<div class="field" style="margin-top:16px"><label for="email">Email</label><input class="ctrl" id="email" name="email" type="email" autocomplete="username" placeholder="you@receptwise.example"></div>' +
-      '<div class="field"><label for="password">Password</label><input class="ctrl" id="password" name="password" type="password" autocomplete="current-password" placeholder="Any password"></div>' +
-      '<button class="btn btn-primary" type="submit" style="width:100%">Sign in</button><p class="help">This prototype accepts any email and password.</p></form></section></div>' +
+      '<div class="field"><label for="password">Password</label><input class="ctrl" id="password" name="password" type="password" autocomplete="current-password" placeholder="' + (LIVE ? "Password" : "Any password") + '"></div>' +
+      '<button class="btn btn-primary" type="submit" style="width:100%">Sign in</button><p class="help">' + (LIVE ? "Team accounts only. Ask an admin for access." : "This prototype accepts any email and password.") + '</p></form></section></div>' +
       '<div id="modal-back" class="modal-back"></div><div id="toasts" class="toasts"></div>';
   }
 
@@ -1738,6 +1795,128 @@
     }
   };
 
+  function numberModal(b) {
+    var ints = (window.RW_LIVE && window.RW_LIVE.integrations) || {};
+    var admin = window.RW_LIVE && window.RW_LIVE.user && window.RW_LIVE.user.role === "admin";
+    if (b.phone && b.phone.aiNumber) {
+      openModal("Receptionist test call", "<p>The receptionist will call you from <strong>" + esc(b.phone.aiNumber) + "</strong>. Answer to hear the greeting.</p>" +
+        '<div class="field"><label for="test-to">Your phone</label><input class="ctrl" id="test-to" placeholder="(617) 555-0100"></div>',
+        '<button class="btn" type="button" data-action="close-modal">Cancel</button><button class="btn btn-primary" type="button" data-action="live-test-call" data-id="' + esc(b.id) + '">Call me</button>');
+      return;
+    }
+    var missing = [];
+    if (!ints.twilio) missing.push("TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN");
+    if (!ints.vapi) missing.push("VAPI_API_KEY");
+    openModal("Get an AI number", missing.length
+      ? "<p class='banner warn'>Not connected yet. Add " + esc(missing.join(" and ")) + " on the server, then come back.</p>"
+      : "<p>Buys a local voice number from Twilio ($1.15/mo), connects it to this receptionist, and publishes the greeting. Texting stays off.</p>" +
+        '<div class="field"><label for="area-code">Area code</label><input class="ctrl" id="area-code" placeholder="781" maxlength="3"></div>',
+      '<button class="btn" type="button" data-action="close-modal">Close</button>' +
+      (missing.length ? "" : admin ? '<button class="btn btn-primary" type="button" data-action="live-provision" data-id="' + esc(b.id) + '">Buy and connect</button>' : "<span class='help'>Admins only.</span>"));
+  }
+
+  var liveActions = {
+    "sign-out": function () {
+      api("POST", "api/auth/logout").catch(function () {}).then(function () { location.href = "index.html"; });
+    },
+    "create-business": function () {
+      readWizard();
+      if (!wizard.name.trim() || !wizard.category) {
+        wizard.step = 0;
+        wizard.error = "Name and business type are required before creating the business.";
+        renderWizard();
+        return;
+      }
+      api("POST", "api/businesses", buildBusiness()).then(function (data) {
+        replaceBiz(data.business);
+        wizard.createdId = data.business.id;
+        wizard.step = 10;
+        toast(data.business.name + " added.");
+        renderWizard();
+      }).catch(liveFail);
+    },
+    "save-draft": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      var greet = document.getElementById("greet");
+      var voice = document.getElementById("voice");
+      if (greet) b.greeting = greet.value;
+      if (voice) b.voice = voice.value;
+      persistBiz(b, "Draft saved. Publish when callers should hear it.").catch(liveFail);
+    },
+    "publish-receptionist": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      var greet = document.getElementById("greet");
+      var voice = document.getElementById("voice");
+      if (greet) b.greeting = greet.value;
+      if (voice) b.voice = voice.value;
+      persistBiz(b).then(function () {
+        return api("POST", "api/businesses/" + encodeURIComponent(b.id) + "/assistant/publish");
+      }).then(function () {
+        toast("Published. Callers now hear this greeting.");
+      }).catch(function (err) {
+        if (err.data && err.data.code === "NOT_CONFIGURED") toast("Saved. Not published: " + err.message);
+        else liveFail(err);
+      });
+    },
+    "save-business": function (el) {
+      var b = findBiz(el.dataset.id);
+      var root = document.getElementById("view");
+      if (!b || !root) return;
+      b.hours = root.querySelector("[data-set=hours]").value;
+      b.timezone = root.querySelector("[data-set=timezone]").value;
+      b.transfer = root.querySelector("[data-set=transfer]").value;
+      b.owner = b.owner || {};
+      b.owner.mobile = root.querySelector("[data-set=mobile]").value;
+      persistBiz(b, "Settings saved.").catch(liveFail);
+    },
+    "pause-biz": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      b.paused = !b.paused;
+      persistBiz(b, b.paused ? "Receptionist paused." : "Receptionist resumed.").catch(liveFail);
+    },
+    "call-receptionist": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (b) numberModal(b);
+    },
+    "run-greeting-test": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (b) numberModal(b);
+    },
+    "live-provision": function (el) {
+      var box = document.getElementById("area-code");
+      var area = box ? box.value.replace(/\D/g, "").slice(0, 3) : "";
+      el.disabled = true;
+      api("POST", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/numbers/provision", area ? { areaCode: area } : {}).then(function (data) {
+        replaceBiz(data.business);
+        closeModal();
+        toast(data.pretty + " is live.");
+        currentRender();
+      }).catch(function (err) { el.disabled = false; liveFail(err); });
+    },
+    "live-test-call": function (el) {
+      var box = document.getElementById("test-to");
+      var to = box ? box.value : "";
+      if (digits(to).length < 10) { toast("Enter a 10-digit phone number."); return; }
+      el.disabled = true;
+      api("POST", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/test-call", { to: to }).then(function () {
+        closeModal();
+        toast("Calling you now. The result shows up in the call log.");
+      }).catch(function (err) { el.disabled = false; liveFail(err); });
+    },
+    "live-sync-calls": function (el) {
+      el.disabled = true;
+      api("POST", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/calls/sync").then(function (data) {
+        replaceBiz(data.business);
+        toast(data.synced + " calls checked.");
+        currentRender();
+      }).catch(function (err) { el.disabled = false; liveFail(err); });
+    }
+  };
+  if (LIVE) Object.keys(liveActions).forEach(function (key) { actions[key] = liveActions[key]; });
+
   function onClick(event) {
     if (event.target && event.target.id === "modal-back") {
       closeModal();
@@ -1779,7 +1958,8 @@
       if (!business) return;
       business.capabilities = business.capabilities || {};
       business.capabilities[el.dataset.cap] = el.checked;
-      toast("Saved on the draft. Publish the receptionist to make it live.");
+      if (LIVE) persistBiz(business, "Saved. Publish the receptionist to make it live.").catch(liveFail);
+      else toast("Saved on the draft. Publish the receptionist to make it live.");
     }
   }
 
@@ -1788,6 +1968,13 @@
     if (!form || form.dataset.action !== "login") return;
     event.preventDefault();
     var email = (form.email && form.email.value || "").trim();
+    if (LIVE) {
+      var password = form.password ? form.password.value : "";
+      api("POST", "api/auth/login", { email: email, password: password }).then(function () {
+        location.href = "dashboard.html";
+      }).catch(function (err) { toast(err.message); });
+      return;
+    }
     storageSet("rw_session", JSON.stringify({ email: email, name: nameFromEmail(email) }));
     location.href = "dashboard.html";
   }
