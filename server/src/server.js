@@ -10,10 +10,15 @@ const auth = require('./auth');
 const businesses = require('./businesses');
 const provisioning = require('./provisioning');
 const calls = require('./calls');
+const settings = require('./settings');
+const metrics = require('./metrics');
+const phoneView = require('./phoneView');
+const social = require('./social');
+const meta = require('./integrations/meta');
 
 // The portal pages live at the repo root (also published as the GitHub Pages demo).
 const SITE_ROOT = path.join(__dirname, '..', '..');
-const PAGES = ['index', 'dashboard', 'clients', 'add', 'client', 'billing', 'team'];
+const PAGES = ['index', 'dashboard', 'clients', 'add', 'client', 'billing', 'team', 'phone', 'settings', 'integrations'];
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
@@ -37,7 +42,6 @@ async function teamList() {
   }));
 }
 
-// Calls per day for the last 7 days (oldest first, today last), in Eastern time.
 async function callsByDay() {
   const { rows } = await db.query(
     `SELECT (now() AT TIME ZONE 'America/New_York')::date - (coalesce(started_at, created_at) AT TIME ZONE 'America/New_York')::date AS ago, count(*)::int AS n
@@ -45,17 +49,6 @@ async function callsByDay() {
   const out = [0, 0, 0, 0, 0, 0, 0];
   rows.forEach((r) => { if (r.ago >= 0 && r.ago <= 6) out[6 - r.ago] = r.n; });
   return out;
-}
-
-async function feedList() {
-  const { rows } = await db.query(
-    `SELECT c.*, b.slug, b.timezone FROM calls c JOIN businesses b ON b.id = c.business_id
-     ORDER BY coalesce(c.started_at, c.created_at) DESC LIMIT 8`);
-  return rows.map((c) => ({
-    time: new Intl.DateTimeFormat('en-US', { timeZone: c.timezone, hour: 'numeric', minute: '2-digit' }).format(new Date(c.started_at || c.created_at)),
-    businessId: c.slug,
-    text: c.summary || (c.outcome || 'Call') + ' · ' + (c.from_number || 'unknown caller')
-  }));
 }
 
 function createApp() {
@@ -167,7 +160,63 @@ function createApp() {
   }));
   api.post('/businesses/:slug/calls/sync', withBiz, wrap(async (req, res) => {
     const result = await provisioning.syncCalls(req.biz);
+    await require('./audit').record(req.user.id, req.biz.id, 'call.sync', result);
     res.json(Object.assign({ ok: true }, result, { business: await businesses.toUi(req.biz) }));
+  }));
+
+  api.get('/businesses/:slug/settings', withBiz, wrap(async (req, res) => {
+    res.json(await settings.getSettings(req.biz));
+  }));
+  api.put('/businesses/:slug/settings', withBiz, wrap(async (req, res) => {
+    res.json(await settings.saveAndPush(req.biz, req.body || {}, req.user.id));
+  }));
+  api.get('/businesses/:slug/phone', withBiz, wrap(async (req, res) => {
+    res.json(await phoneView.liveNumbers(req.biz));
+  }));
+  api.get('/businesses/:slug/integrations', withBiz, wrap(async (req, res) => {
+    res.json(await social.listForBusiness(req.biz.id));
+  }));
+  api.put('/businesses/:slug/integrations/:provider', withBiz, wrap(async (req, res) => {
+    res.json(await social.recordManual(req.biz, req.params.provider, req.body || {}, req.user.id));
+  }));
+  api.delete('/businesses/:slug/integrations/:provider', withBiz, wrap(async (req, res) => {
+    res.json(await social.removeIntegration(req.biz, req.params.provider, req.user.id));
+  }));
+
+  api.get('/metrics', auth.requireUser, wrap(async (req, res) => {
+    if (!req.query.business) return res.json(await metrics.collect(null));
+    const biz = await businesses.getBySlug(String(req.query.business));
+    if (!biz) return res.status(404).json({ error: 'Business not found.' });
+    res.json(await metrics.collect(biz.id));
+  }));
+  api.post('/calls/sync', auth.requireUser, wrap(async (req, res) => {
+    const slug = req.body && req.body.business;
+    if (slug) {
+      const biz = await businesses.getBySlug(String(slug));
+      if (!biz) return res.status(404).json({ error: 'Business not found.' });
+      const result = await provisioning.syncCalls(biz);
+      await require('./audit').record(req.user.id, biz.id, 'call.sync', result);
+      return res.json(Object.assign({ ok: true }, result));
+    }
+    res.json(Object.assign({ ok: true }, await provisioning.syncAll(req.user.id)));
+  }));
+
+  api.get('/integrations/meta/start', auth.requireUser, wrap(async (req, res) => {
+    const biz = await businesses.getBySlug(String(req.query.business || ''));
+    if (!biz) return res.status(404).json({ error: 'Business not found.' });
+    res.redirect(await social.beginMeta(biz, req.user.id));
+  }));
+  api.get('/integrations/meta/callback', wrap(async (req, res) => {
+    if (req.query.error) {
+      const message = String(req.query.error_description || req.query.error || 'Meta declined the connection.');
+      return res.redirect('/integrations.html?error=' + encodeURIComponent(message));
+    }
+    try {
+      const result = await social.finishMeta(String(req.query.code || ''), String(req.query.state || ''));
+      res.redirect('/integrations.html?id=' + encodeURIComponent(result.slug) + '&connected=1');
+    } catch (err) {
+      res.redirect('/integrations.html?error=' + encodeURIComponent(err.message || 'Meta connection failed.'));
+    }
   }));
 
   app.use('/api', api);
@@ -179,12 +228,25 @@ function createApp() {
   app.get('/assets/data.js', wrap(async (req, res) => {
     let payload = { live: { user: null, integrations: {} }, businesses: [], team: [], feed: [], callsByDay: [] };
     if (req.user) {
-      const [list, team, feed, byDay] = await Promise.all([businesses.listUi(), teamList(), feedList(), callsByDay()]);
-      payload = { live: { user: req.user, integrations: provisioning.status() }, businesses: list, team, feed, callsByDay: byDay };
+      const [list, team, byDay, dash] = await Promise.all([
+        businesses.listUi(), teamList(), callsByDay(), metrics.collect(null)
+      ]);
+      const integrations = Object.assign(provisioning.status(), {
+        meta: meta.configured(),
+        encryption: Boolean(config.tokenKey)
+      });
+      payload = {
+        live: { user: req.user, integrations },
+        businesses: list,
+        team,
+        feed: dash.activity.map((item) => ({ time: item.time, businessId: item.businessId, text: item.text })),
+        callsByDay: byDay,
+        metrics: dash
+      };
     }
     res.set('Content-Type', 'application/javascript; charset=utf-8');
     res.set('Cache-Control', 'no-store');
-    res.send(staticData + '\n;(function (L) {\n  window.RW_LIVE = L.live;\n  window.RW_DATA.businesses = L.businesses;\n  window.RW_DATA.team = L.team;\n  window.RW_DATA.feed = L.feed;\n  window.RW_DATA.callsByDay = L.callsByDay;\n})(' + safeJson(payload) + ');\n');
+    res.send(staticData + '\n;(function (L) {\n  window.RW_LIVE = L.live;\n  window.RW_DATA.businesses = L.businesses;\n  window.RW_DATA.team = L.team;\n  window.RW_DATA.feed = L.feed;\n  window.RW_DATA.callsByDay = L.callsByDay;\n  window.RW_DATA.metrics = L.metrics || null;\n})(' + safeJson(payload) + ');\n');
   }));
   app.use('/assets', express.static(path.join(SITE_ROOT, 'assets'), { index: false, maxAge: '5m' }));
   app.get('/', (_req, res) => res.sendFile(path.join(SITE_ROOT, 'index.html')));
@@ -201,6 +263,9 @@ function createApp() {
     if (status >= 500) console.error(err);
     const body = { error: status >= 500 && !err.code ? 'Server error.' : err.message };
     if (err.code === 'NOT_CONFIGURED') { body.code = err.code; body.missing = err.missing; }
+    if (err.fields) body.fields = err.fields;
+    if (err.saved) body.saved = true;
+    if (err.backupId) body.backupId = err.backupId;
     if (req.path.startsWith('/api') || req.path.startsWith('/webhooks')) res.status(status).json(body);
     else res.status(status).send(body.error);
   });

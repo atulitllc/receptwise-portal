@@ -10,7 +10,7 @@ async function main() {
   await auth.ensureBootstrapAdmin();
   await businesses.seedPilot();
   const app = createApp();
-  app.listen(config.port, () => {
+  app.listen(config.port, '0.0.0.0', () => {
     console.log('ReceptWise server on :' + config.port,
       '| twilio', config.twilio.configured ? 'on' : 'off',
       '| vapi', config.vapi.configured ? 'on' : 'off',

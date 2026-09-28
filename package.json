@@ -1,0 +1,13 @@
+{
+  "name": "receptwise-portal",
+  "private": true,
+  "description": "ReceptWise control panel. The Node server in server/ serves the API and these pages.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "npm start --prefix server",
+    "build": "npm ci --omit=dev --prefix server",
+    "test": "npm test --prefix server"
+  }
+}

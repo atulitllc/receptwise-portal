@@ -7,6 +7,7 @@ const twilio = require('./integrations/twilio');
 const vapi = require('./integrations/vapi');
 const businesses = require('./businesses');
 const calls = require('./calls');
+const audit = require('./audit');
 
 function webhookUrl() {
   return config.appBaseUrl ? config.appBaseUrl + '/webhooks/vapi' : '';
@@ -26,9 +27,17 @@ async function publishAssistant(biz, userId) {
   vapi.assertConfigured();
   const payload = vapi.assistantPayload(biz, { serverUrl: webhookUrl() });
   const existing = await getAssistantRow(biz.id);
-  const result = existing && existing.vapi_assistant_id
-    ? await vapi.updateAssistant(existing.vapi_assistant_id, payload)
-    : await vapi.createAssistant(payload);
+  let result;
+  if (existing && existing.vapi_assistant_id) {
+    const current = await vapi.getAssistant(existing.vapi_assistant_id);
+    await db.query(
+      'INSERT INTO assistant_backups (business_id, vapi_assistant_id, config, created_by) VALUES ($1, $2, $3, $4)',
+      [biz.id, existing.vapi_assistant_id, JSON.stringify(current), userId || null]
+    );
+    result = await vapi.updateAssistant(existing.vapi_assistant_id, payload);
+  } else {
+    result = await vapi.createAssistant(payload);
+  }
   await db.query(
     `INSERT INTO assistants (business_id, vapi_assistant_id, config, published_at, updated_at)
      VALUES ($1, $2, $3, now(), now())
@@ -112,6 +121,21 @@ async function syncCalls(biz) {
   return { synced: items.length };
 }
 
+async function syncAll(userId) {
+  vapi.assertConfigured();
+  const { rows } = await db.query(
+    `SELECT b.* FROM businesses b
+     JOIN assistants a ON a.business_id = b.id AND a.vapi_assistant_id IS NOT NULL
+     WHERE b.status <> 'archived'`);
+  let synced = 0;
+  for (const biz of rows) {
+    const result = await syncCalls(biz);
+    synced += result.synced;
+    await audit.record(userId, biz.id, 'call.sync', result);
+  }
+  return { synced, businesses: rows.length };
+}
+
 function status() {
   return {
     twilio: config.twilio.configured,
@@ -125,4 +149,4 @@ function status() {
   };
 }
 
-module.exports = { publishAssistant, provisionNumber, searchNumbers, testCall, syncCalls, status, webhookUrl };
+module.exports = { publishAssistant, provisionNumber, searchNumbers, testCall, syncCalls, syncAll, status, webhookUrl };

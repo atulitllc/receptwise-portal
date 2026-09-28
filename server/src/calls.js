@@ -4,6 +4,39 @@ const db = require('./db');
 const businesses = require('./businesses');
 
 const BOOKING_TOOL = /(google\.calendar\.event\.create|schedule|book|create_?event|createEvent)/i;
+const MISS_REASON = /customer-did-not-answer|did-not-answer|no-answer|customer-busy|busy|failed-to-connect|twilio-failed|call\.start\.error|rejected/i;
+
+function classifyCall({ status, endedReason }) {
+  const reason = String(endedReason || '');
+  const missed = MISS_REASON.test(reason) || /^(missed|no-answer|busy)$/i.test(String(status || ''));
+  const terminal = status === 'ended' || Boolean(endedReason);
+  return { missed, answered: terminal && !missed, terminal };
+}
+
+function truthyFlag(value) {
+  return value === true || value === 'true' || value === 'yes' || value === 1 || value === '1';
+}
+
+function bookingFromStructured(analysis) {
+  const sd = analysis && analysis.structuredData;
+  if (!sd || typeof sd !== 'object') return null;
+  if (!truthyFlag(sd.booking_confirmed)) return null;
+  return {
+    startsAt: sd.booked_start || sd.bookedStart || null,
+    customer: sd.name || '',
+    service: sd.type || '',
+    email: sd.email || '',
+    business: sd.business || '',
+    phone: sd.phone || ''
+  };
+}
+
+function cleanStart(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+}
 
 async function findBusinessId(call) {
   if (!call) return null;
@@ -62,18 +95,26 @@ async function upsertCall(call, report) {
   const own = (call.phoneNumber && call.phoneNumber.number) || null;
   const recording = artifact.recordingUrl || (artifact.recording && (artifact.recording.stereoUrl || artifact.recording.url ||
     (artifact.recording.mono && artifact.recording.mono.combinedUrl))) || call.recordingUrl || null;
-  const bookings = extractBookings(messages);
+  const toolBookings = extractBookings(messages);
+  const structuredBooking = bookingFromStructured(analysis);
+  const sd = (analysis && analysis.structuredData && typeof analysis.structuredData === 'object') ? analysis.structuredData : null;
+  const classified = classifyCall({ status: call.status, endedReason });
   let outcome = null;
-  if (bookings.length) outcome = 'Booked';
-  else if (endedReason && /forward|transfer/i.test(endedReason)) outcome = 'Transferred';
-  else if (call.status === 'ended') outcome = 'Answered';
+  if (classified.terminal || report) {
+    if (structuredBooking || toolBookings.length) outcome = 'Booked';
+    else if (endedReason && /forward|transfer/i.test(endedReason)) outcome = 'Transferred';
+    else if (classified.missed) outcome = 'Missed';
+    else if (classified.answered) outcome = 'Answered';
+  }
+  const answered = outcome === 'Missed' ? false : (outcome ? true : null);
   const businessId = await findBusinessId(call);
   const cost = report && report.cost != null ? report.cost : call.cost;
 
   const { rows } = await db.query(
     `INSERT INTO calls (business_id, vapi_call_id, direction, from_number, to_number, status, started_at, ended_at, duration_sec,
-       cost_usd, ended_reason, outcome, summary, transcript, messages, recording_url, raw, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17, now())
+       cost_usd, ended_reason, outcome, summary, transcript, messages, recording_url, raw,
+       caller_name, caller_email, caller_business, call_type, booking_confirmed, booked_start, answered, structured, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25, now())
      ON CONFLICT (vapi_call_id) DO UPDATE SET
        business_id = coalesce(EXCLUDED.business_id, calls.business_id),
        status = coalesce(EXCLUDED.status, calls.status),
@@ -88,14 +129,33 @@ async function upsertCall(call, report) {
        messages = CASE WHEN jsonb_array_length(EXCLUDED.messages) > 0 THEN EXCLUDED.messages ELSE calls.messages END,
        recording_url = coalesce(EXCLUDED.recording_url, calls.recording_url),
        raw = coalesce(EXCLUDED.raw, calls.raw),
+       caller_name = coalesce(EXCLUDED.caller_name, calls.caller_name),
+       caller_email = coalesce(EXCLUDED.caller_email, calls.caller_email),
+       caller_business = coalesce(EXCLUDED.caller_business, calls.caller_business),
+       call_type = coalesce(EXCLUDED.call_type, calls.call_type),
+       booking_confirmed = coalesce(EXCLUDED.booking_confirmed, calls.booking_confirmed),
+       booked_start = coalesce(EXCLUDED.booked_start, calls.booked_start),
+       answered = coalesce(EXCLUDED.answered, calls.answered),
+       structured = coalesce(EXCLUDED.structured, calls.structured),
        updated_at = now()
      RETURNING *`,
     [businessId, call.id, outbound ? 'outbound' : 'inbound', outbound ? own : customer, outbound ? customer : own,
       call.status || null, startedAt, endedAt, duration != null ? Math.round(duration) : null,
       cost != null ? cost : null, endedReason, outcome, analysis.summary || call.summary || null,
-      artifact.transcript || call.transcript || null, JSON.stringify(messages), recording, null]
+      artifact.transcript || call.transcript || null, JSON.stringify(messages), recording, null,
+      sd ? (sd.name || null) : null, sd ? (sd.email || null) : null, sd ? (sd.business || null) : null,
+      sd ? (sd.type || null) : null, sd ? truthyFlag(sd.booking_confirmed) : null,
+      sd ? cleanStart(sd.booked_start || sd.bookedStart) : null, answered, sd ? JSON.stringify(sd) : null]
   );
   const row = rows[0];
+  const bookings = toolBookings.slice();
+  if (structuredBooking) {
+    bookings.push({
+      startsAt: cleanStart(structuredBooking.startsAt),
+      customer: structuredBooking.customer,
+      service: structuredBooking.service || structuredBooking.business || ''
+    });
+  }
   if (businessId && bookings.length) {
     for (const b of bookings) {
       await db.query(
@@ -113,4 +173,4 @@ async function upsertCall(call, report) {
   return row;
 }
 
-module.exports = { upsertCall, extractBookings, findBusinessId };
+module.exports = { upsertCall, extractBookings, findBusinessId, classifyCall, bookingFromStructured };

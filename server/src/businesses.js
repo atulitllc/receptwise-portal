@@ -1,6 +1,7 @@
 'use strict';
 // Data access for businesses + mapping DB rows to the shape the portal UI (assets/app.js) renders.
 const db = require('./db');
+const config = require('./config');
 
 const STEPS = [
   ['number', 'AI number'],
@@ -171,9 +172,11 @@ function callToUi(c, tz) {
   const lines = (Array.isArray(c.messages) ? c.messages : [])
     .filter((m) => m && (m.role === 'assistant' || m.role === 'bot' || m.role === 'user') && (m.message || m.content))
     .map((m) => [m.role === 'user' ? 'Caller' : 'Receptionist', m.message || m.content]);
+  const pretty = prettyPhone(c.direction === 'outbound' ? c.to_number : c.from_number);
+  const from = c.caller_name ? (pretty ? c.caller_name + ' · ' + pretty : c.caller_name) : (pretty || 'Unknown');
   return {
     time: fmtWhen(c.started_at || c.created_at, tz),
-    from: prettyPhone(c.direction === 'outbound' ? c.to_number : c.from_number) || 'Unknown',
+    from,
     duration: fmtDuration(c.duration_sec),
     outcome: c.outcome || (c.status === 'ended' ? 'Answered' : (c.status || '')),
     flag: c.ended_reason && /error|fail/i.test(c.ended_reason) ? c.ended_reason : '',
@@ -245,11 +248,60 @@ async function listUi() {
   return Promise.all(rows.map(toUi));
 }
 
-// Pilot client #1. Real details only: Malden, MA. Owner and numbers stay blank until PK fills them in.
+function defaultReceptionist(biz) {
+  const p = (biz && biz.profile) || {};
+  const name = (biz && biz.name) || 'the business';
+  return {
+    greeting: p.greeting || ('Thanks for calling ' + name + '. This call may be recorded. I can answer questions, book a time, or take a message.'),
+    businessName: name,
+    hours: p.hours || 'Mon–Fri 9:00 AM – 6:00 PM',
+    timezone: (biz && biz.timezone) || 'America/New_York',
+    appointmentMinutes: 20,
+    bookableDays: ['mon', 'tue', 'wed', 'thu', 'fri'],
+    bookableStart: '09:00',
+    bookableEnd: '18:00',
+    bufferMinutes: 0,
+    transferNumber: typeof p.transfer === 'string' ? p.transfer : '',
+    faqs: Array.isArray(p.faqs) ? p.faqs : [],
+    notes: p.blurb || ''
+  };
+}
+
+// Links the pilot to the known Vapi assistant and Twilio number. Does not call Vapi.
+async function ensurePilotBindings(businessId) {
+  const { rows } = await db.query('SELECT * FROM businesses WHERE id = $1', [businessId]);
+  const biz = rows[0];
+  if (!biz) return;
+  if (!biz.receptionist || !Object.keys(biz.receptionist).length) {
+    await db.query('UPDATE businesses SET receptionist = $2 WHERE id = $1', [businessId, JSON.stringify(defaultReceptionist(biz))]);
+  }
+  await db.query(
+    `INSERT INTO assistants (business_id, vapi_assistant_id, config)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (business_id) DO UPDATE SET
+       vapi_assistant_id = coalesce(assistants.vapi_assistant_id, EXCLUDED.vapi_assistant_id),
+       updated_at = now()`,
+    [businessId, config.pilot.assistantId, JSON.stringify({ name: config.pilot.assistantName })]
+  );
+  await db.query(
+    `INSERT INTO phone_numbers (business_id, e164, provider, vapi_phone_number_id, sms_enabled, status)
+     VALUES ($1, $2, 'twilio', $3, FALSE, 'active')
+     ON CONFLICT (e164) DO NOTHING`,
+    [businessId, config.pilot.phoneE164, config.pilot.phoneNumberId]
+  );
+  const step = await db.query("SELECT status FROM business_setup WHERE business_id = $1 AND step_key = 'number'", [businessId]);
+  if (!step.rows[0] || step.rows[0].status === 'pending') {
+    await setStep(businessId, 'number', 'action',
+      prettyPhone(config.pilot.phoneE164) + ' is on file. Connect Vapi to confirm it is attached to the receptionist.',
+      { e164: config.pilot.phoneE164 });
+  }
+}
+
+// Pilot client #1. ReceptWise, Malden, MA, linked to the known receptionist number.
 async function seedPilot() {
-  const { rows } = await db.query('SELECT count(*)::int AS n FROM businesses');
-  if (rows[0].n > 0) return;
-  await createBusiness({
+  let biz = await getBySlug('receptwise');
+  if (!biz) {
+    biz = await createBusiness({
     name: 'ReceptWise',
     slug: 'receptwise',
     category: 'Professional services',
@@ -275,11 +327,13 @@ async function seedPilot() {
     template: 'Professional services',
     domainStatus: 'Not connected yet.',
     activity: [{ time: 'Setup', text: 'Pilot business created on the live server.' }]
-  }, null);
-  console.log('Seeded pilot business: ReceptWise (Malden, MA)');
+    }, null);
+    console.log('Seeded pilot business: ReceptWise (Malden, MA)');
+  }
+  await ensurePilotBindings(biz.id);
 }
 
 module.exports = {
   STEPS, STEP_KEYS, slugify, createBusiness, updateBusiness, getBySlug, toUi, listUi, seedPilot,
-  setStep, prettyPhone, callToUi, tzFromLabel
+  setStep, prettyPhone, callToUi, tzFromLabel, defaultReceptionist
 };
