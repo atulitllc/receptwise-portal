@@ -50,7 +50,7 @@ Pilot client 1 is seeded as ReceptWise (Malden, MA) and linked to assistant `c3c
 
 ## Deploy on Render
 
-`render.yaml` is a Blueprint: one free web service and one free Postgres. The service serves the API and these HTML pages. It listens on `0.0.0.0:$PORT`.
+`render.yaml` is a Blueprint for the pilot: one **free** web service and one **free** Postgres database. The service serves the API and these HTML pages. It listens on `0.0.0.0:$PORT`.
 
 1. Push this repo and in the Render dashboard choose **New → Blueprint**.
 2. Apply `render.yaml`. Render generates `VAPI_WEBHOOK_SECRET` and `TOKEN_ENCRYPTION_KEY`.
@@ -58,7 +58,49 @@ Pilot client 1 is seeded as ReceptWise (Malden, MA) and linked to assistant `c3c
 4. Open the service URL, sign in, and confirm `/api/health` returns `{"ok":true}`.
 5. Point Vapi’s server URL at `https://<service>/webhooks/vapi` with header `X-Vapi-Secret`.
 
-Free Postgres expires 30 days after creation. Export it with `pg_dump` or move off the free plan before then. The free web service sleeps after about 15 minutes; webhooks during sleep are recovered with Sync from Vapi.
+The free web service sleeps after about 15 minutes without traffic. Webhooks that arrive while it is asleep are recovered with **Sync from Vapi** after it wakes. Free Postgres expires 30 days after creation (then a grace period, then deletion) and has no backups.
+
+### Upgrade for production
+
+Stay on the free tier for the pilot. When the panel should stay awake and the database should outlive 30 days, change the plans in `render.yaml` (or in the Render dashboard) and apply the Blueprint again:
+
+- Web service `plan`: `free` → `starter` (stays awake)
+- Database `plan`: `free` → `basic` (does not expire after 30 days)
+
+Download an export or a `pg_dump` before changing databases so the new instance can be restored.
+
+### Export and backup
+
+An admin can download the working data from **Team and settings → Export data** (JSON) or **Export SQL**. The file includes clients, receptionist settings, calls, bookings, and activity. It leaves out passwords, session tokens, and third-party tokens (Meta, Trello). `GET /api/export?format=json` and `GET /api/export?format=sql` are admin-only.
+
+That download is the copy to grab before the free database expires. A full backup, including password hashes and encrypted tokens, is `pg_dump` from your machine using the external database URL on the Render Postgres page.
+
+```bash
+# Custom format. --no-owner avoids restore errors when the local role differs.
+pg_dump "$DATABASE_URL" --no-owner --no-acl -F c -f receptwise.dump
+
+# Plain SQL, if you would rather read or edit the file.
+pg_dump "$DATABASE_URL" --no-owner --no-acl -f receptwise.sql
+```
+
+Restore into a new database after the schema exists. Boot the app once against the empty database so migrations run, then load the dump.
+
+```bash
+# Custom format into the new database URL.
+pg_restore --no-owner --no-acl --clean --if-exists -d "$NEW_DATABASE_URL" receptwise.dump
+
+# Plain SQL.
+psql "$NEW_DATABASE_URL" -f receptwise.sql
+```
+
+To load an in-app SQL export instead, boot once so the tables exist, clear the seeded rows, then apply the file:
+
+```bash
+psql "$DATABASE_URL" -c "TRUNCATE trello_cards, assistant_backups, oauth_states, bookings, calls, integrations, audit_log, phone_numbers, assistants, business_setup, businesses RESTART IDENTITY CASCADE;"
+psql "$DATABASE_URL" -f receptwise-export.sql
+```
+
+The in-app SQL file does not restore sign-in. The admin created from `ADMIN_EMAIL` on first boot is still the account that can sign in, unless you restored a `pg_dump` that includes `users`.
 
 ### Environment variables
 

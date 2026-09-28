@@ -49,6 +49,7 @@ function auditText(action, detail) {
   }
   if (action === 'integration.removed') return 'Removed the ' + providerLabel(d.provider) + ' record.';
   if (action === 'call.sync') return 'Synced calls from Vapi (' + (d.synced || 0) + ').';
+  if (action === 'data.export') return 'Exported a backup (' + (d.format || 'json') + ').';
   if (action === 'trello.credentials_saved') return 'Saved a Trello key for this business.';
   if (action === 'trello.credentials_removed') return 'Removed the saved Trello key.';
   if (action === 'trello.tested') return 'Tested the Trello connection' + (d.memberName ? ' (' + d.memberName + ')' : '') + '.';
@@ -104,7 +105,7 @@ async function activityList(businessId) {
      ${auditWhere ? auditWhere + ' AND' : 'WHERE'} a.action IN (
        'settings.update', 'integration.recorded', 'integration.connected', 'integration.removed', 'call.sync',
        'trello.credentials_saved', 'trello.credentials_removed', 'trello.tested', 'trello.rules',
-       'trello.card_created', 'trello.card_updated')
+       'trello.card_created', 'trello.card_updated', 'data.export')
      ORDER BY a.created_at DESC LIMIT 20`, params);
 
   const items = [];

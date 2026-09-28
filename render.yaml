@@ -1,4 +1,5 @@
-# Render Blueprint: one free web service (API + control panel) and one free Postgres.
+# Render Blueprint for the pilot: one free web service (API + control panel) and one free Postgres.
+# Production: set the web plan to starter and the database plan to basic. See the README.
 # The service root is the repo so the HTML pages ship with the API.
 # Apply from the Render dashboard: New > Blueprint > this repo.
 services:
@@ -85,4 +86,5 @@ services:
 databases:
   - name: receptwise-db
     plan: free
-    # Free Render Postgres expires 30 days after creation (14-day grace, then deleted). No backups.
+    # Free Render Postgres expires 30 days after creation (grace period, then deleted). No backups.
+    # For production set plan: basic. It does not expire on that 30-day clock.

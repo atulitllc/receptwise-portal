@@ -132,7 +132,7 @@ function request(method, path, { body, cookie: jar, headers } = {}) {
         const text = Buffer.concat(chunks).toString('utf8');
         let json = null;
         try { json = text ? JSON.parse(text) : null; } catch (e) { json = null; }
-        resolve({ status: res.statusCode, json, text, setCookie: res.headers['set-cookie'] || [] });
+        resolve({ status: res.statusCode, json, text, headers: res.headers, setCookie: res.headers['set-cookie'] || [] });
       });
     });
     req.on('error', reject);
@@ -637,5 +637,48 @@ describe('control panel API', () => {
       config.trello.apiKey = '';
       config.trello.token = '';
     }
+  });
+
+  it('lets an admin download clients, settings, calls, and activity', async () => {
+    const anon = await request('GET', '/api/export', { headers: { 'X-RW-Client': '' } });
+    assert.equal(anon.status, 401);
+
+    const created = await request('POST', '/api/users', {
+      cookie,
+      body: { email: 'team@receptwise.example', name: 'Team Member', password: 'team-password-10', role: 'team' }
+    });
+    assert.equal(created.status, 201, created.text);
+    const teamLogin = await request('POST', '/api/auth/login', {
+      body: { email: 'team@receptwise.example', password: 'team-password-10' }
+    });
+    assert.equal(teamLogin.status, 200, teamLogin.text);
+    const teamCookie = cookieFrom(teamLogin.setCookie);
+    const denied = await request('GET', '/api/export', { cookie: teamCookie });
+    assert.equal(denied.status, 403);
+
+    const json = await request('GET', '/api/export?format=json', { cookie });
+    assert.equal(json.status, 200, json.text);
+    assert.match(json.headers['content-disposition'], /receptwise-export-.*\.json/);
+    assert.match(json.headers['content-type'], /json/);
+    const client = json.json.clients.find((item) => item.slug === 'receptwise');
+    assert.ok(client);
+    assert.equal(client.name, 'ReceptWise');
+    assert.ok(json.json.settings.find((item) => item.slug === 'receptwise'));
+    assert.ok(json.json.calls.find((item) => item.caller_name === 'Sam Ortiz' && item.outcome === 'Booked'));
+    assert.ok(json.json.activity.length > 0);
+    const packed = JSON.stringify(json.json);
+    assert.equal(packed.includes('password_hash'), false);
+    assert.equal(packed.includes('token_enc'), false);
+    assert.equal(packed.includes('test-vapi-key'), false);
+    assert.equal(packed.includes('f1f2f3f4f5f6f7f8'), false);
+
+    const sql = await request('GET', '/api/export?format=sql', { cookie });
+    assert.equal(sql.status, 200, sql.text.slice(0, 200));
+    assert.match(sql.headers['content-disposition'], /receptwise-export-.*\.sql/);
+    assert.match(sql.text, /INSERT INTO businesses/);
+    assert.match(sql.text, /INSERT INTO calls/);
+    assert.match(sql.text, /Sam Ortiz/);
+    assert.equal(sql.text.includes('password_hash'), false);
+    assert.equal(sql.text.includes('token_enc'), false);
   });
 });

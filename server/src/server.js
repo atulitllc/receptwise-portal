@@ -16,6 +16,7 @@ const phoneView = require('./phoneView');
 const social = require('./social');
 const meta = require('./integrations/meta');
 const trelloSync = require('./trelloSync');
+const exportData = require('./exportData');
 
 // The portal pages live at the repo root (also published as the GitHub Pages demo).
 const SITE_ROOT = path.join(__dirname, '..', '..');
@@ -107,6 +108,7 @@ function createApp() {
     res.json({ ok: true, signedOut: true });
   }));
 
+  api.get('/export', auth.requireAdmin, wrap(exportData.send));
   api.get('/users', auth.requireAdmin, wrap(async (_req, res) => res.json({ users: await teamList() })));
   api.post('/users', auth.requireAdmin, wrap(async (req, res) => {
     const u = await auth.createUser(req.body || {});

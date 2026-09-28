@@ -1344,13 +1344,25 @@
     var tools = ["Retell for the receptionist and numbers", "Twilio later, for texting", "cal.com and Google or Microsoft calendars", "Resend for email", "Buffer for social posts", "Cloudflare Pages for websites", "Stripe for subscriptions"].map(function (tool) {
       return "<div class='setting-row'><span>" + tool + "</span><span class='pill pending'>Not connected in this prototype</span></div>";
     }).join("");
-    view.innerHTML = '<div class="page-head"><div><h1>Team and settings</h1><p class="sub">You are signed in as an admin, so billing costs are visible.</p></div>' +
+    var admin = !LIVE || (window.RW_LIVE && window.RW_LIVE.user && window.RW_LIVE.user.role === "admin");
+    var exportCard = '<section class="card" style="margin-top:14px"><div class="card-h"><h2>Export data</h2></div><div class="card-b">' +
+      '<p class="help">Download clients, receptionist settings, calls, and activity. Passwords and connected-account tokens are left out. On the free Render database, download this before the 30-day expiry.</p>' +
+      (LIVE && admin
+        ? '<div class="head-actions"><a class="btn btn-primary" href="api/export?format=json">Export data</a><a class="btn" href="api/export?format=sql">Export SQL</a></div>'
+        : LIVE
+          ? '<p class="help">An admin can download the backup.</p>'
+          : '<button class="btn btn-primary" type="button" data-action="export-demo">Export data</button>') +
+      "</div></section>";
+    view.innerHTML = '<div class="page-head"><div><h1>Team and settings</h1><p class="sub">' +
+      (admin ? "You are signed in as an admin, so billing costs are visible." : "Team access. Billing costs and data export stay with an admin.") +
+      '</p></div>' +
       '<button class="btn btn-primary" type="button" data-action="invite-open">Invite teammate</button></div>' +
       '<div class="split"><section class="card"><div class="card-h"><h2>Team</h2></div><div class="table-wrap"><table class="data"><thead><tr><th>Person</th><th>Role</th><th>Access</th></tr></thead><tbody>' +
       rows + "</tbody></table></div></section><div class='stack'><section class='card'><div class='card-h'><h2>Company</h2></div><div class='card-b'><dl class='kvs'>" +
       "<dt>Legal entity</dt><dd>[Placeholder]</dd><dt>Product</dt><dd>ReceptWise</dd><dt>Texting</dt><dd>Off until the final company tax ID is on file</dd><dt>Calls</dt><dd>Can be set up now</dd></dl></div></section>" +
       '<section class="card"><div class="card-h"><h2>Notifications</h2></div><div class="card-b">' + switches + "</div></section></div></div>" +
-      '<section class="card" style="margin-top:14px"><div class="card-h"><h2>Planned connections</h2></div><div class="card-b">' + tools + "</div></section>" + legal();
+      '<section class="card" style="margin-top:14px"><div class="card-h"><h2>Planned connections</h2></div><div class="card-b">' + tools + "</div></section>" +
+      exportCard + legal();
   }
 
   function renderLogin() {
@@ -1816,6 +1828,7 @@
     "trello-test": function () { toast("This demo does not connect Trello."); },
     "trello-save-rules": function () { toast("This demo does not connect Trello."); },
     "trello-remove": function () { toast("This demo does not connect Trello."); },
+    "export-demo": function () { toast("This demo does not export data."); },
     "remove-integration": function () {
       toast("This demo does not connect accounts.");
     },

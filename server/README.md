@@ -26,6 +26,7 @@ Session cookie plus `X-RW-Client: portal` on every write. `GET /api/health` does
 | POST | `/api/auth/login`, `/api/auth/logout` | bcrypt, rate limit, httpOnly cookie |
 | GET | `/api/me` | current user |
 | GET | `/api/health` | database check |
+| GET | `/api/export?format=json` or `sql` | admin only. Clients, settings, calls, bookings, activity. No passwords or third-party tokens. |
 | GET | `/api/metrics?business=slug` | calls today/7d/30d, answered, missed, duration, bookings, recent calls, activity |
 | POST | `/api/calls/sync` | backfill from Vapi for every linked business |
 | GET | `/api/businesses/:slug/phone` | live Vapi/Twilio status, or a not-connected state |
