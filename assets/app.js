@@ -353,7 +353,7 @@
   }
 
   function legal() {
-    return '<p class="page-legal">ReceptWise is a product of [Placeholder]. Sample data. Nothing here places a real call or charges a card.</p>';
+    return '<p class="page-legal">ReceptWise is a product of Receptwise. Sample data. Nothing here places a real call or charges a card.</p>';
   }
 
   function later(ms, fn) {
@@ -784,7 +784,7 @@
         }).join("") + "</div></div>";
     } else if (wizard.step === 8) {
       var ready = wizard.legalName.trim() && wizard.taxId.trim();
-      body = '<div class="banner warn">Texting stays off until the final company tax ID is on file. The legal entity during development is [Placeholder]. Calls can go ahead. Email is used instead of texts.</div>' +
+      body = '<div class="banner warn">Texting stays off until the final company tax ID is on file. The legal entity during development is Receptwise. Calls can go ahead. Email is used instead of texts.</div>' +
         field("Legal name", input("legalName", wizard.legalName, "Name that will be registered")) +
         field("Tax ID", input("taxId", wizard.taxId, "Collected now, not submitted")) +
         field("Sample text", textarea("sampleSms", wizard.sampleSms)) +
@@ -1271,7 +1271,7 @@
       '<button class="btn btn-primary" type="button" data-action="invite-open">Invite teammate</button></div>' +
       '<div class="split"><section class="card"><div class="card-h"><h2>Team</h2></div><div class="table-wrap"><table class="data"><thead><tr><th>Person</th><th>Role</th><th>Access</th></tr></thead><tbody>' +
       rows + "</tbody></table></div></section><div class='stack'><section class='card'><div class='card-h'><h2>Company</h2></div><div class='card-b'><dl class='kvs'>" +
-      "<dt>Legal entity</dt><dd>[Placeholder]</dd><dt>Product</dt><dd>ReceptWise</dd><dt>Texting</dt><dd>Off until the final company tax ID is on file</dd><dt>Calls</dt><dd>Can be set up now</dd></dl></div></section>" +
+      "<dt>Legal entity</dt><dd>Receptwise</dd><dt>Product</dt><dd>ReceptWise</dd><dt>Texting</dt><dd>Off until the final company tax ID is on file</dd><dt>Calls</dt><dd>Can be set up now</dd></dl></div></section>" +
       '<section class="card"><div class="card-h"><h2>Notifications</h2></div><div class="card-b">' + switches + "</div></section></div></div>" +
       '<section class="card" style="margin-top:14px"><div class="card-h"><h2>Planned connections</h2></div><div class="card-b">' + tools + "</div></section>" + legal();
   }
@@ -1285,7 +1285,7 @@
       "<h1>Set up a local business without leaving the panel.</h1><p>Phone, receptionist, calendar, reviews, social, and website. One monthly bill for the owner.</p><ul>" +
       "<li>Answer calls, book the open time, and hand off when someone asks for a person</li><li>Forward the number already on the door, or buy a new one</li>" +
       "<li>Track every connection: confirmed, pending, or needs action</li></ul>" +
-      '<p class="legal">ReceptWise is a product of [Placeholder]. This is a clickable prototype with sample data.</p></section>' +
+      '<p class="legal">ReceptWise is a product of Receptwise. This is a clickable prototype with sample data.</p></section>' +
       '<section class="login-panel"><form class="login-card" data-action="login"><h2>Sign in</h2><p class="sub">Internal team only.</p>' +
       '<div class="field" style="margin-top:16px"><label for="email">Email</label><input class="ctrl" id="email" name="email" type="email" autocomplete="username" placeholder="you@receptwise.example"></div>' +
       '<div class="field"><label for="password">Password</label><input class="ctrl" id="password" name="password" type="password" autocomplete="current-password" placeholder="Any password"></div>' +
@@ -1388,7 +1388,7 @@
       toast("Sign-in link ready. The owner approves access. We never ask for a password.");
     },
     "texting-status": function () {
-      openModal("Texting registration", "<p><strong>Pending.</strong> Brand and campaign registration stay off until the final company tax ID is on file. During development the legal entity is [Placeholder].</p><p>The receptionist can still answer calls. Email goes out instead of texts.</p>",
+      openModal("Texting registration", "<p><strong>Pending.</strong> Brand and campaign registration stay off until the final company tax ID is on file. During development the legal entity is Receptwise.</p><p>The receptionist can still answer calls. Email goes out instead of texts.</p>",
         '<button class="btn btn-primary" type="button" data-action="close-modal">Close</button>');
     },
     back: function () {
