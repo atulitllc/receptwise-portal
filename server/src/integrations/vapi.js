@@ -12,7 +12,12 @@ async function call(method, path, body) {
   assertConfigured();
   const res = await fetch(config.vapi.baseUrl + path, {
     method,
-    headers: { Authorization: 'Bearer ' + config.vapi.apiKey, 'Content-Type': 'application/json' },
+    headers: {
+      Authorization: 'Bearer ' + config.vapi.apiKey,
+      'Content-Type': 'application/json',
+      // Vapi rejects some default clients with HTTP 403.
+      'User-Agent': config.userAgent
+    },
     body: body ? JSON.stringify(body) : undefined
   });
   const text = await res.text();
@@ -100,7 +105,10 @@ function assistantPayload(biz, opts = {}) {
 }
 
 function createAssistant(payload) { return call('POST', '/assistant', payload); }
+function getAssistant(id) { return call('GET', '/assistant/' + encodeURIComponent(id)); }
 function updateAssistant(id, payload) { return call('PATCH', '/assistant/' + encodeURIComponent(id), payload); }
+function listPhoneNumbers() { return call('GET', '/phone-number'); }
+function getPhoneNumber(id) { return call('GET', '/phone-number/' + encodeURIComponent(id)); }
 
 // Import a Twilio number we own into Vapi and attach the assistant for inbound calls.
 function importTwilioNumber({ e164, assistantId, name, serverUrl }) {
@@ -139,6 +147,6 @@ function listCalls({ assistantId, limit = 50 } = {}) {
 }
 
 module.exports = {
-  assertConfigured, assistantPayload, systemPrompt, createAssistant, updateAssistant,
-  importTwilioNumber, attachAssistantToNumber, placeTestCall, listCalls, toE164
+  assertConfigured, assistantPayload, systemPrompt, createAssistant, getAssistant, updateAssistant,
+  listPhoneNumbers, getPhoneNumber, importTwilioNumber, attachAssistantToNumber, placeTestCall, listCalls, toE164
 };

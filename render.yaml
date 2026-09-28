@@ -1,12 +1,13 @@
-# Render Blueprint for the live ReceptWise control panel.
-# NOT applied yet. Creating these (both on the free plan) waits until PK's keys are in hand.
+# Render Blueprint for the pilot: one free web service (API + control panel) and one free Postgres.
+# Production: set the web plan to starter and the database plan to basic. See the README.
+# The service root is the repo so the HTML pages ship with the API.
+# Apply from the Render dashboard: New > Blueprint > this repo.
 services:
   - type: web
     name: receptwise-portal
     runtime: node
     plan: free
-    rootDir: server
-    buildCommand: npm ci --omit=dev
+    buildCommand: npm run build
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:
@@ -16,28 +17,74 @@ services:
         fromDatabase:
           name: receptwise-db
           property: connectionString
-      - key: VAPI_WEBHOOK_SECRET
-        generateValue: true
-      - key: SMS_ENABLED
-        value: "false"
+      # Render also injects PORT and RENDER_EXTERNAL_URL. Do not set PORT here.
+      - key: APP_BASE_URL
+        sync: false
+      - key: SESSION_DAYS
+        value: "14"
       - key: ADMIN_EMAIL
         sync: false
       - key: ADMIN_PASSWORD
         sync: false
+      - key: ADMIN_NAME
+        sync: false
+      - key: SMS_ENABLED
+        value: "false"
       - key: TWILIO_ACCOUNT_SID
         sync: false
       - key: TWILIO_AUTH_TOKEN
         sync: false
+      - key: TWILIO_AREA_CODES
+        value: "781,339,617"
       - key: VAPI_API_KEY
         sync: false
+      - key: VAPI_BASE_URL
+        value: https://api.vapi.ai
+      - key: VAPI_WEBHOOK_SECRET
+        generateValue: true
       - key: VAPI_VOICE_ID
         sync: false
+      - key: VAPI_VOICE_PROVIDER
+        value: 11labs
+      - key: VAPI_VOICE_MODEL
+        value: eleven_flash_v2_5
+      - key: VAPI_MODEL
+        value: gpt-4.1
+      - key: VAPI_TRANSCRIBER_MODEL
+        value: nova-3
       - key: VAPI_CALENDAR_TOOL_IDS
-        sync: false
+        value: f3655080-9833-42a8-888e-f93ff7d2bfde,ccf9a444-6462-4513-95c4-955c73142285
+      - key: VAPI_MAX_CALL_SECONDS
+        value: "600"
+      - key: VAPI_ASSISTANT_ID
+        value: c3c8899c-e42d-494b-bf47-3af37f942341
+      - key: VAPI_PHONE_NUMBER_ID
+        value: 60a44606-c827-4f01-b381-852e247a8003
+      - key: PILOT_PHONE_E164
+        value: "+17817057179"
       - key: TRANSFER_TO_NUMBER
+        sync: false
+      - key: TOKEN_ENCRYPTION_KEY
+        generateValue: true
+      - key: META_APP_ID
+        sync: false
+      - key: META_APP_SECRET
+        sync: false
+      - key: META_GRAPH_VERSION
+        value: v21.0
+      - key: META_LOGIN_CONFIG_ID
+        sync: false
+      - key: META_REDIRECT_URI
+        sync: false
+      - key: META_OAUTH_SCOPES
+        value: pages_show_list,pages_read_engagement,instagram_basic,business_management
+      - key: TRELLO_API_KEY
+        sync: false
+      - key: TRELLO_TOKEN
         sync: false
 
 databases:
   - name: receptwise-db
     plan: free
-    # Free Render Postgres expires 30 days after creation (14-day grace, then deleted). No backups.
+    # Free Render Postgres expires 30 days after creation (grace period, then deleted). No backups.
+    # For production set plan: basic. It does not expire on that 30-day clock.

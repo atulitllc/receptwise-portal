@@ -7,11 +7,18 @@ process.env.VAPI_API_KEY = '';
 process.env.TWILIO_ACCOUNT_SID = '';
 process.env.TWILIO_AUTH_TOKEN = '';
 process.env.TRANSFER_TO_NUMBER = '+16175550100';
+process.env.TOKEN_ENCRYPTION_KEY = 'unit-test-key';
 
 const vapi = require('../src/integrations/vapi');
 const twilio = require('../src/integrations/twilio');
-const { extractBookings } = require('../src/calls');
+const { extractBookings, classifyCall, bookingFromStructured } = require('../src/calls');
 const { slugify } = require('../src/businesses');
+const settings = require('../src/settings');
+const { presentNumbers } = require('../src/phoneView');
+const cryptoBox = require('../src/cryptoBox');
+const meta = require('../src/integrations/meta');
+const { buildCard } = require('../src/trelloSync');
+const { authorizeUrl, redact } = require('../src/integrations/trello');
 
 test('integrations are inert without keys', async () => {
   assert.throws(() => vapi.assertConfigured(), /VAPI_API_KEY/);
@@ -51,4 +58,115 @@ test('bookings are extracted from calendar tool calls only', () => {
 test('slugify', () => {
   assert.equal(slugify('Harbor & Rye'), 'harbor-and-rye');
   assert.equal(slugify(''), 'business');
+});
+
+test('settings push keeps the existing prompt and writes the managed section', () => {
+  const current = {
+    id: 'asst',
+    firstMessage: 'Old greeting',
+    model: {
+      provider: 'openai',
+      model: 'gpt-4.1',
+      toolIds: ['f3655080-9833-42a8-888e-f93ff7d2bfde'],
+      tools: [{ type: 'function', function: { name: 'check_availability' } }],
+      messages: [{ role: 'system', content: 'You are the virtual receptionist. Keep this sentence.' }]
+    }
+  };
+  const saved = settings.validateSettings({
+    greeting: 'Thanks for calling ReceptWise. This call may be recorded.',
+    businessName: 'ReceptWise',
+    hours: 'Mon–Fri 9:00 AM – 6:00 PM',
+    timezone: 'America/New_York',
+    appointmentMinutes: 30,
+    bookableDays: ['mon', 'tue', 'wed', 'thu', 'fri'],
+    bookableStart: '09:00',
+    bookableEnd: '18:00',
+    bufferMinutes: 15,
+    transferNumber: '7815550199',
+    faqs: [{ q: 'What do you do?', a: 'We answer the phone and book demos.' }],
+    notes: 'Pilot client.'
+  });
+  const patch = settings.buildAssistantPatch(current, saved, {
+    serverUrl: 'https://panel.example.test/webhooks/vapi',
+    webhookSecret: 'sek'
+  });
+  assert.equal(patch.firstMessage, saved.greeting);
+  const system = patch.model.messages[0].content;
+  assert.match(system, /Keep this sentence\./);
+  assert.match(system, /<!-- receptwise:managed -->/);
+  assert.match(system, /Appointment length: 30 minutes/);
+  assert.match(system, /Buffer between appointments: 15 minutes/);
+  assert.match(system, /Bookable days: Monday, Tuesday, Wednesday, Thursday, Friday/);
+  assert.match(system, /What do you do\?/);
+  assert.equal(patch.model.toolIds[0], 'f3655080-9833-42a8-888e-f93ff7d2bfde');
+  assert.equal(patch.model.tools.find((t) => t.type === 'function').function.name, 'check_availability');
+  assert.equal(patch.model.tools.find((t) => t.type === 'transferCall').destinations[0].number, '+17815550199');
+  assert.equal(patch.server.url, 'https://panel.example.test/webhooks/vapi');
+  assert.equal(patch.server.headers['X-Vapi-Secret'], 'sek');
+  const again = settings.buildAssistantPatch({ model: { messages: [{ role: 'system', content: system }] } }, saved);
+  assert.equal(again.model.messages[0].content.split('receptwise:managed').length, 3);
+});
+
+test('phone view is honest when Vapi is not connected', () => {
+  const view = presentNumbers({
+    vapiConfigured: false,
+    twilioConfigured: false,
+    missingVapi: ['VAPI_API_KEY'],
+    missingTwilio: ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN'],
+    localRows: [{ e164: '+17817057179', vapi_phone_number_id: '60a44606-c827-4f01-b381-852e247a8003', provider: 'twilio' }],
+    assistant: { vapi_assistant_id: 'c3c8899c-e42d-494b-bf47-3af37f942341' }
+  });
+  assert.equal(view.state, 'not_connected');
+  assert.deepEqual(view.missing, ['VAPI_API_KEY']);
+  assert.equal(view.numbers[0].status, 'not_verified');
+  assert.equal(view.numbers[0].statusLabel, 'Not connected');
+  assert.match(view.testCallHint, /781/);
+});
+
+test('call classification and structured bookings', () => {
+  assert.equal(classifyCall({ status: 'ended', endedReason: 'customer-ended-call' }).answered, true);
+  assert.equal(classifyCall({ status: 'ended', endedReason: 'customer-did-not-answer' }).missed, true);
+  const booking = bookingFromStructured({ structuredData: { booking_confirmed: true, booked_start: '2026-10-06T15:00:00-04:00', name: 'Sam Ortiz' } });
+  assert.equal(booking.customer, 'Sam Ortiz');
+  assert.equal(bookingFromStructured({ structuredData: { booking_confirmed: false, booked_start: '2026-10-06T15:00:00-04:00' } }), null);
+});
+
+test('token encryption round trip', () => {
+  const enc = cryptoBox.encrypt('page-token-value');
+  assert.notEqual(enc, 'page-token-value');
+  assert.equal(cryptoBox.decrypt(enc), 'page-token-value');
+});
+
+test('trello card text names the caller and links back to the call', () => {
+  const card = buildCard({
+    kind: 'booking',
+    callerName: 'Sam Ortiz',
+    phone: '(617) 555-0199',
+    business: 'Harbor Cafe',
+    timeLabel: 'Mon, Oct 6, 3:00 PM',
+    summary: 'Booked a demo.',
+    callUrl: 'https://panel.example.test/dashboard.html?call=abc'
+  });
+  assert.equal(card.name, 'Booking · Sam Ortiz');
+  assert.match(card.desc, /Harbor Cafe/);
+  assert.match(card.desc, /Booked a demo\./);
+  assert.match(card.desc, /https:\/\/panel\.example\.test\/dashboard\.html\?call=abc/);
+  const missed = buildCard({ kind: 'missed_call', callerName: '', callId: 'call-1' });
+  assert.equal(missed.name, 'Missed call · Unknown caller');
+  assert.match(missed.desc, /Call id: call-1/);
+  const url = authorizeUrl('my-key');
+  assert.match(url, /^https:\/\/trello\.com\/1\/authorize\?/);
+  assert.match(url, /expiration=never/);
+  assert.match(url, /response_type=token/);
+  assert.match(url, /key=my-key/);
+  assert.equal(redact('https://api.trello.com/1/members/me?key=secret&token=tok'), 'https://api.trello.com/1/members/me?key=redacted&token=redacted');
+});
+
+test('meta dialog URL uses the business login config when set', () => {
+  const previous = process.env.META_LOGIN_CONFIG_ID;
+  process.env.META_LOGIN_CONFIG_ID = '';
+  const url = meta.authUrl('state-1');
+  assert.match(url, /facebook\.com/);
+  assert.match(url, /state=state-1/);
+  if (previous) process.env.META_LOGIN_CONFIG_ID = previous;
 });

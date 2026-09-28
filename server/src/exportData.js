@@ -1,0 +1,187 @@
+'use strict';
+// Admin download of the data worth keeping when the free Render database expires.
+// Passwords, session tokens, and third-party tokens are never included.
+const db = require('./db');
+const audit = require('./audit');
+
+const SECRET_KEY = /^(api[-_]?key|token|token_enc|access_token|refresh_token|password|password_hash|secret|authorization)$/i;
+
+function scrub(value) {
+  if (Array.isArray(value)) return value.map(scrub);
+  if (value instanceof Date) return value.toISOString();
+  if (value && typeof value === 'object') {
+    const out = {};
+    Object.keys(value).forEach((key) => {
+      if (SECRET_KEY.test(key)) return;
+      out[key] = scrub(value[key]);
+    });
+    return out;
+  }
+  return value;
+}
+
+function quote(value) {
+  return "'" + String(value).replace(/'/g, "''") + "'";
+}
+
+function sqlValue(value) {
+  if (value == null) return 'NULL';
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
+  if (value instanceof Date) return quote(value.toISOString()) + '::timestamptz';
+  if (typeof value === 'object') return quote(JSON.stringify(scrub(value))) + '::jsonb';
+  return quote(value);
+}
+
+function insert(table, columns, row) {
+  const values = columns.map((column) => sqlValue(row[column]));
+  return 'INSERT INTO ' + table + ' (' + columns.join(', ') + ') VALUES (' + values.join(', ') + ');\n';
+}
+
+async function snapshot() {
+  const [businesses, setup, phones, assistants, integrations, calls, bookings, activity] = await Promise.all([
+    db.query(
+      `SELECT id, slug, name, category, city, timezone, status, pilot, profile, receptionist, created_at, updated_at
+       FROM businesses ORDER BY id`
+    ),
+    db.query(
+      `SELECT business_id, step_key, status, detail, owner, is_next, data, updated_at
+       FROM business_setup ORDER BY business_id, step_key`
+    ),
+    db.query(
+      `SELECT id, business_id, e164, provider, twilio_sid, vapi_phone_number_id, sms_enabled, status, created_at
+       FROM phone_numbers ORDER BY id`
+    ),
+    db.query(
+      `SELECT business_id, vapi_assistant_id, config, published_at, updated_at
+       FROM assistants ORDER BY business_id`
+    ),
+    db.query(
+      `SELECT id, business_id, provider, account_label, handle, profile_url, external_id, status, meta, created_at, updated_at
+       FROM integrations ORDER BY id`
+    ),
+    db.query(
+      `SELECT id, business_id, vapi_call_id, direction, from_number, to_number, status, started_at, ended_at,
+              duration_sec, ended_reason, outcome, summary, caller_name, caller_email, caller_business, call_type,
+              booking_confirmed, booked_start, answered, structured, recording_url, created_at
+       FROM calls ORDER BY id`
+    ),
+    db.query(
+      `SELECT id, business_id, call_id, starts_at, customer, service, source, status, google_event_id, created_at
+       FROM bookings ORDER BY id`
+    ),
+    db.query(
+      `SELECT a.id, a.created_at, a.action, a.detail, a.business_id, b.slug AS business_slug, u.email AS actor_email
+       FROM audit_log a
+       LEFT JOIN businesses b ON b.id = a.business_id
+       LEFT JOIN users u ON u.id = a.user_id
+       ORDER BY a.id`
+    )
+  ]);
+
+  const byBusiness = (rows, key) => {
+    const map = {};
+    rows.forEach((row) => {
+      const id = row[key];
+      if (!map[id]) map[id] = [];
+      map[id].push(scrub(row));
+    });
+    return map;
+  };
+  const setupBy = byBusiness(setup.rows, 'business_id');
+  const phonesBy = byBusiness(phones.rows, 'business_id');
+  const integrationsBy = byBusiness(integrations.rows, 'business_id');
+  const assistantsBy = {};
+  assistants.rows.forEach((row) => { assistantsBy[row.business_id] = scrub(row); });
+
+  const clients = businesses.rows.map((row) => {
+    const client = scrub(row);
+    client.setup = setupBy[row.id] || [];
+    client.phoneNumbers = phonesBy[row.id] || [];
+    client.assistant = assistantsBy[row.id] || null;
+    client.integrations = integrationsBy[row.id] || [];
+    return client;
+  });
+  const settings = businesses.rows.map((row) => ({
+    businessId: row.id,
+    slug: row.slug,
+    name: row.name,
+    timezone: row.timezone,
+    receptionist: scrub(row.receptionist || {})
+  }));
+
+  return {
+    exportedAt: new Date().toISOString(),
+    product: 'ReceptWise',
+    note: 'Clients, receptionist settings, calls, bookings, and activity. Passwords, session tokens, and third-party tokens are omitted. Use pg_dump for a full database backup.',
+    clients,
+    settings,
+    calls: calls.rows.map(scrub),
+    bookings: bookings.rows.map(scrub),
+    activity: activity.rows.map(scrub)
+  };
+}
+
+function toSql(data) {
+  let sql = '-- ReceptWise data export ' + data.exportedAt + '\n';
+  sql += '-- ' + data.note + '\n';
+  sql += '-- Apply after migrations have created the tables. This file does not restore sign-in or connected-account tokens.\n';
+  sql += 'BEGIN;\n';
+  data.clients.forEach((client) => {
+    sql += insert('businesses', ['id', 'slug', 'name', 'category', 'city', 'timezone', 'status', 'pilot', 'profile', 'receptionist', 'created_at', 'updated_at'], client);
+    (client.setup || []).forEach((step) => { sql += insert('business_setup', ['business_id', 'step_key', 'status', 'detail', 'owner', 'is_next', 'data', 'updated_at'], step); });
+    (client.phoneNumbers || []).forEach((phone) => {
+      sql += insert('phone_numbers', ['id', 'business_id', 'e164', 'provider', 'twilio_sid', 'vapi_phone_number_id', 'sms_enabled', 'status', 'created_at'], phone);
+    });
+    if (client.assistant && client.assistant.vapi_assistant_id) {
+      sql += insert('assistants', ['business_id', 'vapi_assistant_id', 'config', 'published_at', 'updated_at'], client.assistant);
+    }
+    (client.integrations || []).forEach((item) => {
+      sql += insert('integrations', ['id', 'business_id', 'provider', 'account_label', 'handle', 'profile_url', 'external_id', 'status', 'meta', 'created_at', 'updated_at'], item);
+    });
+  });
+  data.calls.forEach((call) => {
+    sql += insert('calls', ['id', 'business_id', 'vapi_call_id', 'direction', 'from_number', 'to_number', 'status', 'started_at', 'ended_at', 'duration_sec', 'ended_reason', 'outcome', 'summary', 'caller_name', 'caller_email', 'caller_business', 'call_type', 'booking_confirmed', 'booked_start', 'answered', 'structured', 'recording_url', 'created_at'], call);
+  });
+  data.bookings.forEach((booking) => {
+    sql += insert('bookings', ['id', 'business_id', 'call_id', 'starts_at', 'customer', 'service', 'source', 'status', 'google_event_id', 'created_at'], booking);
+  });
+  data.activity.forEach((item) => {
+    sql += insert('audit_log', ['id', 'created_at', 'action', 'detail', 'business_id'], {
+      id: item.id,
+      created_at: item.created_at,
+      action: item.action,
+      detail: item.detail || {},
+      business_id: item.business_id
+    });
+  });
+  ['businesses', 'phone_numbers', 'calls', 'bookings', 'integrations', 'audit_log'].forEach((table) => {
+    sql += "SELECT setval('" + table + "_id_seq', GREATEST((SELECT COALESCE(MAX(id), 1) FROM " + table + '), 1));\n';
+  });
+  sql += 'COMMIT;\n';
+  return sql;
+}
+
+async function send(req, res) {
+  const format = String((req.query && req.query.format) || 'json').toLowerCase();
+  if (format !== 'json' && format !== 'sql') {
+    const err = new Error('Use format=json or format=sql.');
+    err.status = 400;
+    throw err;
+  }
+  const data = await snapshot();
+  await audit.record(req.user.id, null, 'data.export', { format });
+  const day = data.exportedAt.slice(0, 10);
+  res.set('Cache-Control', 'no-store');
+  if (format === 'sql') {
+    res.set('Content-Type', 'application/sql; charset=utf-8');
+    res.set('Content-Disposition', 'attachment; filename="receptwise-export-' + day + '.sql"');
+    res.send(toSql(data));
+    return;
+  }
+  res.set('Content-Type', 'application/json; charset=utf-8');
+  res.set('Content-Disposition', 'attachment; filename="receptwise-export-' + day + '.json"');
+  res.send(JSON.stringify(data, null, 2));
+}
+
+module.exports = { snapshot, toSql, send, scrub };

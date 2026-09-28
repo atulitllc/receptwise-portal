@@ -20,6 +20,7 @@ async function call(method, path, form) {
     method,
     headers: {
       Authorization: 'Basic ' + auth,
+      'User-Agent': config.userAgent,
       ...(form ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {})
     },
     body: form ? new URLSearchParams(form).toString() : undefined
@@ -53,4 +54,12 @@ async function buyNumber(e164, friendlyName) {
   return { sid: body.sid, e164: body.phone_number };
 }
 
-module.exports = { searchLocalNumbers, buyNumber, assertConfigured };
+async function findNumber(e164) {
+  const params = new URLSearchParams({ PhoneNumber: e164, PageSize: '1' });
+  const body = await call('GET', '/IncomingPhoneNumbers.json?' + params.toString());
+  const n = (body.incoming_phone_numbers || [])[0];
+  if (!n) return null;
+  return { sid: n.sid, e164: n.phone_number, status: n.status || 'in-use', friendly: n.friendly_name || '' };
+}
+
+module.exports = { searchLocalNumbers, buyNumber, findNumber, assertConfigured };

@@ -42,7 +42,15 @@
     attention: "Needs attention",
     connected: "Connected",
     pending: "Pending",
-    action: "Needs action"
+    action: "Needs action",
+    recorded: "Recorded",
+    coming_soon: "Coming soon",
+    not_connected: "Not connected",
+    saved: "Key saved",
+    not_verified: "Not connected",
+    attached: "Attached",
+    unassigned: "Not attached",
+    missing_on_vapi: "Not connected"
   };
 
   var wizard = defaultWizard();
@@ -477,11 +485,17 @@
       add: "Add business",
       client: "Business",
       billing: "Billing and plans",
-      team: "Team and settings"
+      team: "Team and settings",
+      phone: "Phone",
+      settings: "Receptionist",
+      integrations: "Integrations"
     };
     var groups = [
       ["Main", [
         ["dashboard.html", "Overview", "dashboard"],
+        ["phone.html", "Phone", "phone"],
+        ["settings.html", "Receptionist", "settings"],
+        ["integrations.html", "Integrations", "integrations"],
         ["clients.html", "Businesses", "clients"],
         ["add.html", "Add business", "add"]
       ]],
@@ -553,6 +567,10 @@
   }
 
   function renderDashboard(view) {
+    if (LIVE && window.RW_DATA && window.RW_DATA.metrics) {
+      renderLiveDashboard(view);
+      return;
+    }
     var list = ordered(allBusinesses());
     var calls = list.reduce(function (sum, b) { return sum + (b.callsToday || 0); }, 0);
     var bookings = list.reduce(function (sum, b) { return sum + (b.bookingsToday || 0); }, 0);
@@ -1130,6 +1148,7 @@
       }).join("") + "</select></div>" +
       '<p class="help">Languages: ' + esc((b.languages || ["English"]).join(", ")) + ". The assistant always offers a person.</p>" +
       capRow + '<p class="help">Texting a link stays off until registration is approved.</p>' +
+      (LIVE ? '<p class="help"><a href="settings.html?id=' + encodeURIComponent(b.id) + '">Edit greeting, hours, and booking rules</a></p>' : '') +
       '<div class="head-actions"><button class="btn" type="button" data-action="save-draft" data-id="' + esc(b.id) + '">Save draft</button>' +
       '<button class="btn btn-primary" type="button" data-action="publish-receptionist" data-id="' + esc(b.id) + '">Publish</button>' +
       '<button class="btn" type="button" data-action="run-greeting-test" data-id="' + esc(b.id) + '">Test call</button></div>' +
@@ -1180,7 +1199,8 @@
     var posts = (b.posts || []).map(function (post) {
       return "<tr><td>" + esc(post.when) + "</td><td>" + esc(post.channel) + "</td><td>" + esc(post.text) + "</td><td>" + esc(post.status) + "</td></tr>";
     }).join("");
-    return '<section class="card" style="margin-bottom:12px"><div class="card-b">' + row("Facebook", accounts.facebook) + row("Instagram", accounts.instagram) + row("Google Business Profile", accounts.gbp) +
+    return (LIVE ? '<p class="help" style="margin-bottom:8px"><a href="integrations.html?id=' + encodeURIComponent(b.id) + '">Open Integrations for a real connection status</a></p>' : '') +
+      '<section class="card" style="margin-bottom:12px"><div class="card-b">' + row("Facebook", accounts.facebook) + row("Instagram", accounts.instagram) + row("Google Business Profile", accounts.gbp) +
       '<button class="btn" type="button" data-action="new-post" data-id="' + esc(b.id) + '">New draft</button></div></section>' +
       '<section class="card"><div class="card-h"><h2>Posts</h2></div><div class="table-wrap"><table class="data"><thead><tr><th>When</th><th>Channel</th><th>Post</th><th>Status</th></tr></thead><tbody>' +
       (posts || '<tr><td colspan="4"><div class="empty">No posts yet.</div></td></tr>') + "</tbody></table></div></section>";
@@ -1324,13 +1344,25 @@
     var tools = ["Retell for the receptionist and numbers", "Twilio later, for texting", "cal.com and Google or Microsoft calendars", "Resend for email", "Buffer for social posts", "Cloudflare Pages for websites", "Stripe for subscriptions"].map(function (tool) {
       return "<div class='setting-row'><span>" + tool + "</span><span class='pill pending'>Not connected in this prototype</span></div>";
     }).join("");
-    view.innerHTML = '<div class="page-head"><div><h1>Team and settings</h1><p class="sub">You are signed in as an admin, so billing costs are visible.</p></div>' +
+    var admin = !LIVE || (window.RW_LIVE && window.RW_LIVE.user && window.RW_LIVE.user.role === "admin");
+    var exportCard = '<section class="card" style="margin-top:14px"><div class="card-h"><h2>Export data</h2></div><div class="card-b">' +
+      '<p class="help">Download clients, receptionist settings, calls, and activity. Passwords and connected-account tokens are left out. On the free Render database, download this before the 30-day expiry.</p>' +
+      (LIVE && admin
+        ? '<div class="head-actions"><a class="btn btn-primary" href="api/export?format=json">Export data</a><a class="btn" href="api/export?format=sql">Export SQL</a></div>'
+        : LIVE
+          ? '<p class="help">An admin can download the backup.</p>'
+          : '<button class="btn btn-primary" type="button" data-action="export-demo">Export data</button>') +
+      "</div></section>";
+    view.innerHTML = '<div class="page-head"><div><h1>Team and settings</h1><p class="sub">' +
+      (admin ? "You are signed in as an admin, so billing costs are visible." : "Team access. Billing costs and data export stay with an admin.") +
+      '</p></div>' +
       '<button class="btn btn-primary" type="button" data-action="invite-open">Invite teammate</button></div>' +
       '<div class="split"><section class="card"><div class="card-h"><h2>Team</h2></div><div class="table-wrap"><table class="data"><thead><tr><th>Person</th><th>Role</th><th>Access</th></tr></thead><tbody>' +
       rows + "</tbody></table></div></section><div class='stack'><section class='card'><div class='card-h'><h2>Company</h2></div><div class='card-b'><dl class='kvs'>" +
       "<dt>Legal entity</dt><dd>[Placeholder]</dd><dt>Product</dt><dd>ReceptWise</dd><dt>Texting</dt><dd>Off until the final company tax ID is on file</dd><dt>Calls</dt><dd>Can be set up now</dd></dl></div></section>" +
       '<section class="card"><div class="card-h"><h2>Notifications</h2></div><div class="card-b">' + switches + "</div></section></div></div>" +
-      '<section class="card" style="margin-top:14px"><div class="card-h"><h2>Planned connections</h2></div><div class="card-b">' + tools + "</div></section>" + legal();
+      '<section class="card" style="margin-top:14px"><div class="card-h"><h2>Planned connections</h2></div><div class="card-b">' + tools + "</div></section>" +
+      exportCard + legal();
   }
 
   function renderLogin() {
@@ -1778,6 +1810,31 @@
       openModal("Invite a teammate", '<div class="field"><label>Name</label><input class="ctrl" id="inv-name"></div><div class="field"><label>Email</label><input class="ctrl" id="inv-email" type="email"></div><div class="field"><label>Role</label><select class="ctrl" id="inv-role"><option>Team</option><option>Admin</option></select></div>',
         '<button class="btn" type="button" data-action="close-modal">Cancel</button><button class="btn btn-primary" type="button" data-action="invite-save">Send invite</button>');
     },
+    "add-faq": function () {
+      var list = document.getElementById("faq-list");
+      if (list) list.insertAdjacentHTML("beforeend", faqRow("", ""));
+    },
+    "remove-faq": function (el) {
+      var row = el.closest(".faq-row");
+      if (row) row.remove();
+    },
+    "save-settings": function () {
+      toast("This demo does not update the live receptionist.");
+    },
+    "record-integration": function () {
+      toast("This demo does not connect accounts.");
+    },
+    "trello-save-key": function () { toast("This demo does not connect Trello."); },
+    "trello-test": function () { toast("This demo does not connect Trello."); },
+    "trello-save-rules": function () { toast("This demo does not connect Trello."); },
+    "trello-remove": function () { toast("This demo does not connect Trello."); },
+    "export-demo": function () { toast("This demo does not export data."); },
+    "remove-integration": function () {
+      toast("This demo does not connect accounts.");
+    },
+    "sync-dashboard": function () {
+      toast("This demo does not sync calls.");
+    },
     "invite-save": function () {
       var nameEl = document.getElementById("inv-name");
       var emailEl = document.getElementById("inv-email");
@@ -1906,6 +1963,87 @@
         toast("Calling you now. The result shows up in the call log.");
       }).catch(function (err) { el.disabled = false; liveFail(err); });
     },
+    "save-settings": function (el) {
+      var id = el.dataset.id || pageBizId();
+      el.disabled = true;
+      api("PUT", "api/businesses/" + encodeURIComponent(id) + "/settings", readSettings()).then(function (data) {
+        el.disabled = false;
+        if (data.pushed) toast("Saved and pushed to the live receptionist.");
+        else toast("Saved. Not pushed" + (data.missing ? ": " + data.missing.join(", ") : "") + ".");
+        renderSettings(document.getElementById("view"));
+      }).catch(function (err) {
+        el.disabled = false;
+        toast(err.message);
+      });
+    },
+    "record-integration": function (el) {
+      var provider = el.dataset.provider;
+      var handle = document.getElementById("handle-" + provider);
+      var url = document.getElementById("url-" + provider);
+      api("PUT", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/integrations/" + encodeURIComponent(provider), {
+        handle: handle ? handle.value : "",
+        profileUrl: url ? url.value : ""
+      }).then(function () {
+        toast("Handle recorded. This is not a live connection.");
+        renderIntegrations(document.getElementById("view"));
+      }).catch(liveFail);
+    },
+    "remove-integration": function (el) {
+      api("DELETE", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/integrations/" + encodeURIComponent(el.dataset.provider)).then(function () {
+        toast("Removed.");
+        renderIntegrations(document.getElementById("view"));
+      }).catch(liveFail);
+    },
+    "trello-save-key": function (el) {
+      var key = document.getElementById("trello-key");
+      var token = document.getElementById("trello-token");
+      api("PUT", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/trello/credentials", {
+        apiKey: key ? key.value : "",
+        token: token ? token.value : ""
+      }).then(function () {
+        if (key) key.value = "";
+        if (token) token.value = "";
+        toast("Key saved on the server.");
+        renderIntegrations(document.getElementById("view"));
+      }).catch(liveFail);
+    },
+    "trello-test": function (el) {
+      el.disabled = true;
+      api("POST", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/trello/test").then(function (data) {
+        toast(data.memberName ? "Connected as " + data.memberName + "." : "Connection succeeded.");
+        renderIntegrations(document.getElementById("view"));
+      }).catch(function (err) { el.disabled = false; liveFail(err); });
+    },
+    "trello-save-rules": function (el) {
+      var board = document.getElementById("trello-board");
+      var list = document.getElementById("trello-list");
+      var booking = document.getElementById("trello-booking");
+      var missed = document.getElementById("trello-missed");
+      api("PUT", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/trello", {
+        boardId: board ? board.value : "",
+        listId: list ? list.value : "",
+        rules: { booking: !!(booking && booking.checked), missedCall: !!(missed && missed.checked) }
+      }).then(function () {
+        toast("Board and rules saved.");
+        renderIntegrations(document.getElementById("view"));
+      }).catch(liveFail);
+    },
+    "trello-remove": function (el) {
+      api("DELETE", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/trello/credentials").then(function () {
+        toast("Saved Trello key removed.");
+        renderIntegrations(document.getElementById("view"));
+      }).catch(liveFail);
+    },
+    "sync-dashboard": function (el) {
+      el.disabled = true;
+      api("POST", "api/calls/sync", {}).then(function (data) {
+        toast("Synced " + (data.synced || 0) + " calls.");
+        location.reload();
+      }).catch(function (err) {
+        el.disabled = false;
+        liveFail(err);
+      });
+    },
     "live-sync-calls": function (el) {
       el.disabled = true;
       api("POST", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/calls/sync").then(function (data) {
@@ -1953,6 +2091,15 @@
       reader.readAsText(el.files[0]);
     } else if (el.dataset.action === "bill-file") {
       toast(el.files && el.files[0] ? "Bill attached for the port request." : "No file selected.");
+    } else if (el.dataset.action === "trello-board") {
+      if (!LIVE) return;
+      var listBox = document.getElementById("trello-list");
+      if (listBox) listBox.innerHTML = '<option value="">Loading lists…</option>';
+      loadTrelloLists(el.dataset.id || pageBizId(), el.value, "");
+    } else if (el.dataset.action === "go-business") {
+      var pageName = document.body.dataset.page || "phone";
+      var file = pageName === "settings" ? "settings.html" : pageName === "integrations" ? "integrations.html" : "phone.html";
+      location.href = file + "?id=" + encodeURIComponent(el.value);
     } else if (el.dataset.action === "cap-toggle") {
       var business = findBiz(el.dataset.id);
       if (!business) return;
@@ -1977,6 +2124,347 @@
     }
     storageSet("rw_session", JSON.stringify({ email: email, name: nameFromEmail(email) }));
     location.href = "dashboard.html";
+  }
+
+  function pageBizId() {
+    var params = new URLSearchParams(location.search);
+    var id = params.get("id");
+    if (id && findBiz(id)) return id;
+    var list = ordered(allBusinesses());
+    var pilot = list.filter(function (b) { return b.pilot; })[0];
+    return (pilot || list[0] || {}).id || "";
+  }
+
+  function bizSelect() {
+    var id = pageBizId();
+    var opts = ordered(allBusinesses()).map(function (b) {
+      return '<option value="' + esc(b.id) + '"' + (b.id === id ? " selected" : "") + ">" + esc(b.name) + (b.pilot ? " · Pilot" : "") + "</option>";
+    }).join("");
+    return '<label class="field" style="margin:0;min-width:220px"><span class="help">Business</span><select class="ctrl" data-action="go-business" aria-label="Business">' + opts + "</select></label>";
+  }
+
+  function clock(sec) {
+    if (sec == null || sec === "") return "—";
+    var s = Math.max(0, Math.round(Number(sec)));
+    return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  }
+
+  function renderLiveDashboard(view) {
+    var m = window.RW_DATA.metrics || {};
+    var calls = m.calls || {};
+    var answered = m.answered || {};
+    var missed = m.missed || {};
+    var avg = m.avgDurationSec || {};
+    var bookings = m.bookings || {};
+    var ints = (window.RW_LIVE && window.RW_LIVE.integrations) || {};
+    var banner = ints.vapi ? "" : '<div class="banner warn">Vapi is not connected. Set VAPI_API_KEY to sync calls and push receptionist settings. Calls already stored here still count.</div>';
+    var focusCall = "";
+    try { focusCall = new URLSearchParams(location.search).get("call") || ""; } catch (e) { focusCall = ""; }
+    var recent = (m.recentCalls || []).map(function (call) {
+      var who = call.callerName ? esc(call.callerName) + "<div class='help'>" + esc(call.from) + "</div>" : esc(call.from);
+      var rec = /^https?:\/\//.test(call.recordingUrl || "") ? '<a href="' + esc(call.recordingUrl) + '" target="_blank" rel="noopener">Play</a>' : "—";
+      var tone = call.outcome === "Booked" ? "connected" : call.outcome === "Missed" ? "action" : "neutral";
+      var focus = focusCall && focusCall === call.id ? ' class="call-focus"' : "";
+      return "<tr" + focus + "><td>" + esc(call.time) + "</td><td>" + who + "</td><td>" + esc(call.businessName || "") + "</td><td>" +
+        '<span class="pill ' + tone + '">' + esc(call.outcome || "—") + "</span>" +
+        "</td><td>" + esc(call.duration || "—") + "</td><td>" + esc(call.summary || "—") + "</td><td>" + rec + "</td></tr>";
+    }).join("");
+    var activity = (m.activity || []).map(function (item) {
+      return "<div class='setting-row'><div><strong>" + esc(item.businessName || "ReceptWise") + "</strong><div class='help'>" + esc(item.text) + "</div></div><span class='help'>" + esc(item.time) + "</span></div>";
+    }).join("");
+    var list = ordered(allBusinesses());
+    var rows = list.map(function (b) {
+      return "<tr><td><a href='client.html?id=" + encodeURIComponent(b.id) + "'>" + esc(b.name) + "</a>" + (b.pilot ? " <span class='pill pilot'>Pilot</span>" : "") +
+        "</td><td>" + (b.callsToday || 0) + "</td><td>" + (b.bookingsToday || 0) + "</td><td>" + esc(phoneStatus(b)) + "</td><td><a href='phone.html?id=" +
+        encodeURIComponent(b.id) + "'>Phone</a> · <a href='settings.html?id=" + encodeURIComponent(b.id) + "'>Settings</a></td></tr>";
+    }).join("");
+    view.innerHTML = '<div class="page-head"><div><h1>Overview</h1><p class="sub">' + esc(todayLabel()) + " · calls stored for the businesses you manage</p></div>" +
+      '<div class="head-actions"><button class="btn" type="button" data-action="sync-dashboard">Sync from Vapi</button><a class="btn btn-primary" href="settings.html">Receptionist settings</a></div></div>' +
+      banner +
+      '<section class="stats"><article class="stat"><em>Calls today</em><b>' + (calls.today || 0) + "</b><span>7 days " + (calls.d7 || 0) + " · 30 days " + (calls.d30 || 0) + "</span></article>" +
+      '<article class="stat"><em>Answered, 7 days</em><b>' + (answered.d7 || 0) + "</b><span>Missed " + (missed.d7 || 0) + " · today " + (answered.today || 0) + " answered, " + (missed.today || 0) + " missed</span></article>" +
+      '<article class="stat"><em>Avg length, 7 days</em><b>' + clock(avg.d7) + "</b><span>Answered calls · today " + clock(avg.today) + "</span></article>" +
+      '<article class="stat"><em>Bookings</em><b>' + (bookings.today || 0) + "</b><span>Confirmed on the call · 7 days " + (bookings.d7 || 0) + " · 30 days " + (bookings.d30 || 0) + "</span></article></section>" +
+      '<section class="card"><div class="card-h"><h2>Recent calls</h2></div><div class="table-wrap"><table class="data"><thead><tr><th>When</th><th>Caller</th><th>Business</th><th>Outcome</th><th>Duration</th><th>Summary</th><th>Recording</th></tr></thead><tbody>' +
+      (recent || '<tr><td colspan="7"><div class="empty">No calls yet. Point the Vapi server URL at this app, or use Sync from Vapi once the API key is set.</div></td></tr>') +
+      "</tbody></table></div></section>" +
+      '<div class="grid-main" style="margin-top:14px"><section class="card"><div class="card-h"><h2>Businesses</h2></div><div class="table-wrap"><table class="data"><thead><tr><th>Business</th><th>Calls today</th><th>Bookings today</th><th>Phone</th><th></th></tr></thead><tbody>' +
+      (rows || '<tr><td colspan="5"><div class="empty">No businesses yet.</div></td></tr>') +
+      '</tbody></table></div></section><section class="card"><div class="card-h"><h2>Activity</h2></div><div class="card-b">' +
+      (activity || '<div class="empty">Calls, bookings, settings changes, and integration changes show up here.</div>') +
+      "</div></section></div>" + legal();
+    var focused = view.querySelector(".call-focus");
+    if (focused && focused.scrollIntoView) focused.scrollIntoView({ block: "center" });
+  }
+
+  function phoneStateBanner(data) {
+    if (!data) return "";
+    if (data.state === "connected") return '<div class="banner ok">The receptionist number is attached.</div>';
+    if (data.state === "error") return '<div class="banner bad">' + esc(data.error || "The phone provider could not be reached.") + "</div>";
+    var missing = (data.missing || []).concat(data.twilio === "ready" ? [] : (data.twilioMissing || []));
+    var extra = missing.length ? " Missing: " + missing.join(", ") + "." : "";
+    return '<div class="banner warn">Not connected.' + esc(extra) + " Live status appears after the keys are set. Nothing here is a guessed connection.</div>";
+  }
+
+  function renderPhone(view) {
+    var id = pageBizId();
+    if (!LIVE) {
+      view.innerHTML = '<div class="page-head"><div><h1>Phone</h1><p class="sub">Numbers attached to the receptionist</p></div></div>' +
+        '<div class="card"><div class="empty">This demo does not call the phone provider. On the live control panel this page shows the number, the assistant it is attached to, and a clear not-connected state when keys are missing.</div></div>' + legal();
+      return;
+    }
+    if (!id) {
+      view.innerHTML = '<div class="card"><div class="empty">Add a business before checking a number.</div></div>' + legal();
+      return;
+    }
+    view.innerHTML = '<p class="sub">Checking the phone line…</p>';
+    api("GET", "api/businesses/" + encodeURIComponent(id) + "/phone").then(function (data) {
+      var cards = (data.numbers || []).map(function (n) {
+        var assistant = n.assistantName || (n.assistantId ? n.assistantId : "No assistant");
+        return '<article class="card" style="margin-bottom:12px"><div class="card-b"><div class="phone-num">' + esc(n.pretty || n.e164) + "</div>" +
+          "<p class='sub'>" + esc(n.e164 || "") + " · " + esc(n.provider || "twilio") + "</p>" +
+          "<div class='pills' style='margin:8px 0'>" + pill(n.status) + "<span class='help'>" + esc(n.statusLabel || "") + "</span></div>" +
+          "<dl class='kvs'><dt>Assistant</dt><dd>" + esc(assistant) + "</dd>" +
+          (n.twilioStatus ? "<dt>Twilio</dt><dd>" + esc(n.twilioStatus) + "</dd>" : "") +
+          "</dl><p class='help'>" + esc(n.detail || "") + "</p></div></article>";
+      }).join("");
+      view.innerHTML = '<div class="page-head"><div><h1>Phone</h1><p class="sub">The line attached to this receptionist</p></div>' + bizSelect() + "</div>" +
+        phoneStateBanner(data) +
+        (data.testCallHint ? '<div class="note calm">' + esc(data.testCallHint) + "</div>" : "") +
+        (cards || '<div class="card"><div class="empty">No number is on file for this business.</div></div>') + legal();
+    }).catch(function (err) {
+      view.innerHTML = '<div class="banner bad">' + esc(err.message) + "</div>" + legal();
+    });
+  }
+
+  var DAY_OPTS = [["mon", "Mon"], ["tue", "Tue"], ["wed", "Wed"], ["thu", "Thu"], ["fri", "Fri"], ["sat", "Sat"], ["sun", "Sun"]];
+  var ZONE_OPTS = [
+    ["America/New_York", "Eastern Time"], ["America/Chicago", "Central Time"], ["America/Denver", "Mountain Time"],
+    ["America/Los_Angeles", "Pacific Time"], ["America/Phoenix", "Arizona Time"], ["America/Anchorage", "Alaska Time"],
+    ["Pacific/Honolulu", "Hawaii Time"]
+  ];
+
+  function faqRow(q, a) {
+    return '<div class="faq-row"><textarea class="ctrl faq-q" placeholder="Question">' + esc(q || "") + '</textarea><textarea class="ctrl faq-a" placeholder="Answer">' +
+      esc(a || "") + '</textarea><button class="btn btn-sm" type="button" data-action="remove-faq">Remove</button></div>';
+  }
+
+  function settingsForm(payload, id) {
+    var s = (payload && payload.settings) || {};
+    var days = s.bookableDays || [];
+    var dayHtml = DAY_OPTS.map(function (d) {
+      return '<label class="day"><input type="checkbox" name="day" value="' + d[0] + '"' + (days.indexOf(d[0]) >= 0 ? " checked" : "") + "> " + d[1] + "</label>";
+    }).join("");
+    var zones = ZONE_OPTS.map(function (z) {
+      return '<option value="' + z[0] + '"' + (s.timezone === z[0] ? " selected" : "") + ">" + z[1] + "</option>";
+    }).join("");
+    var faqs = (s.faqs && s.faqs.length ? s.faqs : [{ q: "", a: "" }]).map(function (f) { return faqRow(f.q, f.a); }).join("");
+    var pushed = payload && payload.lastPushedAt ? '<p class="help">Last pushed ' + esc(String(payload.lastPushedAt)) + ".</p>" : "";
+    var hint = payload && payload.testCall ? payload.testCall.hint : "";
+    return '<div class="page-head"><div><h1>Receptionist</h1><p class="sub">Saved here, then pushed to the live assistant when Vapi is connected.</p></div>' + bizSelect() + "</div>" +
+      (hint ? '<div class="note calm">' + esc(hint) + "</div>" : "") +
+      (payload && payload.vapiConfigured ? '<div class="banner ok">Vapi is connected. Saving updates the live greeting and instructions.</div>' : '<div class="banner warn">Vapi is not connected. Settings save in the panel and push after VAPI_API_KEY is set.</div>') +
+      '<section class="card"><div class="card-b">' +
+      '<div class="field"><label for="set-name">Business name</label><input class="ctrl" id="set-name" value="' + esc(s.businessName || "") + '"></div>' +
+      '<div class="field"><label for="set-greeting">Greeting</label><textarea class="ctrl" id="set-greeting">' + esc(s.greeting || "") + "</textarea><div class='help'>This is the first thing the receptionist says.</div></div>" +
+      '<div class="grid-2"><div class="field"><label for="set-hours">Business hours</label><input class="ctrl" id="set-hours" value="' + esc(s.hours || "") + '"></div>' +
+      '<div class="field"><label for="set-timezone">Time zone</label><select class="ctrl" id="set-timezone">' + zones + "</select></div></div>" +
+      "<h3>Booking</h3>" +
+      '<div class="grid-3"><div class="field"><label for="set-length">Appointment length (minutes)</label><input class="ctrl" id="set-length" type="number" min="5" max="240" value="' + esc(s.appointmentMinutes || 20) + '"></div>' +
+      '<div class="field"><label for="set-buffer">Buffer (minutes)</label><input class="ctrl" id="set-buffer" type="number" min="0" max="120" value="' + esc(s.bufferMinutes || 0) + '"></div>' +
+      '<div class="field"><label for="set-transfer">Transfer to a person</label><input class="ctrl" id="set-transfer" value="' + esc(s.transferNumber || "") + '" placeholder="Optional"></div></div>' +
+      '<div class="field"><label>Bookable days</label><div class="days">' + dayHtml + "</div></div>" +
+      '<div class="grid-2"><div class="field"><label for="set-start">Bookable from</label><input class="ctrl" id="set-start" type="time" value="' + esc(s.bookableStart || "09:00") + '"></div>' +
+      '<div class="field"><label for="set-end">Bookable until</label><input class="ctrl" id="set-end" type="time" value="' + esc(s.bookableEnd || "18:00") + '"></div></div>' +
+      '<div class="field"><label>FAQ</label><div id="faq-list">' + faqs + '</div><button class="btn btn-sm" type="button" data-action="add-faq">Add FAQ</button></div>' +
+      '<div class="field"><label for="set-notes">Notes</label><textarea class="ctrl" id="set-notes" placeholder="Anything else the receptionist should know">' + esc(s.notes || "") + "</textarea></div>" +
+      pushed +
+      '<div class="head-actions"><button class="btn btn-primary" type="button" data-action="save-settings" data-id="' + esc(id) + '">Save and push</button></div>' +
+      "</div></section>" + legal();
+  }
+
+  function renderSettings(view) {
+    var id = pageBizId();
+    if (!LIVE) {
+      var sample = findBiz(id);
+      view.innerHTML = settingsForm({
+        settings: {
+          businessName: sample ? sample.name : "",
+          greeting: sample ? sample.greeting : "",
+          hours: sample ? sample.hours : "",
+          timezone: "America/Los_Angeles",
+          appointmentMinutes: 20,
+          bufferMinutes: 0,
+          bookableDays: ["mon", "tue", "wed", "thu", "fri"],
+          bookableStart: "09:00",
+          bookableEnd: "18:00",
+          transferNumber: sample ? sample.transfer : "",
+          faqs: sample ? sample.faqs : [],
+          notes: ""
+        },
+        vapiConfigured: false,
+        testCall: { hint: "This demo does not place a call." }
+      }, id) ;
+      return;
+    }
+    if (!id) {
+      view.innerHTML = '<div class="card"><div class="empty">Add a business before editing the receptionist.</div></div>' + legal();
+      return;
+    }
+    view.innerHTML = '<p class="sub">Loading settings…</p>';
+    api("GET", "api/businesses/" + encodeURIComponent(id) + "/settings").then(function (data) {
+      view.innerHTML = settingsForm(data, id);
+    }).catch(function (err) {
+      view.innerHTML = '<div class="banner bad">' + esc(err.message) + "</div>" + legal();
+    });
+  }
+
+  function readSettings() {
+    var days = [];
+    document.querySelectorAll('input[name="day"]:checked').forEach(function (el) { days.push(el.value); });
+    var faqs = [];
+    document.querySelectorAll("#faq-list .faq-row").forEach(function (row) {
+      var q = row.querySelector(".faq-q");
+      var a = row.querySelector(".faq-a");
+      if ((q && q.value.trim()) || (a && a.value.trim())) faqs.push({ q: q ? q.value.trim() : "", a: a ? a.value.trim() : "" });
+    });
+    var len = document.getElementById("set-length");
+    var buf = document.getElementById("set-buffer");
+    return {
+      businessName: (document.getElementById("set-name") || {}).value || "",
+      greeting: (document.getElementById("set-greeting") || {}).value || "",
+      hours: (document.getElementById("set-hours") || {}).value || "",
+      timezone: (document.getElementById("set-timezone") || {}).value || "",
+      appointmentMinutes: Number(len && len.value),
+      bufferMinutes: Number(buf && buf.value),
+      bookableDays: days,
+      bookableStart: (document.getElementById("set-start") || {}).value || "",
+      bookableEnd: (document.getElementById("set-end") || {}).value || "",
+      transferNumber: (document.getElementById("set-transfer") || {}).value || "",
+      faqs: faqs,
+      notes: (document.getElementById("set-notes") || {}).value || ""
+    };
+  }
+
+  function trelloGuide(open) {
+    return '<details class="card guide"' + (open ? " open" : "") + '><summary>How to get your Trello key and token</summary><div class="card-b"><ol>' +
+      '<li>Sign in to Trello and open <a href="https://trello.com/power-ups/admin" target="_blank" rel="noopener">Power-Up admin</a>.</li>' +
+      "<li>Create a Power-Up, or open one you already use for this panel. Copy its API key.</li>" +
+      '<li>Open the key\'s authorize link in the same browser. Put your key in place of YOUR_KEY:' +
+      '<div class="code">https://trello.com/1/authorize?expiration=never&amp;name=ReceptWise&amp;scope=read,write&amp;response_type=token&amp;key=YOUR_KEY</div>' +
+      "Allow access. Trello shows a token. Copy it. Treat the token like a password.</li>" +
+      "<li>Paste the API key and the token below and save them. Or set TRELLO_API_KEY and TRELLO_TOKEN on the server instead of pasting. A pasted key is encrypted on the server and is not shown again.</li>" +
+      "<li>Click Test connection. Choose the board and the list where cards should go. Turn on cards for new bookings, missed calls, or both, and save.</li>" +
+      "</ol></div></details>";
+  }
+
+  function optionList(items, selected, blank) {
+    var html = '<option value="">' + esc(blank) + "</option>";
+    (items || []).forEach(function (item) {
+      html += '<option value="' + esc(item.id) + '"' + (item.id === selected ? " selected" : "") + ">" + esc(item.name) + "</option>";
+    });
+    return html;
+  }
+
+  function loadTrelloLists(id, boardId, selected) {
+    var list = document.getElementById("trello-list");
+    if (!list || !boardId) return;
+    api("GET", "api/businesses/" + encodeURIComponent(id) + "/trello/boards/" + encodeURIComponent(boardId) + "/lists").then(function (data) {
+      list.innerHTML = optionList(data.lists, selected, "Choose a list");
+    }).catch(liveFail);
+  }
+
+  function loadTrelloBoards(id, trello) {
+    if (!trello || !trello.configured) return;
+    api("GET", "api/businesses/" + encodeURIComponent(id) + "/trello/boards").then(function (data) {
+      var board = document.getElementById("trello-board");
+      if (!board) return;
+      board.innerHTML = optionList(data.boards, trello.boardId, "Choose a board");
+      if (trello.boardId) loadTrelloLists(id, trello.boardId, trello.listId);
+    }).catch(liveFail);
+  }
+
+  function trelloCard(trello, id) {
+    var t = trello || { status: "not_connected", statusLabel: "Not connected", rules: { booking: true, missedCall: true } };
+    var who = t.memberName ? esc(t.memberName) + (t.memberUsername ? " (@" + esc(t.memberUsername) + ")" : "") : esc(t.statusLabel || "Not connected");
+    var note = '<p class="help">Paste a key and token, or set TRELLO_API_KEY and TRELLO_TOKEN on the server. Nothing is marked connected until Test connection succeeds.</p>';
+    if (t.status === "connected" && t.boardName && t.listName) note = '<p class="help">Cards go to ' + esc(t.boardName) + " / " + esc(t.listName) + ".</p>";
+    else if (t.status === "connected") note = '<p class="help">Choose a board and a list so new bookings and missed calls can open cards.</p>';
+    else if (t.source === "env") note = '<p class="help">Using the server key. Test the connection, then choose a board and a list.</p>';
+    else if (t.source === "saved") note = '<p class="help">The key is saved on the server and is not shown here. Test the connection before choosing a board.</p>';
+    var keyHolder = t.source === "saved" ? "Saved. Paste a new key to replace it." : "From the Power-Up admin page";
+    var tokenHolder = t.source === "saved" ? "Saved. Paste a new token to replace it." : "From the authorize link";
+    var remove = t.source === "saved" ? ' <button class="btn btn-sm" type="button" data-action="trello-remove" data-id="' + esc(id) + '">Remove saved key</button>' : "";
+    var rules = t.rules || {};
+    return trelloGuide(!t.configured) +
+      '<article class="card int-card"><div class="card-b"><div class="setting-row"><div><h2>Trello</h2><div class="help">' + who + "</div></div>" + pill(t.status || "not_connected") + "</div>" +
+      note +
+      '<div class="grid-2"><div class="field"><label for="trello-key">API key</label><input class="ctrl" id="trello-key" type="password" autocomplete="off" placeholder="' + esc(keyHolder) + '"></div>' +
+      '<div class="field"><label for="trello-token">Token</label><input class="ctrl" id="trello-token" type="password" autocomplete="off" placeholder="' + esc(tokenHolder) + '"></div></div>' +
+      '<div class="head-actions"><button class="btn btn-sm" type="button" data-action="trello-save-key" data-id="' + esc(id) + '">Save key</button>' +
+      '<button class="btn btn-primary btn-sm" type="button" data-action="trello-test" data-id="' + esc(id) + '">Test connection</button>' + remove + "</div>" +
+      '<div class="grid-2" style="margin-top:12px"><div class="field"><label for="trello-board">Board</label><select class="ctrl" id="trello-board" data-action="trello-board" data-id="' + esc(id) + '"><option value="' + esc(t.boardId || "") + '">' + esc(t.boardName || "Load boards after a successful test") + "</option></select></div>" +
+      '<div class="field"><label for="trello-list">List</label><select class="ctrl" id="trello-list"><option value="' + esc(t.listId || "") + '">' + esc(t.listName || "Choose a board first") + "</option></select></div></div>" +
+      '<div class="checks"><label class="day"><input type="checkbox" id="trello-booking"' + (rules.booking !== false ? " checked" : "") + "> Create a card for each new booking</label>" +
+      '<label class="day"><input type="checkbox" id="trello-missed"' + (rules.missedCall !== false ? " checked" : "") + "> Create a card for each missed call</label></div>" +
+      '<button class="btn btn-sm" type="button" data-action="trello-save-rules" data-id="' + esc(id) + '">Save board and rules</button>' +
+      '<p class="help">A booking card is updated when the time or summary changes. A missed-call card is created once. The key and token stay on the server.</p>' +
+      "</div></article>";
+  }
+
+  function integrationCard(account, id) {
+    var soon = account.status === "coming_soon";
+    var manual = "";
+    if (!soon && account.status !== "connected") {
+      manual = '<div class="grid-2"><div class="field"><label>Handle</label><input class="ctrl" id="handle-' + esc(account.provider) + '" value="' + esc(account.handle || "") + '" placeholder="@name"></div>' +
+        '<div class="field"><label>Profile URL</label><input class="ctrl" id="url-' + esc(account.provider) + '" value="' + esc(account.profileUrl || "") + '" placeholder="https://"></div></div>' +
+        '<button class="btn btn-sm" type="button" data-action="record-integration" data-id="' + esc(id) + '" data-provider="' + esc(account.provider) + '">Save handle</button>';
+    }
+    var remove = account.status === "connected" || account.status === "recorded"
+      ? ' <button class="btn btn-sm" type="button" data-action="remove-integration" data-id="' + esc(id) + '" data-provider="' + esc(account.provider) + '">Remove</button>' : "";
+    var connect = account.canConnect
+      ? '<a class="btn btn-primary btn-sm" href="api/integrations/meta/start?business=' + encodeURIComponent(id) + '">Connect with Meta</a> ' : "";
+    var note = soon ? '<p class="help">Not available yet.</p>'
+      : account.provider === "google_business" ? '<p class="help">Google sign-in is not available yet. A saved listing is a note, not a connection.</p>'
+      : account.status === "recorded" ? '<p class="help">Recorded by the team. This is not an authorized connection.</p>'
+      : "";
+    return '<article class="card int-card"><div class="card-b"><div class="setting-row"><div><h2>' + esc(account.label) + '</h2><div class="help">' +
+      esc(account.accountName || account.statusLabel || "") + "</div></div>" + pill(account.status) + "</div>" + note +
+      '<div class="head-actions">' + connect + remove + "</div>" + manual + "</div></article>";
+  }
+
+  function renderIntegrations(view) {
+    var id = pageBizId();
+    var params = new URLSearchParams(location.search);
+    var flash = params.get("connected") ? '<div class="banner ok">Meta returned a connection. The account name below is what the provider sent.</div>' : "";
+    if (params.get("error")) flash = '<div class="banner bad">' + esc(params.get("error")) + "</div>";
+    if (!LIVE) {
+      view.innerHTML = '<div class="page-head"><div><h1>Integrations</h1><p class="sub">Social accounts for this business</p></div></div>' +
+        '<div class="banner warn">Needs Meta app setup on the live control panel. This demo does not connect Instagram, Facebook, Google, or Trello.</div>' +
+        trelloGuide(true) +
+        '<article class="card int-card"><div class="card-b"><h2>Trello</h2><p class="help">Not connected. This demo does not store a key or open cards.</p></div></article>' +
+        '<article class="card int-card"><div class="card-b"><h2>Instagram</h2><p class="help">Not connected</p></div></article>' +
+        '<article class="card int-card"><div class="card-b"><h2>Facebook</h2><p class="help">Not connected</p></div></article>' +
+        '<article class="card int-card"><div class="card-b"><h2>Google Business Profile</h2><p class="help">Not connected</p></div></article>' +
+        '<article class="card int-card"><div class="card-b"><h2>LinkedIn, X, TikTok, YouTube</h2>' + pill("coming_soon") + "<p class='help'>Coming soon.</p></div></article>" + legal();
+      return;
+    }
+    if (!id) {
+      view.innerHTML = '<div class="card"><div class="empty">Add a business before connecting accounts.</div></div>' + legal();
+      return;
+    }
+    view.innerHTML = '<p class="sub">Loading integrations…</p>';
+    api("GET", "api/businesses/" + encodeURIComponent(id) + "/integrations").then(function (data) {
+      var setup = "";
+      if (!data.metaApp) setup = '<div class="banner warn">Needs Meta app setup. Set META_APP_ID and META_APP_SECRET. You can still record a handle and profile URL. That does not connect the account.</div>';
+      else if (!data.encryption) setup = '<div class="banner warn">The Meta app is set, but TOKEN_ENCRYPTION_KEY is missing, so tokens cannot be stored.</div>';
+      else if (!data.redirectReady) setup = '<div class="banner warn">Set APP_BASE_URL so the Meta redirect URL can be built.</div>';
+      view.innerHTML = '<div class="page-head"><div><h1>Integrations</h1><p class="sub">Connected only after the provider says so</p></div>' + bizSelect() + "</div>" +
+        flash + setup + trelloCard(data.trello, id) + (data.accounts || []).map(function (account) { return integrationCard(account, id); }).join("") + legal();
+      loadTrelloBoards(id, data.trello);
+    }).catch(function (err) {
+      view.innerHTML = '<div class="banner bad">' + esc(err.message) + "</div>" + legal();
+    });
   }
 
   function boot() {
@@ -2004,6 +2492,9 @@
       else if (page === "client") renderClient(view);
       else if (page === "billing") renderBilling(view);
       else if (page === "team") renderTeam(view);
+      else if (page === "phone") renderPhone(view);
+      else if (page === "settings") renderSettings(view);
+      else if (page === "integrations") renderIntegrations(view);
       refreshBell();
     };
     currentRender();

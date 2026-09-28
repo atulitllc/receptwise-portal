@@ -37,10 +37,38 @@ const config = {
     calendarToolIds: (env.VAPI_CALENDAR_TOOL_IDS || '').split(',').map((s) => s.trim()).filter(Boolean),
     maxCallSeconds: Number(env.VAPI_MAX_CALL_SECONDS) || 600
   },
-  transferToNumber: env.TRANSFER_TO_NUMBER || ''
+  transferToNumber: env.TRANSFER_TO_NUMBER || '',
+  // Encrypts OAuth tokens at rest. Integrations refuse to store tokens when this is blank.
+  tokenKey: env.TOKEN_ENCRYPTION_KEY || '',
+  userAgent: 'ReceptWise-Control-Panel/1.0',
+  meta: {
+    appId: env.META_APP_ID || '',
+    appSecret: env.META_APP_SECRET || '',
+    graphVersion: env.META_GRAPH_VERSION || 'v21.0',
+    // Facebook Login for Business configuration id. When set, the dialog uses config_id
+    // instead of a raw scope list.
+    loginConfigId: env.META_LOGIN_CONFIG_ID || '',
+    redirectUri: env.META_REDIRECT_URI || '',
+    scopes: env.META_OAUTH_SCOPES || 'pages_show_list,pages_read_engagement,instagram_basic,business_management'
+  },
+  // Optional server-wide Trello key. A key pasted in the panel is stored encrypted per business and wins over these.
+  trello: {
+    apiKey: env.TRELLO_API_KEY || '',
+    token: env.TRELLO_TOKEN || '',
+    baseUrl: 'https://api.trello.com'
+  },
+  // Pilot client #1 is ReceptWise itself. Ids are overridable; they are not secrets.
+  pilot: {
+    assistantId: env.VAPI_ASSISTANT_ID || 'c3c8899c-e42d-494b-bf47-3af37f942341',
+    assistantName: 'ReceptWise Receptionist',
+    phoneNumberId: env.VAPI_PHONE_NUMBER_ID || '60a44606-c827-4f01-b381-852e247a8003',
+    phoneE164: env.PILOT_PHONE_E164 || '+17817057179'
+  }
 };
 
 config.twilio.configured = Boolean(config.twilio.accountSid && config.twilio.authToken);
 config.vapi.configured = Boolean(config.vapi.apiKey);
+config.meta.configured = Boolean(config.meta.appId && config.meta.appSecret);
+config.trello.configured = Boolean(config.trello.apiKey && config.trello.token);
 
 module.exports = config;
