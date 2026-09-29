@@ -1069,4 +1069,90 @@ describe('control panel API', () => {
     assert.equal(afterList.json.businesses.some((b) => b.id === second.json.business.id), false);
     assert.equal(afterList.json.businesses.some((b) => b.id === draft.id && b.status === 'setup'), true);
   });
+
+  it('stores a Cal.com event type and encrypts the API key', async () => {
+    const cryptoBox = require('../src/cryptoBox');
+    const secret = 'cal_live_test_key_123';
+    const created = await request('POST', '/api/businesses/draft', {
+      cookie,
+      body: {
+        name: 'Cal.com Draft',
+        category: 'Professional services',
+        calendar: { provider: 'calcom', calcomEventTypeId: '20-minute-demo', apiKey: secret },
+        wizard: { calendar: 'cal', calcomEventTypeId: '20-minute-demo', calcomApiKey: secret, step: 4 }
+      }
+    });
+    assert.equal(created.status, 201, created.text);
+    assert.equal(created.json.business.calendar.provider, 'calcom');
+    assert.equal(created.json.business.calendar.calcomEventTypeId, '20-minute-demo');
+    assert.equal(created.json.business.calcomKeySaved, false);
+    assert.equal(JSON.stringify(created.json).includes(secret), false);
+    const slug = created.json.business.id;
+    const storedEarly = await db.query(
+      `SELECT profile, (SELECT count(*) FROM integrations i WHERE i.business_id = businesses.id AND i.provider = 'calcom') AS keys
+       FROM businesses WHERE slug = $1`,
+      [slug]
+    );
+    assert.equal(JSON.stringify(storedEarly.rows[0].profile).includes(secret), false);
+    assert.equal(Number(storedEarly.rows[0].keys), 0);
+
+    const before = httpCalls.length;
+    const saved = await request('PUT', '/api/businesses/' + slug + '/calendar', {
+      cookie,
+      body: { provider: 'calcom', calcomEventTypeId: '20-minute-demo', apiKey: secret }
+    });
+    assert.equal(saved.status, 200, saved.text);
+    assert.equal(saved.json.calcomKeySaved, true);
+    assert.equal(saved.json.calendar.provider, 'calcom');
+    assert.equal(saved.json.calendar.calcomEventTypeId, '20-minute-demo');
+    assert.equal(saved.json.business.calcomKeySaved, true);
+    assert.equal(JSON.stringify(saved.json).includes(secret), false);
+    assert.equal(httpCalls.slice(before).some((c) => /vapi|twilio|cal\.com/i.test(c.url)), false);
+
+    const row = await db.query(
+      `SELECT i.token_enc, b.profile FROM integrations i JOIN businesses b ON b.id = i.business_id
+       WHERE b.slug = $1 AND i.provider = 'calcom'`,
+      [slug]
+    );
+    assert.equal(cryptoBox.decrypt(row.rows[0].token_enc), secret);
+    assert.equal(row.rows[0].profile.calendar.provider, 'calcom');
+    assert.equal(row.rows[0].profile.calendar.calcomEventTypeId, '20-minute-demo');
+    assert.equal(JSON.stringify(row.rows[0].profile).includes(secret), false);
+
+    const renamed = await request('PUT', '/api/businesses/' + slug + '/calendar', {
+      cookie,
+      body: { provider: 'calcom', calcomEventTypeId: 'intro-call' }
+    });
+    assert.equal(renamed.status, 200, renamed.text);
+    assert.equal(renamed.json.calendar.calcomEventTypeId, 'intro-call');
+    assert.equal(renamed.json.calcomKeySaved, true);
+    const still = await db.query(
+      `SELECT i.token_enc FROM integrations i JOIN businesses b ON b.id = i.business_id
+       WHERE b.slug = $1 AND i.provider = 'calcom'`,
+      [slug]
+    );
+    assert.equal(cryptoBox.decrypt(still.rows[0].token_enc), secret);
+
+    const resumed = await request('GET', '/api/businesses/' + slug, { cookie });
+    assert.equal(resumed.json.business.calendar.calcomEventTypeId, 'intro-call');
+    assert.equal(resumed.json.business.calcomKeySaved, true);
+    assert.equal(resumed.json.business.wizard.calcomEventTypeId, '20-minute-demo');
+    assert.equal(JSON.stringify(resumed.json).includes(secret), false);
+
+    const rejected = await request('PUT', '/api/businesses/' + slug + '/calendar', {
+      cookie,
+      body: { provider: 'google', apiKey: secret }
+    });
+    assert.equal(rejected.status, 400, rejected.text);
+    const unchanged = await db.query('SELECT profile FROM businesses WHERE slug = $1', [slug]);
+    assert.equal(unchanged.rows[0].profile.calendar.provider, 'calcom');
+
+    const messages = await request('PUT', '/api/businesses/' + slug + '/calendar', {
+      cookie,
+      body: { provider: 'none' }
+    });
+    assert.equal(messages.status, 200, messages.text);
+    assert.equal(messages.json.calendar.provider, 'none');
+    assert.equal(Object.hasOwn(messages.json.calendar, 'calcomEventTypeId'), false);
+  });
 });

@@ -93,6 +93,10 @@
       testStatus: "idle",
       testNote: "",
       calendar: "google",
+      calcomEventTypeId: "",
+      calcomApiKey: "",
+      calcomKeySaved: false,
+      calcomDemoKey: false,
       greeting: "",
       services: "",
       faqs: "",
@@ -945,17 +949,26 @@
         body += '<div class="banner bad">Not working. The receptionist did not pick up within about 45 seconds.</div><ul><li>The code was typed wrong.</li><li>It was dialed from a different line.</li><li>This phone company needs its website or app instead of a code.</li></ul>';
       }
     } else if (wizard.step === 4) {
-      body = '<div class="choice-grid">' +
-        choice("calendar", "google", "Google Calendar", "Owner approves with one sign-in link.") +
-        choice("calendar", "microsoft", "Microsoft Outlook", "Some work accounts need an IT admin.") +
-        choice("calendar", "cal", "Create a cal.com page", "Free booking page linked to their calendar.") +
-        choice("calendar", "square", "Square Appointments", "Works when they pay for Plus or Premium.") +
-        choice("calendar", "vagaro", "Vagaro", "Needs their paid plan and a short review.") +
-        choice("calendar", "fresha", "Fresha", "No public connection. Text their booking link.") +
-        choice("calendar", "booksy", "Booksy", "No public connection. Text their booking link.") +
-        "</div>" +
-        (wizard.calendar === "fresha" || wizard.calendar === "booksy" ? '<div class="note">The receptionist cannot book inside the call. It texts the business’s own booking link instead.</div>' : '<div class="note calm">After they approve, the panel reads free times, creates a test booking, and deletes it.</div>') +
-        '<button class="btn" type="button" data-action="toast-link">Send the calendar sign-in link</button>';
+      var cal = calendarDescribe(wizard.calendar);
+      body = '<div class="choice-grid">' + calendarChoices().map(function (item) {
+        return choice("calendar", item.id, item.title, item.detail);
+      }).join("") + "</div>";
+      body += '<div data-calendar-panel>';
+      if (cal.steps.length) body += '<ol style="margin:12px 0 12px 1.2em">' + cal.steps.map(function (step) { return "<li>" + esc(step) + "</li>"; }).join("") + "</ol>";
+      if (cal.note) body += '<div class="note' + (cal.signIn ? " calm" : "") + '">' + esc(cal.note) + "</div>";
+      if (cal.keyField) {
+        var keyHelp = wizard.calcomKeySaved
+          ? "A key is already stored encrypted. Paste a new key only to replace it."
+          : (wizard.calcomDemoKey && !LIVE
+            ? "Entered in this session. This demo does not keep the API key."
+            : (LIVE ? "Stored encrypted on the live control panel. It is not shown again." : "The live control panel stores this key encrypted. This demo does not keep it."));
+        body += field("Cal.com API key", '<input class="ctrl" data-field="calcomApiKey" type="password" autocomplete="off" spellcheck="false" value="' + esc(wizard.calcomApiKey || "") + '" placeholder="Paste the API key">', keyHelp);
+      }
+      if (cal.eventTypeField) {
+        body += field("Event type slug or ID", input("calcomEventTypeId", wizard.calcomEventTypeId, "20-minute-demo"), "Type the slug or ID from Cal.com. Event types are not loaded from Cal.com yet.");
+      }
+      if (cal.signIn) body += '<button class="btn" type="button" data-action="toast-link">' + esc(cal.button) + "</button>";
+      body += "</div>";
     } else if (wizard.step === 5) {
       ensureGreeting();
       body = field("Greeting", textarea("greeting", wizard.greeting), "Always says it is the virtual assistant, and that the call may be recorded.") +
@@ -1009,7 +1022,7 @@
           return "Forward " + (wizard.businessNumber || "current number") + " to " + chosen;
         })()],
         ["Test call", wizard.testStatus === "ok" ? "Confirmed" : wizard.testStatus === "miss" ? "Not working" : "Not run"],
-        ["Calendar", wizard.calendar],
+        ["Calendar", calendarTitle(wizard.calendar)],
         ["Voice", wizard.voice + (wizard.spanish ? " · English and Spanish" : " · English")],
         ["Website", (wizard.siteChoice === "keep" ? "Keep " : "Build ") + (wizard.domain || wizard.website || "domain not set")],
         ["Texting", "Pending · held for the company tax ID"]
@@ -1076,8 +1089,51 @@
     });
   }
 
+  function calendarChoices() {
+    return window.RWCalendarStep ? window.RWCalendarStep.choices() : [{ id: "google", title: "Google Calendar", detail: "Owner approves with one sign-in link." }];
+  }
+
+  function calendarDescribe(choice) {
+    if (window.RWCalendarStep) return window.RWCalendarStep.describe(choice);
+    return { provider: "google", signIn: true, title: "Google Calendar", button: "Send the calendar sign-in link", note: "After they approve, the panel reads free times, creates a test booking, and deletes it.", steps: [], keyField: false, eventTypeField: false, checklist: "Sign-in link is ready to send." };
+  }
+
+  function calendarTitle(choice) {
+    return calendarDescribe(choice).title || choice || "Calendar";
+  }
+
+  function calendarSignIn(b) {
+    var provider = b && b.calendar && b.calendar.provider;
+    if (!provider) return true;
+    return calendarDescribe(window.RWCalendarStep ? window.RWCalendarStep.choiceValue(provider) : provider).signIn;
+  }
+
+  function takeCalcomKey() {
+    var key = String(wizard.calcomApiKey || "").trim();
+    wizard.calcomApiKey = "";
+    if (key && !LIVE) wizard.calcomDemoKey = true;
+    return key;
+  }
+
+  function storeCalcomKey(slug, key) {
+    if (!key || !LIVE || !slug) return Promise.resolve(null);
+    var stepApi = window.RWCalendarStep;
+    return api("PUT", "api/businesses/" + encodeURIComponent(slug) + "/calendar", {
+      provider: stepApi ? stepApi.providerId(wizard.calendar) : wizard.calendar,
+      calcomEventTypeId: wizard.calcomEventTypeId || "",
+      apiKey: key
+    }).then(function (data) {
+      wizard.calcomKeySaved = !!data.calcomKeySaved;
+      if (data.business) replaceBiz(data.business);
+      return data;
+    }, function (err) {
+      wizard.calcomApiKey = key;
+      throw err;
+    });
+  }
+
   function wizardSnapshot() {
-    var keep = ["step", "name", "category", "address", "city", "website", "hours", "timezone", "ownerName", "ownerMobile", "ownerEmail", "tier", "plan", "pilot", "multi", "phoneMode", "carrier", "forwardType", "businessNumber", "areaCode", "chosenNumber", "chosenE164", "clientDone", "testStatus", "testNote", "calendar", "greeting", "services", "faqs", "transfer", "voice", "spanish", "facebook", "instagram", "gbp", "siteChoice", "domain", "template", "legalName", "taxId", "sampleSms", "consent", "createdId", "draftId"];
+    var keep = ["step", "name", "category", "address", "city", "website", "hours", "timezone", "ownerName", "ownerMobile", "ownerEmail", "tier", "plan", "pilot", "multi", "phoneMode", "carrier", "forwardType", "businessNumber", "areaCode", "chosenNumber", "chosenE164", "clientDone", "testStatus", "testNote", "calendar", "calcomEventTypeId", "greeting", "services", "faqs", "transfer", "voice", "spanish", "facebook", "instagram", "gbp", "siteChoice", "domain", "template", "legalName", "taxId", "sampleSms", "consent", "createdId", "draftId"];
     var snap = {};
     keep.forEach(function (key) { snap[key] = wizard[key]; });
     snap.step = wizard.step;
@@ -1091,6 +1147,7 @@
     business.status = "draft";
     business.wizardStep = wizard.step;
     business.wizard = wizardSnapshot();
+    if (window.RWCalendarStep) business.calendar = window.RWCalendarStep.profile(wizard.calendar, wizard.calcomEventTypeId);
     business.phone = Object.assign({}, business.phone, { aiNumber: "" });
     business.assistantPublished = false;
     business.setupProgress = [
@@ -1108,6 +1165,7 @@
 
   function saveDraft() {
     if (!canSaveDraft()) return Promise.resolve(null);
+    var key = takeCalcomKey();
     if (!LIVE) {
       if (!wizard.draftId) wizard.draftId = slug(wizard.name.trim());
       var business = draftRecord();
@@ -1124,8 +1182,12 @@
     return api(wizard.draftId ? "PUT" : "POST", url, body).then(function (data) {
       wizard.draftId = data.business.id;
       wizard.saved = true;
+      if (data.business && data.business.calcomKeySaved) wizard.calcomKeySaved = true;
       replaceBiz(data.business);
-      return data.business;
+      return storeCalcomKey(wizard.draftId, key).then(function () { return data.business; });
+    }, function (err) {
+      if (key) wizard.calcomApiKey = key;
+      throw err;
     });
   }
 
@@ -1135,6 +1197,7 @@
     if (wizard.finished || wizard.step === 10) return;
     if (!wizard.name.trim() || !wizard.category) return;
     if (!wizard.draftId && wizard.step === 0) return;
+    var key = takeCalcomKey();
     if (!LIVE) {
       if (!wizard.draftId) wizard.draftId = slug(wizard.name.trim());
       var business = draftRecord();
@@ -1146,14 +1209,28 @@
     var url = wizard.draftId
       ? "api/businesses/" + encodeURIComponent(wizard.draftId) + "/draft"
       : "api/businesses/draft";
+    var headers = { "Content-Type": "application/json", "X-RW-Client": "portal" };
     try {
       fetch(url, {
         method: wizard.draftId ? "PUT" : "POST",
         body: body,
         keepalive: true,
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json", "X-RW-Client": "portal" }
+        headers: headers
       });
+      if (key && wizard.draftId && window.RWCalendarStep) {
+        fetch("api/businesses/" + encodeURIComponent(wizard.draftId) + "/calendar", {
+          method: "PUT",
+          body: JSON.stringify({
+            provider: window.RWCalendarStep.providerId(wizard.calendar),
+            calcomEventTypeId: wizard.calcomEventTypeId || "",
+            apiKey: key
+          }),
+          keepalive: true,
+          credentials: "same-origin",
+          headers: headers
+        });
+      }
     } catch (e) {}
   }
 
@@ -1189,6 +1266,13 @@
     wizard.numberStatus = "idle";
     if (!wizard.name) wizard.name = biz.name || "";
     if (!wizard.category) wizard.category = biz.category || "";
+    if (biz.calendar && biz.calendar.provider && window.RWCalendarStep) {
+      wizard.calendar = window.RWCalendarStep.choiceValue(biz.calendar.provider);
+      if (biz.calendar.calcomEventTypeId) wizard.calcomEventTypeId = biz.calendar.calcomEventTypeId;
+    }
+    wizard.calcomKeySaved = !!biz.calcomKeySaved;
+    wizard.calcomApiKey = "";
+    wizard.calcomDemoKey = false;
     if (wizard.chosenE164) {
       wizard.numberStatus = "ready";
       wizard.numberOptions = [{ e164: wizard.chosenE164, friendly: wizard.chosenNumber || wizard.chosenE164, locality: "Saved choice", region: "" }];
@@ -1242,6 +1326,7 @@
       callsToday: 0,
       bookingsToday: 0,
       status: "setup",
+      calendar: window.RWCalendarStep ? window.RWCalendarStep.profile(wizard.calendar, wizard.calcomEventTypeId) : null,
       pilot: !!wizard.pilot,
       setupFee: wizard.pilot ? 0 : 299,
       card: wizard.pilot ? "Pilot · no card charged" : "Payment link not sent",
@@ -1265,7 +1350,7 @@
       voice: wizard.voice,
       languages: wizard.spanish ? ["English", "Spanish"] : ["English"],
       transfer: wizard.transfer || wizard.ownerMobile || "",
-      capabilities: { book: true, reschedule: true, cancel: true, transfer: true, textLink: false },
+      capabilities: { book: wizard.calendar !== "none", reschedule: wizard.calendar !== "none", cancel: wizard.calendar !== "none", transfer: true, textLink: false },
       services: parseServices(wizard.services),
       faqs: parseFaqs(wizard.faqs),
       blurb: wizard.name.trim() + " · " + wizard.category,
@@ -1287,7 +1372,7 @@
           : { status: "pending", detail: LIVE ? "No AI number yet. Search on Overview, then Buy and connect." : "Number search works in the live control panel.", owner: "Team" },
         test: { status: testStatus, detail: testStatus === "connected" ? "Greeting matched." : testStatus === "action" ? "Test call did not match." : "Test call has not been run.", owner: "Team" },
         forwarding: { status: forwardStatus, detail: forwardDetail, owner: wizard.phoneMode === "forward" ? "Client" : "Team", next: forwardStatus !== "connected" },
-        calendar: { status: "pending", detail: wizard.calendar === "cal" ? "cal.com page drafted. Connect a calendar before going live." : "Sign-in link is ready to send.", owner: "Client" },
+        calendar: { status: "pending", detail: calendarDescribe(wizard.calendar).checklist, owner: wizard.calendar === "none" ? "Team" : "Client" },
         texting: { status: textReady ? "pending" : "action", detail: "Texting stays off until the final company tax ID is on file.", owner: "Team", next: forwardStatus === "connected" },
         email: { status: "pending", detail: "SPF and DKIM are not checked yet.", owner: "Team" },
         reviews: { status: "pending", detail: "Google review link is not on file.", owner: "Team" },
@@ -1348,7 +1433,10 @@
     var id = esc(b.id);
     if (item.key === "test") return '<button class="btn btn-sm" type="button" data-action="run-greeting-test" data-id="' + id + '">Run test call</button>';
     if (item.key === "forwarding") return '<button class="btn btn-sm" type="button" data-action="forward-test" data-id="' + id + '">Run forwarding test</button>';
-    if (item.key === "calendar") return '<button class="btn btn-sm" type="button" data-action="send-link" data-id="' + id + '" data-kind="calendar">Send sign-in link</button> <button class="btn btn-sm" type="button" data-action="booking-test" data-id="' + id + '">Run booking test</button>';
+    if (item.key === "calendar") {
+      if (!calendarSignIn(b)) return '<p class="help">' + esc(calendarDescribe(window.RWCalendarStep ? window.RWCalendarStep.choiceValue((b.calendar && b.calendar.provider) || "none") : "none").checklist) + "</p>";
+      return '<button class="btn btn-sm" type="button" data-action="send-link" data-id="' + id + '" data-kind="calendar">Send sign-in link</button> <button class="btn btn-sm" type="button" data-action="booking-test" data-id="' + id + '">Run booking test</button>';
+    }
     if (item.key === "texting") return '<button class="btn btn-sm" type="button" data-action="texting-status">Check registration</button>';
     if (item.key === "email") return '<button class="btn btn-sm" type="button" data-action="check-email" data-id="' + id + '">Check DNS records</button>';
     if (item.key === "reviews") return '<button class="btn btn-sm" type="button" data-action="open-review" data-id="' + id + '">Review link</button>';
@@ -1434,8 +1522,11 @@
     var rows = (b.bookings || []).map(function (booking) {
       return "<tr><td>" + esc(booking.when) + "</td><td>" + esc(booking.customer) + "</td><td>" + esc(booking.service) + "</td><td>" + esc(booking.source) + "</td><td>" + esc(booking.status) + "</td></tr>";
     }).join("");
-    return '<div class="head-actions" style="margin-bottom:12px"><button class="btn btn-primary" type="button" data-action="booking-test" data-id="' + esc(b.id) + '">Run booking test</button>' +
-      '<button class="btn" type="button" data-action="send-link" data-id="' + esc(b.id) + '" data-kind="calendar">Send calendar link</button></div>' +
+    var calendarActions = calendarSignIn(b)
+      ? '<div class="head-actions" style="margin-bottom:12px"><button class="btn btn-primary" type="button" data-action="booking-test" data-id="' + esc(b.id) + '">Run booking test</button>' +
+        '<button class="btn" type="button" data-action="send-link" data-id="' + esc(b.id) + '" data-kind="calendar">Send calendar link</button></div>'
+      : '<p class="help" style="margin-bottom:12px">' + esc(calendarDescribe(window.RWCalendarStep ? window.RWCalendarStep.choiceValue((b.calendar && b.calendar.provider) || "none") : "none").checklist) + "</p>";
+    return calendarActions +
       '<section class="card"><div class="card-h"><h2>Upcoming</h2></div><div class="table-wrap"><table class="data"><thead><tr><th>When</th><th>Customer</th><th>Service</th><th>Source</th><th>Status</th></tr></thead><tbody>' +
       (rows || '<tr><td colspan="5"><div class="empty">No upcoming bookings.</div></td></tr>') + "</tbody></table></div></section>";
   }

@@ -2,6 +2,7 @@
 // Data access for businesses + mapping DB rows to the shape the portal UI (assets/app.js) renders.
 const db = require('./db');
 const config = require('./config');
+const calendarConnection = require('./calendarConnection');
 
 const STEPS = [
   ['number', 'AI number'],
@@ -91,7 +92,7 @@ async function uniqueSlug(client, base) {
 const WIZARD_STRINGS = [
   'name', 'category', 'address', 'city', 'website', 'hours', 'timezone', 'ownerName', 'ownerMobile', 'ownerEmail',
   'tier', 'plan', 'phoneMode', 'carrier', 'forwardType', 'businessNumber', 'areaCode', 'chosenNumber', 'chosenE164',
-  'testStatus', 'testNote', 'calendar', 'greeting', 'services', 'faqs', 'transfer', 'voice', 'facebook', 'instagram',
+  'testStatus', 'testNote', 'calendar', 'calcomEventTypeId', 'greeting', 'services', 'faqs', 'transfer', 'voice', 'facebook', 'instagram',
   'gbp', 'siteChoice', 'domain', 'template', 'legalName', 'taxId', 'sampleSms', 'consent', 'createdId', 'draftId'
 ];
 const WIZARD_BOOLS = ['pilot', 'multi', 'clientDone', 'spanish'];
@@ -132,9 +133,11 @@ async function createBusiness(input, userId, opts) {
   const status = opts && opts.status === 'draft' ? 'draft' : 'setup';
   const profile = pickProfile(input);
   if (opts && opts.wizard) {
-    profile.wizard = opts.wizard;
+    profile.wizard = calendarConnection.scrubWizard(opts.wizard);
     profile.wizardStep = opts.wizard.step;
   }
+  const calendar = calendarConnection.calendarFromInput(input);
+  if (calendar) profile.calendar = calendar;
   return db.tx(async (c) => {
     const slug = await uniqueSlug(c, slugify(input.slug || name));
     const { rows } = await c.query(
@@ -187,6 +190,8 @@ async function updateDraft(biz, input, userId) {
   assertDraftIdentity(input);
   const wizard = wizardFrom(input);
   const profile = Object.assign({}, biz.profile || {}, pickProfile(input), { wizard, wizardStep: wizard.step });
+  const calendar = calendarConnection.calendarFromInput(input);
+  if (calendar) profile.calendar = calendar;
   const { rows } = await db.query(
     `UPDATE businesses SET name = $2, category = $3, city = $4, timezone = $5, pilot = $6, profile = $7, status = 'draft', updated_at = now()
      WHERE id = $1 RETURNING *`,
@@ -209,9 +214,11 @@ async function finishDraft(biz, input, userId) {
   }
   assertDraftIdentity(input);
   const incoming = wizardFrom(Object.assign({}, input, { wizardStep: 9 }));
-  const wizard = Object.assign({}, (biz.profile && biz.profile.wizard) || {}, incoming);
+  const wizard = calendarConnection.scrubWizard(Object.assign({}, (biz.profile && biz.profile.wizard) || {}, incoming));
   wizard.step = 9;
   const profile = Object.assign({}, biz.profile || {}, pickProfile(input), { wizard, wizardStep: 9 });
+  const calendar = calendarConnection.calendarFromInput(input);
+  if (calendar) profile.calendar = calendar;
   return db.tx(async (c) => {
     const { rows } = await c.query(
       `UPDATE businesses SET name = $2, category = $3, city = $4, timezone = $5, pilot = $6, profile = $7, status = 'setup', updated_at = now()
@@ -297,7 +304,7 @@ function callToUi(c, tz) {
 // Full UI object for one business row.
 async function toUi(biz) {
   const tz = biz.timezone || 'America/New_York';
-  const [steps, phones, calls, bookings, stats, assistant] = await Promise.all([
+  const [steps, phones, calls, bookings, stats, assistant, calcomKeySaved] = await Promise.all([
     db.query('SELECT * FROM business_setup WHERE business_id = $1', [biz.id]),
     db.query('SELECT * FROM phone_numbers WHERE business_id = $1 AND status = \'active\' ORDER BY id DESC LIMIT 1', [biz.id]),
     db.query('SELECT * FROM calls WHERE business_id = $1 ORDER BY coalesce(started_at, created_at) DESC LIMIT 50', [biz.id]),
@@ -307,7 +314,8 @@ async function toUi(biz) {
          coalesce(sum(duration_sec) FILTER (WHERE started_at >= date_trunc('month', now() AT TIME ZONE $2) AT TIME ZONE $2), 0)::int AS month_sec,
          count(*) FILTER (WHERE started_at >= date_trunc('day', now() AT TIME ZONE $2) AT TIME ZONE $2)::int AS today
        FROM calls WHERE business_id = $1`, [biz.id, tz]),
-    db.query('SELECT vapi_assistant_id FROM assistants WHERE business_id = $1', [biz.id])
+    db.query('SELECT vapi_assistant_id FROM assistants WHERE business_id = $1', [biz.id]),
+    calendarConnection.keySaved(biz.id)
   ]);
   const bookedToday = await db.query(
     `SELECT count(*)::int AS n FROM bookings WHERE business_id = $1 AND created_at >= date_trunc('day', now() AT TIME ZONE $2) AT TIME ZONE $2`, [biz.id, tz]);
@@ -347,7 +355,9 @@ async function toUi(biz) {
     status: biz.status === 'draft' ? 'draft' : (p.paused ? 'paused' : biz.status),
     pilot: biz.pilot,
     wizardStep: Number(p.wizardStep != null ? p.wizardStep : (p.wizard && p.wizard.step) || 0),
-    wizard: p.wizard || null,
+    wizard: calendarConnection.scrubWizard(p.wizard),
+    calendar: calendarConnection.calendarFromInput({ calendar: p.calendar }) || null,
+    calcomKeySaved: Boolean(calcomKeySaved),
     setupProgress,
     assistantPublished,
     phone,

@@ -17,6 +17,7 @@ const social = require('./social');
 const meta = require('./integrations/meta');
 const trelloSync = require('./trelloSync');
 const exportData = require('./exportData');
+const calendarConnection = require('./calendarConnection');
 
 // The portal pages live at the repo root (also published as the GitHub Pages demo).
 const SITE_ROOT = path.join(__dirname, '..', '..');
@@ -155,6 +156,14 @@ function createApp() {
   api.post('/businesses/:slug/draft/finish', withBiz, wrap(async (req, res) => {
     const updated = await businesses.finishDraft(req.biz, req.body || {}, req.user.id);
     res.json({ business: await businesses.toUi(updated) });
+  }));
+  api.put('/businesses/:slug/calendar', withBiz, wrap(async (req, res) => {
+    const saved = await calendarConnection.saveConnection(req.biz, req.body || {}, req.user.id);
+    res.json({
+      calendar: saved.calendar,
+      calcomKeySaved: saved.calcomKeySaved,
+      business: await businesses.toUi(saved.biz)
+    });
   }));
   api.delete('/businesses/:slug', withBiz, wrap(async (req, res) => {
     await businesses.deleteDraft(req.biz, req.user.id);
