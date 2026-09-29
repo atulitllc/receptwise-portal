@@ -57,10 +57,12 @@ const config = {
     token: env.TRELLO_TOKEN || '',
     baseUrl: 'https://api.trello.com'
   },
-  // Website generator. Inert until GITHUB_TOKEN is set. GITHUB_ORG defaults to the company org.
+  // Website generator. Inert until GITHUB_TOKEN is set.
+  // The account may be a user or an organization. GITHUB_OWNER overrides GITHUB_ORG.
   github: {
     token: env.GITHUB_TOKEN || '',
-    org: (env.GITHUB_ORG || 'atulitllc').trim() || 'atulitllc'
+    owner: (env.GITHUB_OWNER || env.GITHUB_ORG || 'atulitllc').trim() || 'atulitllc',
+    org: (env.GITHUB_OWNER || env.GITHUB_ORG || 'atulitllc').trim() || 'atulitllc'
   },
   // Pilot client #1 is ReceptWise itself. Ids are overridable; they are not secrets.
   pilot: {
