@@ -26,7 +26,7 @@ function calendarFromInput(input) {
   const provider = providerId(choice);
   if (!provider) return null;
   const out = { provider };
-  if (provider === 'calcom') out.calcomEventTypeId = String(eventRaw || '').trim().slice(0, 200);
+  if (provider === 'calcom' && eventRaw != null) out.calcomEventTypeId = String(eventRaw).trim().slice(0, 200);
   return out;
 }
 
@@ -73,6 +73,12 @@ async function saveConnection(biz, input, userId) {
     throw err;
   }
 
+  if (calendar.provider === 'calcom' && calendar.calcomEventTypeId == null) {
+    const previous = biz.profile && biz.profile.calendar;
+    calendar.calcomEventTypeId = previous && previous.provider === 'calcom'
+      ? String(previous.calcomEventTypeId || '')
+      : '';
+  }
   const profile = Object.assign({}, biz.profile || {}, { calendar });
   if (profile.wizard) profile.wizard = scrubWizard(profile.wizard);
   const { rows } = await db.query(

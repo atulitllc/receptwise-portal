@@ -26,7 +26,8 @@ test('calendar step copy branches by provider', () => {
   assert.match(cal.steps[0], /20-minute demo/);
   assert.match(cal.steps[1], /Settings > Developer > API keys/);
   assert.match(cal.steps[2], /Paste the API key/);
-  assert.match(cal.steps[3], /event type slug or ID/);
+  assert.match(cal.steps[3], /Show event types loads them from Cal.com/);
+  assert.match(cal.steps[3], /20 min demo/);
   assert.doesNotMatch(textOf('cal'), /sign-in/i);
   assert.equal(step.profile('cal', '20-minute-demo').provider, 'calcom');
   assert.equal(step.profile('cal', '20-minute-demo').calcomEventTypeId, '20-minute-demo');

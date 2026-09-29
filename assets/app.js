@@ -1668,10 +1668,12 @@
     });
   }
 
-  function calendarProviderButtons(selected, enabled) {
+  function calendarProviderButtons(selected, enabled, businessId) {
     function one(id, title, detail) {
       var on = selected === id ? " on" : "";
-      var action = enabled ? ' data-action="calendar-provider" data-provider="' + id + '"' : " disabled";
+      var action = enabled
+        ? ' data-action="calendar-provider" data-provider="' + id + '" data-id="' + esc(businessId || "") + '"'
+        : " disabled";
       return '<button class="choice' + on + '" type="button"' + action + '><b>' + esc(title) + "</b><span>" + esc(detail) + "</span></button>";
     }
     return '<div class="choice-grid">' +
@@ -1749,7 +1751,7 @@
     var selected = cal.provider === "calcom" ? "calcom" : "google";
     var warn = cal.warning ? '<p class="banner warn">' + esc(cal.warning) + "</p>" : "";
     var body = selected === "calcom" ? calcomCalendarBody(b, cal) : googleCalendarBody(b, cal);
-    return head + warn + calendarProviderButtons(selected, true) + body + "</div></section>";
+    return head + warn + calendarProviderButtons(selected, true, b.id) + body + "</div></section>";
   }
 
   function tabBookings(b) {
@@ -2679,7 +2681,9 @@
     },
     "calcom-save": function (el) {
       var key = document.getElementById("calcom-key");
-      var body = { provider: "calcom", apiKey: key ? key.value : "" };
+      var value = key ? key.value.trim() : "";
+      if (value.length < 8) { toast("Paste the Cal.com API key."); return; }
+      var body = { provider: "calcom", apiKey: value };
       var current = calendarByBiz[el.dataset.id] && calendarByBiz[el.dataset.id].calcom;
       if (current && current.eventTypeId) body.calcomEventTypeId = current.eventTypeId;
       api("PUT", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/calendar", body).then(function () {
@@ -2694,6 +2698,8 @@
             status.calcom = status.calcom || {};
             status.calcom.eventTypes = listed.eventTypes;
             status.calcom.eventTypesError = listed.eventTypesError;
+            var previousNote = calendarByBiz[el.dataset.id] && calendarByBiz[el.dataset.id].calcom;
+            if (previousNote && previousNote.testNote) status.calcom.testNote = previousNote.testNote;
             calendarByBiz[el.dataset.id] = status;
             if (currentRender) currentRender();
           });
@@ -2731,6 +2737,7 @@
           var previous = calendarByBiz[el.dataset.id] && calendarByBiz[el.dataset.id].calcom;
           status.calcom = status.calcom || {};
           if (previous && previous.eventTypes) status.calcom.eventTypes = previous.eventTypes;
+          if (previous && previous.testNote) status.calcom.testNote = previous.testNote;
           calendarByBiz[el.dataset.id] = status;
           if (currentRender) currentRender();
         });
@@ -2742,8 +2749,9 @@
         status.calcom = status.calcom || {};
         status.calcom.eventTypes = data.eventTypes || [];
         var count = data.eventTypes ? data.eventTypes.length : 0;
-        var slots = data.slotCount == null ? "" : " " + data.slotCount + " open slots in the next day.";
-        status.calcom.testNote = "Connection works. " + count + " event types." + slots;
+        function plural(n, word) { return n + " " + word + (n === 1 ? "" : "s"); }
+        var slots = data.slotCount == null ? "" : " " + plural(data.slotCount, "open slot") + " in the next day.";
+        status.calcom.testNote = "Connection works. " + plural(count, "event type") + "." + slots;
         calendarByBiz[el.dataset.id] = status;
         toast("Cal.com connection works.");
         if (currentRender) currentRender();

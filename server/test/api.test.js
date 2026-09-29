@@ -1203,6 +1203,12 @@ describe('control panel API', () => {
     assert.equal(renamed.status, 200, renamed.text);
     assert.equal(renamed.json.calendar.calcomEventTypeId, 'intro-call');
     assert.equal(renamed.json.calcomKeySaved, true);
+    const kept = await request('PUT', '/api/businesses/' + slug + '/calendar', {
+      cookie,
+      body: { provider: 'calcom' }
+    });
+    assert.equal(kept.status, 200, kept.text);
+    assert.equal(kept.json.calendar.calcomEventTypeId, 'intro-call');
     const still = await db.query(
       `SELECT i.token_enc FROM integrations i JOIN businesses b ON b.id = i.business_id
        WHERE b.slug = $1 AND i.provider = 'calcom'`,
