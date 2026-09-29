@@ -14,13 +14,14 @@ const WINDOW_MS = 60 * 60 * 1000;
 const STATUSES = ['new', 'contacted', 'closed'];
 
 const FIXED_ORIGINS = new Set([
-  'https://receptwise.com',
   'https://www.receptwise.com',
+  'https://receptwise.com',
+  'https://receptwise-site.pages.dev',
   'https://atulitllc.github.io'
 ]);
 
-// Aliases cover the live marketing form (name, business, phone, email, time, plan)
-// and the camelCase / snake_case names a later form might send.
+// The live form sends name, business_name, phone, email, business_type,
+// preferred_time, message, source_page, and website (honeypot). Older aliases stay accepted.
 const FIELDS = {
   name: ['name', 'fullName', 'full_name'],
   businessName: ['businessName', 'business_name', 'business', 'company', 'companyName', 'company_name'],
@@ -57,8 +58,8 @@ const LABELS = {
   sourcePage: 'Source page'
 };
 
-// Hidden field the marketing form should include and leave empty.
-const HONEYPOT_KEYS = ['company_website', 'companyWebsite', '_honeypot'];
+// The live form's hidden field is website. Older names stay honeypots too.
+const HONEYPOT_KEYS = ['website', 'company_website', 'companyWebsite', '_honeypot'];
 
 const hits = new Map();
 
@@ -76,9 +77,11 @@ function originAllowed(origin) {
   if (url.origin !== origin) return false;
   if (FIXED_ORIGINS.has(origin)) return true;
   const host = url.hostname;
-  if (!/^[a-z0-9.-]+\.pages\.dev$/.test(host)) return false;
-  if (host.includes('..') || host.includes('.-') || host.includes('-.')) return false;
-  return true;
+  const suffix = '.receptwise-site.pages.dev';
+  if (!host.endsWith(suffix)) return false;
+  const label = host.slice(0, -suffix.length);
+  if (!label || label.includes('..') || label.startsWith('.') || label.endsWith('.') || label.includes('.-') || label.includes('-.')) return false;
+  return /^[a-z0-9.-]+$/.test(label);
 }
 
 function publicCors(req, res, next) {

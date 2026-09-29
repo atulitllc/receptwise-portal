@@ -34,18 +34,20 @@ The public form on the marketing site posts JSON to `POST /api/public/demo-reque
 ```json
 {
   "name": "Ada Lovelace",
-  "business": "Analytical Engines",
+  "business_name": "Analytical Engines",
   "phone": "(781) 555-0100",
   "email": "ada@example.com",
-  "time": "Weekday mornings",
-  "plan": "Growth",
-  "businessType": "Cafe",
+  "business_type": "Restaurant",
+  "preferred_time": "Tuesday morning",
   "message": "We miss calls after 5.",
-  "company_website": ""
+  "source_page": "https://www.receptwise.com/",
+  "website": ""
 }
 ```
 
-`name` is required, plus a `phone` or an `email`. `business`, `time`, `plan`, `businessType`, and `message` are optional. A 10-digit US phone (or 11 digits starting with 1) is stored as E.164, the same way the panel already normalizes numbers (`(781) 555-0100` becomes `+17815550100`). `company_website` is a honeypot: leave it empty, and add it as a hidden input. A filled honeypot returns `{ "ok": true }` and is not stored. The same response is a real save. Browsers on `https://receptwise.com`, `https://www.receptwise.com`, `https://atulitllc.github.io`, and `https://*.pages.dev` can POST. Other origins are rejected. There is no email notification; this app has no mail provider.
+The live form on `https://www.receptwise.com` posts that JSON and does not send `X-RW-Client`. `POST` and its `OPTIONS` preflight are exempt from that check. `name` is required, plus a `phone` or an `email`. The other fields are optional. A 10-digit US phone (or 11 digits starting with 1) is stored as E.164 (`(781) 555-0100` becomes `+17815550100`). `website` is the honeypot: the form leaves it empty. A filled honeypot returns `{ "ok": true }` and is not stored. The same response is a real save. Older names (`business`, `time`, `businessType`, `company_website`) are still accepted.
+
+CORS allows `https://www.receptwise.com`, `https://receptwise.com`, `https://receptwise-site.pages.dev`, `https://*.receptwise-site.pages.dev`, and `https://atulitllc.github.io`. Other origins, including other `pages.dev` hosts, are rejected. There is no email notification; this app has no mail provider.
 
 ## What works once keys are set
 

@@ -25,8 +25,8 @@ Session cookie plus `X-RW-Client: portal` on every write. `GET /api/health` does
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| POST | `/api/public/demo-requests` | No session and no `X-RW-Client`. Marketing demo form. 16kb JSON body, 5 posts per IP per hour, honeypot `company_website`. |
-| OPTIONS | `/api/public/demo-requests` | CORS preflight. `POST, OPTIONS` for receptwise.com, www.receptwise.com, atulitllc.github.io, and `*.pages.dev`. |
+| POST | `/api/public/demo-requests` | No session. Exempt from `X-RW-Client`. Live form fields: `name`, `business_name`, `phone`, `email`, `business_type`, `preferred_time`, `message`, `source_page`, honeypot `website`. 16kb JSON, 5 posts per IP per hour. |
+| OPTIONS | `/api/public/demo-requests` | CORS preflight, also exempt from `X-RW-Client`. Allows `https://www.receptwise.com`, `https://receptwise.com`, `https://receptwise-site.pages.dev`, `https://*.receptwise-site.pages.dev`, and `https://atulitllc.github.io`. |
 | GET | `/api/demo-requests` | Admin. Newest first. |
 | PATCH | `/api/demo-requests/:id` | Admin. Body `{ "status": "new" }`, `"contacted"`, or `"closed"`. |
 | POST | `/api/auth/login`, `/api/auth/logout` | bcrypt, rate limit, httpOnly cookie |

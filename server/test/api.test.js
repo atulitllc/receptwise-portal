@@ -232,20 +232,23 @@ let server;
 let port;
 let cookie = '';
 
-function request(method, path, { body, cookie: jar, headers } = {}) {
+function request(method, path, { body, cookie: jar, headers, portal } = {}) {
   const payload = body == null ? null : JSON.stringify(body);
+  const hdrs = {
+    'Content-Type': 'application/json',
+    ...(jar ? { Cookie: jar } : {}),
+    ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {})
+  };
+  if (portal !== false) hdrs['X-RW-Client'] = 'portal';
+  Object.assign(hdrs, headers || {});
+  if (portal === false) delete hdrs['X-RW-Client'];
   return new Promise((resolve, reject) => {
     const req = http.request({
       hostname: '127.0.0.1',
       port,
       path,
       method,
-      headers: Object.assign({
-        'Content-Type': 'application/json',
-        'X-RW-Client': 'portal',
-        ...(jar ? { Cookie: jar } : {}),
-        ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {})
-      }, headers || {})
+      headers: hdrs
     }, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
@@ -2360,13 +2363,62 @@ describe('control panel API', () => {
     assert.equal(still.rows[0].n, 1);
   });
 
+  it('accepts the live site form with no portal header', async () => {
+    await clearLeads();
+    const saved = await request('POST', '/api/public/demo-requests', {
+      portal: false,
+      body: {
+        name: 'Ada Lovelace',
+        business_name: 'Analytical Engines',
+        phone: '(781) 555-0100',
+        email: 'ada@example.com',
+        business_type: 'Restaurant',
+        preferred_time: 'Tuesday morning',
+        message: 'We miss calls after 5.',
+        source_page: 'https://www.receptwise.com/',
+        website: ''
+      },
+      headers: {
+        Origin: 'https://www.receptwise.com',
+        'X-Forwarded-For': '203.0.113.90'
+      }
+    });
+    assert.equal(saved.status, 200, saved.text);
+    assert.deepEqual(saved.json, { ok: true });
+    assert.equal(saved.headers['access-control-allow-origin'], 'https://www.receptwise.com');
+    const row = await db.query('SELECT * FROM demo_requests');
+    assert.equal(row.rows.length, 1);
+    assert.equal(row.rows[0].business_name, 'Analytical Engines');
+    assert.equal(row.rows[0].business_type, 'Restaurant');
+    assert.equal(row.rows[0].preferred_time, 'Tuesday morning');
+    assert.equal(row.rows[0].source_page, 'https://www.receptwise.com/');
+    assert.equal(row.rows[0].phone, '+17815550100');
+    assert.equal(row.rows[0].extra.website, undefined);
+
+    const pages = await request('POST', '/api/public/demo-requests', {
+      portal: false,
+      body: {
+        name: 'Pages Visitor',
+        email: 'pages@example.com',
+        source_page: 'https://receptwise-site.pages.dev/',
+        website: ''
+      },
+      headers: {
+        Origin: 'https://feat.receptwise-site.pages.dev',
+        'X-Forwarded-For': '203.0.113.91'
+      }
+    });
+    assert.equal(pages.status, 200, pages.text);
+    assert.equal(pages.headers['access-control-allow-origin'], 'https://feat.receptwise-site.pages.dev');
+  });
+
   it('drops a filled honeypot without storing a row', async () => {
     await clearLeads();
     const res = await publicPost({
       name: 'Bot',
       email: 'bot@example.com',
-      company_website: 'https://spam.example'
-    }, { 'X-Forwarded-For': '203.0.113.60' });
+      website: 'https://spam.example'
+    }, { Origin: 'https://www.receptwise.com', 'X-Forwarded-For': '203.0.113.60' });
     assert.equal(res.status, 200);
     assert.deepEqual(res.json, { ok: true });
     const count = await db.query('SELECT count(*)::int AS n FROM demo_requests');
@@ -2410,11 +2462,11 @@ describe('control panel API', () => {
       });
     }
     for (const origin of [
-      'https://receptwise.com',
       'https://www.receptwise.com',
-      'https://atulitllc.github.io',
-      'https://receptwise.pages.dev',
-      'https://preview.receptwise.pages.dev'
+      'https://receptwise.com',
+      'https://receptwise-site.pages.dev',
+      'https://abc123.receptwise-site.pages.dev',
+      'https://atulitllc.github.io'
     ]) {
       const res = await preflight(origin);
       assert.equal(res.status, 204, origin + ' ' + res.text);
@@ -2428,6 +2480,18 @@ describe('control panel API', () => {
     assert.equal(blocked.headers['access-control-allow-origin'], undefined);
     const httpOrigin = await preflight('http://receptwise.com');
     assert.equal(httpOrigin.status, 403);
+    const otherPages = await preflight('https://receptwise.pages.dev');
+    assert.equal(otherPages.status, 403);
+    const bare = await request('OPTIONS', '/api/public/demo-requests', {
+      portal: false,
+      headers: {
+        Origin: 'https://www.receptwise.com',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'content-type'
+      }
+    });
+    assert.equal(bare.status, 204, bare.text);
+    assert.equal(bare.headers['access-control-allow-origin'], 'https://www.receptwise.com');
     const postBlocked = await publicPost(
       { name: 'Nope', email: 'nope@example.com' },
       { Origin: 'https://evil.example', 'X-Forwarded-For': '203.0.113.70' }

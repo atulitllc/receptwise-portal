@@ -450,6 +450,25 @@ test('demo request validation accepts the marketing form and normalizes US phone
   assert.equal(snake.lead.preferredTime, 'Weekends');
   assert.equal(snake.lead.email, '');
 
+  const live = demoRequests.prepareLead({
+    name: 'Ada Lovelace',
+    business_name: 'Analytical Engines',
+    phone: '(781) 555-0100',
+    email: 'ada@example.com',
+    business_type: 'Restaurant',
+    preferred_time: 'Tuesday morning',
+    message: 'We miss calls after 5.',
+    source_page: 'https://www.receptwise.com/',
+    website: ''
+  });
+  assert.equal(live.action, 'store');
+  assert.equal(live.lead.businessName, 'Analytical Engines');
+  assert.equal(live.lead.businessType, 'Restaurant');
+  assert.equal(live.lead.preferredTime, 'Tuesday morning');
+  assert.equal(live.lead.sourcePage, 'https://www.receptwise.com/');
+  assert.equal(live.lead.phone, '+17815550100');
+  assert.deepEqual(live.lead.extra, {});
+
   const emailOnly = demoRequests.prepareLead({ name: 'Sam', email: 'sam@example.com' });
   assert.equal(emailOnly.action, 'store');
   assert.equal(emailOnly.lead.phone, '');
@@ -464,9 +483,11 @@ test('demo request validation accepts the marketing form and normalizes US phone
 });
 
 test('demo request honeypot is a silent accept and does not validate', () => {
-  const filled = demoRequests.prepareLead({ company_website: 'https://spam.example', name: '' });
+  const filled = demoRequests.prepareLead({ website: 'https://spam.example', name: '' });
   assert.equal(filled.action, 'honeypot');
+  assert.equal(demoRequests.prepareLead({ company_website: 'https://spam.example', name: '' }).action, 'honeypot');
   assert.equal(demoRequests.prepareLead({ _honeypot: 'bot', name: 'Sam', email: 'sam@example.com' }).action, 'honeypot');
+  assert.equal(demoRequests.prepareLead({ website: '', name: 'Sam', email: 'sam@example.com' }).action, 'store');
   assert.equal(demoRequests.prepareLead({ company_website: '   ', name: 'Sam', email: 'sam@example.com' }).action, 'store');
 });
 
@@ -481,11 +502,14 @@ test('demo request rate limit is five posts per IP per hour', () => {
 });
 
 test('demo request CORS allows the marketing origins only', () => {
-  assert.equal(demoRequests.originAllowed('https://receptwise.com'), true);
   assert.equal(demoRequests.originAllowed('https://www.receptwise.com'), true);
+  assert.equal(demoRequests.originAllowed('https://receptwise.com'), true);
+  assert.equal(demoRequests.originAllowed('https://receptwise-site.pages.dev'), true);
+  assert.equal(demoRequests.originAllowed('https://abc123.receptwise-site.pages.dev'), true);
   assert.equal(demoRequests.originAllowed('https://atulitllc.github.io'), true);
-  assert.equal(demoRequests.originAllowed('https://receptwise.pages.dev'), true);
-  assert.equal(demoRequests.originAllowed('https://preview.receptwise.pages.dev'), true);
+  assert.equal(demoRequests.originAllowed('https://receptwise.pages.dev'), false);
+  assert.equal(demoRequests.originAllowed('https://preview.receptwise.pages.dev'), false);
+  assert.equal(demoRequests.originAllowed('https://other.pages.dev'), false);
   assert.equal(demoRequests.originAllowed('https://pages.dev'), false);
   assert.equal(demoRequests.originAllowed('http://receptwise.com'), false);
   assert.equal(demoRequests.originAllowed('https://receptwise.com.evil.test'), false);
