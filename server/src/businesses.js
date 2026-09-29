@@ -4,6 +4,7 @@ const db = require('./db');
 const config = require('./config');
 const calendarConnection = require('./calendarConnection');
 const voices = require('./voices');
+const privacy = require('./privacy');
 
 const STEPS = [
   ['number', 'AI number'],
@@ -334,7 +335,7 @@ function generatedWebsite(row) {
 }
 
 // Full UI object for one business row.
-async function toUi(biz) {
+async function toUi(biz, user, ctx) {
   const tz = biz.timezone || 'America/New_York';
   const [steps, phones, calls, bookings, stats, assistant, calcomKeySaved, website] = await Promise.all([
     db.query('SELECT * FROM business_setup WHERE business_id = $1', [biz.id]),
@@ -369,7 +370,7 @@ async function toUi(biz) {
     { key: 'number', label: 'Number bought', done: Boolean(phones.rows[0]), step: 2 },
     { key: 'test', label: 'Test call', done: Boolean(testStep && testStep.status === 'connected'), step: 3 }
   ];
-  return Object.assign({
+  const view = Object.assign({
     owner: { name: '', mobile: '', email: '' },
     greeting: '', voice: '', languages: ['English'], transfer: '',
     capabilities: { book: true, reschedule: true, cancel: true, transfer: true, textLink: false },
@@ -401,17 +402,47 @@ async function toUi(biz) {
     bookingsToday: bookedToday.rows[0].n,
     calls: calls.rows.map((c) => callToUi(c, tz)),
     bookings: bookings.rows.map((b) => ({
-      when: fmtWhen(b.starts_at, tz), customer: b.customer || '', service: b.service || '', source: b.source, status: b.status
+      id: Number(b.id),
+      when: fmtWhen(b.starts_at, tz),
+      startsAt: b.starts_at ? new Date(b.starts_at).toISOString() : null,
+      endsAt: b.ends_at ? new Date(b.ends_at).toISOString() : null,
+      customer: b.customer || '',
+      phone: prettyPhone(b.phone) || b.phone || '',
+      email: b.email || '',
+      service: b.service || '',
+      source: b.source,
+      status: b.status
     })),
     checklist,
     live: true,
     generatedWebsite: generatedWebsite(website.rows[0])
   });
+  const grants = ctx && ctx.grants ? ctx.grants : await privacy.activeGrantSet();
+  const support = ctx && Object.prototype.hasOwnProperty.call(ctx, 'support') ? ctx.support : await privacy.supportRow(biz.id);
+  const reveal = privacy.allows(user, biz.id, grants);
+  if (!reveal) {
+    view.calls = view.calls.map(privacy.redactCallUi);
+    view.bookings = view.bookings.map(privacy.redactBooking);
+  } else if (privacy.isReceptwise(user) && (view.calls.length || view.bookings.length)) {
+    await privacy.noteView(user, biz.id, 'business');
+  }
+  view.supportAccess = privacy.presentGrant(support);
+  view.detailsVisible = reveal;
+  return view;
 }
 
-async function listUi() {
-  const { rows } = await db.query('SELECT * FROM businesses WHERE status <> \'archived\' ORDER BY pilot DESC, created_at');
-  return Promise.all(rows.map(toUi));
+async function listUi(user) {
+  const params = [];
+  let sql = 'SELECT * FROM businesses WHERE status <> \'archived\'';
+  if (privacy.isBusinessUser(user)) {
+    params.push(user.businessId);
+    sql += ' AND id = $1';
+  }
+  sql += ' ORDER BY pilot DESC, created_at';
+  const { rows } = await db.query(sql, params);
+  const grants = await privacy.activeGrantSet();
+  const support = await privacy.supportMap(rows.map((row) => row.id));
+  return Promise.all(rows.map((biz) => toUi(biz, user, { grants, support: support.get(Number(biz.id)) || null })));
 }
 
 function defaultReceptionist(biz) {

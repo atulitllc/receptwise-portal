@@ -15,7 +15,7 @@ process.env.VAPI_CALENDAR_TOOL_IDS = 'tool-check,tool-book';
 
 const vapi = require('../src/integrations/vapi');
 const twilio = require('../src/integrations/twilio');
-const { extractBookings, classifyCall, bookingFromStructured } = require('../src/calls');
+const { extractBookings, classifyCall, bookingFromStructured, zonedInstant } = require('../src/calls');
 const { slugify } = require('../src/businesses');
 const settings = require('../src/settings');
 const { presentNumbers } = require('../src/phoneView');
@@ -159,10 +159,60 @@ test('toE164', () => {
 test('bookings are extracted from calendar tool calls only', () => {
   const b = extractBookings([
     { role: 'tool_calls', toolCalls: [{ function: { name: 'checkAvailability', arguments: '{}' } }] },
+    { role: 'tool_calls', toolCalls: [{ type: 'google.calendar.availability.check', function: { name: 'check_availability', arguments: '{}' } }] },
     { role: 'tool_calls', toolCalls: [{ function: { name: 'scheduleAppointment', arguments: '{"startDateTime":"2026-10-06T10:00:00-04:00","summary":"Intro demo"}' } }] }
   ]);
   assert.equal(b.length, 1);
   assert.equal(b[0].service, 'Intro demo');
+  assert.equal(b[0].startsAt, '2026-10-06T14:00:00.000Z');
+  assert.equal(b[0].customer, '');
+});
+
+test('book_demo summary yields start, customer, phone, and business', () => {
+  const bookings = extractBookings([
+    {
+      role: 'tool_calls',
+      toolCalls: [{
+        type: 'function',
+        function: {
+          name: 'book_demo',
+          arguments: JSON.stringify({
+            summary: 'Receptwise demo – Northline Clinic – Riley Cho – +1 617-555-0142',
+            startDateTime: '2026-10-06T15:00:00',
+            endDateTime: '2026-10-06T15:30:00',
+            timeZone: 'America/New_York',
+            attendees: ['riley@example.test']
+          })
+        }
+      }]
+    }
+  ]);
+  assert.equal(bookings.length, 1);
+  assert.equal(bookings[0].customer, 'Riley Cho');
+  assert.equal(bookings[0].phone, '+1 617-555-0142');
+  assert.equal(bookings[0].service, 'Northline Clinic');
+  assert.equal(bookings[0].email, 'riley@example.test');
+  assert.equal(bookings[0].startsAt, '2026-10-06T19:00:00.000Z');
+  assert.equal(bookings[0].endsAt, '2026-10-06T19:30:00.000Z');
+  assert.equal(bookings[0].timeZone, 'America/New_York');
+  const hyphen = extractBookings([{
+    toolCalls: [{
+      function: {
+        name: 'google.calendar.event.create',
+        arguments: {
+          summary: 'Receptwise demo - Harbor Cafe - Sam Ortiz - (617) 555-0199',
+          startDateTime: '2026-01-15T15:00:00',
+          timeZone: 'America/New_York',
+          attendees: [{ email: 'sam@example.test', displayName: 'Ignored Because Summary Has A Name' }]
+        }
+      }
+    }]
+  }]);
+  assert.equal(hyphen[0].customer, 'Sam Ortiz');
+  assert.equal(hyphen[0].phone, '(617) 555-0199');
+  assert.equal(hyphen[0].service, 'Harbor Cafe');
+  assert.equal(hyphen[0].startsAt, '2026-01-15T20:00:00.000Z');
+  assert.equal(zonedInstant('2026-10-06T10:00:00-04:00', 'America/Los_Angeles'), '2026-10-06T14:00:00.000Z');
 });
 
 test('slugify', () => {
@@ -298,6 +348,47 @@ test('feature status registry is the single badge source', () => {
     assert.ok(allowed.has(registry[key].status), key);
     assert.equal(typeof registry[key].note, 'string', key);
   });
+});
+
+test('support access hides caller and booking details unless the grant matches', () => {
+  const privacy = require('../src/privacy');
+  const grants = new Set([7]);
+  const admin = { id: 1, role: 'admin', businessId: null };
+  const team = { id: 2, role: 'team', businessId: null };
+  const owner = { id: 3, role: 'owner', businessId: 4 };
+  const staff = { id: 5, role: 'staff', businessId: 4 };
+  assert.equal(privacy.allows(admin, 7, grants), true);
+  assert.equal(privacy.allows(admin, 4, grants), false);
+  assert.equal(privacy.allows(team, 4, grants), false);
+  assert.equal(privacy.allows(owner, 4, grants), true);
+  assert.equal(privacy.allows(owner, 7, grants), false);
+  assert.equal(privacy.allows(staff, 4, new Set()), true);
+  assert.equal(privacy.allows(staff, 9, grants), false);
+  assert.equal(privacy.hiddenLabel('Cancelled'), 'Cancelled – details hidden');
+  assert.equal(privacy.hiddenLabel('Completed'), 'Completed – details hidden');
+  assert.equal(privacy.hiddenLabel('Confirmed'), 'Booked – details hidden');
+  const appt = privacy.redactAppointment({
+    id: 3, businessId: 'harbor', businessName: 'Harbor', timezone: 'America/New_York',
+    startsAt: '2026-10-07T19:00:00.000Z', endsAt: null, customer: 'Riley Cho', phone: '(617) 555-0142',
+    email: 'riley@example.test', service: 'Visit', source: 'Phone', status: 'Confirmed',
+    callId: 'call-1', callHref: 'dashboard.html?call=call-1'
+  });
+  assert.equal(appt.customer, 'Booked – details hidden');
+  assert.equal(appt.phone, '');
+  assert.equal(appt.email, '');
+  assert.equal(appt.service, '');
+  assert.equal(appt.callId, null);
+  assert.equal(appt.callHref, null);
+  assert.equal(appt.startsAt, '2026-10-07T19:00:00.000Z');
+  assert.equal(appt.redacted, true);
+  assert.equal(privacy.redactActivity({ kind: 'call', text: 'Booked · Riley Cho' }).text, 'Call · details hidden');
+  assert.equal(privacy.redactActivity({ kind: 'booking', text: 'Booked Riley Cho' }).text, 'Booked – details hidden');
+  assert.equal(privacy.redactActivity({ kind: 'trello.card_created', text: 'Created a Trello card for a booking (Sam Ortiz).' }).text, 'Updated a card · details hidden');
+  assert.equal(privacy.redactActivity({ kind: 'settings.update', text: 'Saved receptionist settings.' }).text, 'Saved receptionist settings.');
+  const past = privacy.presentGrant({ enabled: true, expires_at: new Date(Date.now() - 1000).toISOString() });
+  assert.equal(past.active, false);
+  const live = privacy.presentGrant({ enabled: true, expires_at: new Date(Date.now() + 3600000).toISOString() });
+  assert.equal(live.active, true);
 });
 
 test('meta dialog URL uses the business login config when set', () => {

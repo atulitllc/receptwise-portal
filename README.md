@@ -12,6 +12,7 @@ Sign-in on the static demo accepts any email and password. Sample data includes 
 | --- | --- | --- |
 | Sign in | `index.html` | Team sign-in |
 | Overview | `dashboard.html` | Calls, bookings, businesses, activity |
+| Appointments | `appointments.html` | Week, month, and list of bookings |
 | Phone | `phone.html` | Number attached to the receptionist |
 | Receptionist | `settings.html` | Greeting, hours, booking rules, FAQ |
 | Integrations | `integrations.html` | Instagram, Facebook, Google, and later networks |
@@ -32,7 +33,7 @@ The company that owns the product is **[Placeholder]** in the footer and on the 
 | `DATABASE_URL`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` | Sign-in, businesses, settings saved in Postgres, empty metrics |
 | `VAPI_API_KEY` | Phone page reads live numbers. Saving receptionist settings backs up the assistant, then PATCHes `firstMessage` and the managed section of the system prompt. Sync from Vapi backfills calls. |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | Phone page adds Twilio status for each number. Admins can still buy a number from the business page. |
-| `VAPI_WEBHOOK_SECRET` plus the Vapi server URL | End-of-call reports are stored (summary, caller, outcome, recording, bookings from `structuredData`). |
+| `VAPI_WEBHOOK_SECRET` plus the Vapi server URL | End-of-call reports are stored (summary, caller, outcome, recording, and bookings). A `book_demo` tool call stores the start, customer, and phone from its arguments. Sync from Vapi backfills the same fields. |
 | `META_APP_ID`, `META_APP_SECRET`, `TOKEN_ENCRYPTION_KEY`, and a public `APP_BASE_URL` | Facebook Login for Business stores the Page and Instagram tokens encrypted. The page shows the account name. |
 | `TRELLO_API_KEY`, `TRELLO_TOKEN`, or a key pasted on Integrations, plus `TOKEN_ENCRYPTION_KEY` for a pasted key | Test connection, choose a board and list, and open a card for each new booking and missed call. A booking card is updated when the booking changes. |
 | `GITHUB_TOKEN` (and optional `GITHUB_ORG` or `GITHUB_OWNER`, default `atulitllc`) | On the Website tab, an admin generates a public one-page site in a new GitHub repository. The account can be a user or an organization. Regenerate opens a pull request. The panel does not host the site. |
