@@ -46,27 +46,27 @@ async function generate(biz, templateInput, userId) {
     err.status = 409;
     throw err;
   }
-  const org = github.orgName();
+  const owner = github.ownerLogin();
   const site = await siteFor(biz, templateId);
   const base = repoBaseName(biz.name);
-  const created = await github.createUniqueRepo(org, base, 'Website for ' + site.name);
-  const pagesUrl = github.pagesUrlFor(org, created.name);
+  const created = await github.createUniqueRepo(owner, base, 'Website for ' + site.name);
+  const pagesUrl = github.pagesUrlFor(owner, created.name);
   const files = renderFiles(site, templateId, { pagesUrl });
-  const { fullName, repoUrl } = publicRepo(created.repo, org, created.name);
+  const { fullName, repoUrl } = publicRepo(created.repo, owner, created.name);
   try {
-    await github.initialCommit(org, created.name, 'Add ' + site.name + ' website', files);
+    await github.initialCommit(owner, created.name, 'Add ' + site.name + ' website', files);
   } catch (err) {
-    await github.deleteRepo(org, created.name);
+    await github.deleteRepo(owner, created.name);
     throw err;
   }
   let pagesEnabled = false;
   try {
-    await github.enablePages(org, created.name);
+    await github.enablePages(owner, created.name);
     pagesEnabled = true;
   } catch (err) {
     pagesEnabled = false;
   }
-  await github.setHomepage(org, created.name, pagesUrl);
+  await github.setHomepage(owner, created.name, pagesUrl);
   await db.query(
     `INSERT INTO business_websites (business_id, repo_full_name, repo_url, pages_url, template, last_generated_at)
      VALUES ($1, $2, $3, $4, $5, now())`,
@@ -98,7 +98,7 @@ async function regenerate(biz, userId, templateInput) {
     throw err;
   }
   const templateId = templateInput ? resolveTemplate(templateInput, biz.category) : resolveTemplate(row.template, biz.category);
-  const org = github.orgName();
+  const owner = github.ownerLogin();
   const repoName = String(row.repo_full_name || '').split('/')[1];
   if (!repoName) {
     const err = new Error('The saved repository name is missing.');
@@ -106,15 +106,15 @@ async function regenerate(biz, userId, templateInput) {
     throw err;
   }
   const site = await siteFor(biz, templateId);
-  const pagesUrl = row.pages_url || github.pagesUrlFor(org, repoName);
+  const pagesUrl = row.pages_url || github.pagesUrlFor(owner, repoName);
   const files = renderFiles(site, templateId, { pagesUrl });
   const branch = github.branchName(new Date());
-  await github.branchCommit(org, repoName, {
+  await github.branchCommit(owner, repoName, {
     branch,
     message: 'Update ' + site.name + ' website',
     files
   });
-  const pr = await github.openPullRequest(org, repoName, {
+  const pr = await github.openPullRequest(owner, repoName, {
     title: 'Update ' + site.name + ' website',
     head: branch,
     base: 'main',
