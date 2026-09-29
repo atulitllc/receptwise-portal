@@ -280,6 +280,7 @@ function json(status, body) {
 test('github client is inert without GITHUB_TOKEN and does not call fetch', async () => {
   const previousToken = config.github.token;
   const previousFetch = global.fetch;
+  github.clearOwnerCache();
   config.github.token = '';
   let called = false;
   global.fetch = () => { called = true; throw new Error('should not fetch'); };
@@ -289,6 +290,64 @@ test('github client is inert without GITHUB_TOKEN and does not call fetch', asyn
     });
     assert.equal(called, false);
   } finally {
+    github.clearOwnerCache();
+    config.github.token = previousToken;
+    global.fetch = previousFetch;
+  }
+});
+
+test('GITHUB_OWNER is the repo owner when it is set', () => {
+  const previousOwner = config.github.owner;
+  const previousOrg = config.github.org;
+  config.github.owner = 'atulitllc';
+  config.github.org = 'some-org';
+  try {
+    assert.equal(github.ownerLogin(), 'atulitllc');
+    assert.equal(github.orgName(), 'atulitllc');
+  } finally {
+    config.github.owner = previousOwner;
+    config.github.org = previousOrg;
+  }
+});
+
+test('creates the repository on the user or in the organization', async () => {
+  const previousToken = config.github.token;
+  const previousFetch = global.fetch;
+  config.github.token = 'test-token';
+  const seen = [];
+  function install(login) {
+    github.clearOwnerCache();
+    seen.length = 0;
+    global.fetch = async (url, opts = {}) => {
+      const target = String(url);
+      const method = opts.method || 'GET';
+      const body = opts.body ? JSON.parse(opts.body) : null;
+      seen.push(method + ' ' + new URL(target).pathname);
+      if (method === 'GET' && new URL(target).pathname === '/user') return json(200, { login });
+      if (method === 'GET' && new URL(target).pathname.startsWith('/repos/')) return json(404, { message: 'Not Found' });
+      if (method === 'POST' && (new URL(target).pathname === '/user/repos' || new URL(target).pathname === '/orgs/atulitllc/repos')) {
+        assert.equal(body.auto_init, false);
+        assert.equal(body.private, false);
+        assert.equal(body.name, 'cafe-site');
+        return json(201, { full_name: 'atulitllc/cafe-site', html_url: 'https://github.com/atulitllc/cafe-site' });
+      }
+      return json(500, { message: 'unexpected ' + method + ' ' + target });
+    };
+  }
+  try {
+    install('AtulitLLC');
+    const asUser = await github.createUniqueRepo('atulitllc', 'cafe-site', 'Website for Cafe');
+    assert.equal(asUser.repo.full_name, 'atulitllc/cafe-site');
+    assert.ok(seen.includes('GET /user'));
+    assert.ok(seen.includes('POST /user/repos'));
+    assert.equal(seen.some((line) => line.includes('/orgs/')), false);
+    install('member-bot');
+    const asOrg = await github.createUniqueRepo('atulitllc', 'cafe-site', 'Website for Cafe');
+    assert.equal(asOrg.name, 'cafe-site');
+    assert.ok(seen.includes('POST /orgs/atulitllc/repos'));
+    assert.equal(seen.some((line) => line === 'POST /user/repos'), false);
+  } finally {
+    github.clearOwnerCache();
     config.github.token = previousToken;
     global.fetch = previousFetch;
   }
@@ -297,6 +356,7 @@ test('github client is inert without GITHUB_TOKEN and does not call fetch', asyn
 test('github create skips a taken name and the first commit targets main', async () => {
   const previousToken = config.github.token;
   const previousFetch = global.fetch;
+  github.clearOwnerCache();
   config.github.token = 'test-token';
   const calls = [];
   global.fetch = async (url, opts = {}) => {
@@ -305,6 +365,7 @@ test('github create skips a taken name and the first commit targets main', async
     const method = opts.method || 'GET';
     const body = opts.body ? JSON.parse(opts.body) : null;
     calls.push({ url: target, method, body, authorization: opts.headers.Authorization });
+    if (method === 'GET' && new URL(target).pathname === '/user') return json(200, { login: 'member-bot' });
     if (method === 'GET' && target.endsWith('/repos/atulitllc/harbor-and-rye-site')) return json(200, { name: 'harbor-and-rye-site' });
     if (method === 'GET' && target.endsWith('/repos/atulitllc/harbor-and-rye-site-2')) {
       return json(404, { message: 'Not Found' });
@@ -360,6 +421,7 @@ test('github create skips a taken name and the first commit targets main', async
     assert.equal(pages.already, true);
     assert.equal(github.pagesUrlFor('AtulitLLC', 'Harbor-And-Rye-Site-2'), 'https://atulitllc.github.io/harbor-and-rye-site-2/');
   } finally {
+    github.clearOwnerCache();
     config.github.token = previousToken;
     global.fetch = previousFetch;
   }

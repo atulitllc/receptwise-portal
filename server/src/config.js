@@ -57,10 +57,17 @@ const config = {
     token: env.TRELLO_TOKEN || '',
     baseUrl: 'https://api.trello.com'
   },
-  // Website generator. Inert until GITHUB_TOKEN is set. GITHUB_ORG defaults to the company org.
+  // Website generator. Inert until GITHUB_TOKEN is set.
+  // The account may be a user or an organization. GITHUB_OWNER overrides GITHUB_ORG.
   github: {
     token: env.GITHUB_TOKEN || '',
-    org: (env.GITHUB_ORG || 'atulitllc').trim() || 'atulitllc'
+    owner: (env.GITHUB_OWNER || env.GITHUB_ORG || 'atulitllc').trim() || 'atulitllc',
+    org: (env.GITHUB_OWNER || env.GITHUB_ORG || 'atulitllc').trim() || 'atulitllc'
+  },
+  // Optional. Both values are required before a site is also uploaded to Cloudflare Pages.
+  cloudflare: {
+    token: env.CLOUDFLARE_API_TOKEN || '',
+    accountId: env.CLOUDFLARE_ACCOUNT_ID || ''
   },
   // Pilot client #1 is ReceptWise itself. Ids are overridable; they are not secrets.
   pilot: {
@@ -76,5 +83,6 @@ config.vapi.configured = Boolean(config.vapi.apiKey);
 config.meta.configured = Boolean(config.meta.appId && config.meta.appSecret);
 config.trello.configured = Boolean(config.trello.apiKey && config.trello.token);
 config.github.configured = Boolean(config.github.token);
+config.cloudflare.configured = Boolean(config.cloudflare.token && config.cloudflare.accountId);
 
 module.exports = config;

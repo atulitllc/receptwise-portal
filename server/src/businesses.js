@@ -25,7 +25,7 @@ const TEXTING_HOLD = 'Texting stays off until the final company tax ID is on fil
 const PROFILE_KEYS = [
   'address', 'website', 'hours', 'staff', 'locations', 'tier', 'plan', 'price', 'minutesCap', 'setupFee',
   'card', 'nextInvoice', 'trial', 'owner', 'phone', 'greeting', 'voice', 'languages', 'transfer',
-  'capabilities', 'services', 'faqs', 'blurb', 'template', 'domainStatus', 'reviewLink', 'socialAccounts',
+  'capabilities', 'services', 'faqs', 'blurb', 'template', 'domain', 'domainStatus', 'reviewLink', 'socialAccounts',
   'reviews', 'posts', 'campaigns', 'contacts', 'suppressed', 'activity', 'paused'
 ];
 
@@ -321,7 +321,15 @@ function generatedWebsite(row) {
     pagesUrl: row.pages_url,
     template: row.template,
     lastGeneratedAt: row.last_generated_at,
-    lastPrUrl: row.last_pr_url || ''
+    lastPrUrl: row.last_pr_url || '',
+    cloudflareProject: row.cloudflare_project || '',
+    cloudflareUrl: row.cloudflare_url || '',
+    cloudflareDomain: row.cloudflare_domain || '',
+    cloudflareDomainStatus: row.cloudflare_domain_status || '',
+    cloudflareDns: row.cloudflare_dns || '',
+    cloudflareError: row.cloudflare_error || '',
+    cloudflareStatus: row.cloudflare_status || '',
+    cloudflareDeployedAt: row.cloudflare_deployed_at || null
   };
 }
 
