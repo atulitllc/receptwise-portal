@@ -2436,6 +2436,7 @@
       var categoryEl = root.querySelector("[data-set=category]");
       if (categoryEl && categoryEl.value) b.category = categoryEl.value;
       toast("Settings saved for this session.");
+      currentRender();
     },
     "import-contacts": function () {
       openModal("Import customers", '<p class="help">Include a consent column, plus the date and source. Rows without consent are skipped.</p><textarea class="ctrl" id="import-box" placeholder="name, email, consent, date"></textarea>',
