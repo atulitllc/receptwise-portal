@@ -63,13 +63,29 @@
     billing: "billing"
   };
 
+  var BUSINESS_TYPES = [
+    ["Restaurant", "Tables, takeout, hours, and reservations"],
+    ["Clinic", "Appointments and insurance questions. No health details on the call."],
+    ["Dental", "Cleanings, whitening, and comfort. No health details on the call."],
+    ["HVAC", "Repair, installation, and maintenance plans"],
+    ["Home services", "Plumbing, electrical, cleaning, and estimates"],
+    ["Auto shop", "Repairs, inspections, and quotes"],
+    ["Retail", "Featured products and visits"],
+    ["Salon", "Services, stylists, and prices"],
+    ["Studio", "Fitness or yoga classes and a schedule"],
+    ["Professional services", "Consultations and follow-up"]
+  ];
+
   var CAT_COLOR = {
     Restaurant: "#c2410c",
     Clinic: "#0369a1",
+    Dental: "#1d6fbf",
+    HVAC: "#e85d04",
     "Auto shop": "#1d4ed8",
     Salon: "#9d174d",
     "Home services": "#166534",
     Retail: "#6d28d9",
+    Studio: "#4338ca",
     "Professional services": "#0e7c72"
   };
 
@@ -1000,7 +1016,7 @@
       body = '<div class="grid-2">' + field("Business name", input("name", wizard.name, "Harbor & Rye")) +
         field("City", input("city", wizard.city, "Portland, OR")) + "</div>" +
         '<div class="field"><label>Business type</label><div class="choice-grid">' +
-        [["Restaurant", "Tables, takeout, hours"], ["Clinic", "Visits only. No health details on the call."], ["Home services", "Arrival windows and job types"], ["Auto shop", "Diagnostics and service bays"], ["Retail", "Hours, products, and visits"], ["Salon", "Services, stylists, and prices"], ["Studio", "Classes and private sessions"], ["Professional services", "Calls, demos, and follow-up"]].map(function (item) {
+        BUSINESS_TYPES.map(function (item) {
           return choice("category", item[0], item[0], item[1]);
         }).join("") + "</div></div>" +
         field("Street address", input("address", wizard.address, "418 Lantern Street")) +
@@ -1012,7 +1028,7 @@
         '<div class="grid-2">' + field("Owner name", input("ownerName", wizard.ownerName, "Elena Vasquez")) +
         field("Owner mobile", input("ownerMobile", wizard.ownerMobile, "(503) 555-0172")) + "</div>" +
         field("Owner email", input("ownerEmail", wizard.ownerEmail, "owner@business.example", "email")) +
-        (wizard.category === "Clinic" ? '<div class="note">Clinics need a HIPAA agreement before any health details are collected. The receptionist should only book and take messages.</div>' : "");
+        (wizard.category === "Clinic" || wizard.category === "Dental" ? '<div class="note">Clinics and dental offices need a HIPAA agreement before any health details are collected. The receptionist should only book and take messages.</div>' : "");
     } else if (wizard.step === 1) {
       body = '<div class="choice-grid">' +
         choice("tier", "Solo", "Solo · Starter · $199", "1–3 staff · 250 minutes") +
@@ -1119,7 +1135,7 @@
         '<div class="grid-2">' + field("Transfer-to number", input("transfer", wizard.transfer || wizard.ownerMobile, "(503) 555-0172")) +
         field("Voice " + badge("voice_dropdown"), '<select class="ctrl" data-field="voice">' + voiceOptions(wizard.voice) + "</select>", "Saved on this business. Publish uses this voice.") + "</div>" +
         '<label class="setting-row"><span><strong>Spanish as well as English</strong><div class="help">Optional. English is always on.</div></span><input data-field="spanish" type="checkbox"' + (wizard.spanish ? " checked" : "") + "></label>";
-      if (wizard.category === "Clinic") body += '<div class="note">Do not collect symptoms, insurance numbers, or other health details on this line.</div>';
+      if (wizard.category === "Clinic" || wizard.category === "Dental") body += '<div class="note">Do not collect symptoms, insurance numbers, or other health details on this line.</div>';
     } else if (wizard.step === 6) {
       body = field("Facebook Page", input("facebook", wizard.facebook, "Page name or link")) +
         field("Instagram", input("instagram", wizard.instagram, "@thebusiness")) +
@@ -1127,13 +1143,12 @@
         '<div class="note calm">The owner approves Facebook, Instagram, and Google themselves. For other businesses’ pages, Meta app review is still required, so early clients can post through a scheduler.</div>' +
         '<button class="btn" type="button" data-action="toast-link">Send social connect links</button>';
     } else if (wizard.step === 7) {
-      var templates = ["Restaurant", "Clinic", "Home services", "Auto shop", "Retail", "Salon", "Studio", "Professional services"];
       if (!wizard.template) wizard.template = wizard.category || "Professional services";
       body = '<div class="choice-grid">' + choice("siteChoice", "build", "Build a new site", "One-page template with call, book, and chat.") +
         choice("siteChoice", "keep", "Keep their site", "Point the domain when they control DNS.") + "</div>" +
         field("Domain", input("domain", wizard.domain || wizard.website, "theirbusiness.example")) +
-        '<div class="field"><label>Template</label><div class="choice-grid">' + templates.map(function (item) {
-          return choice("template", item, item, "Hours, services, and photos from this wizard");
+        '<div class="field"><label>Template</label><div class="choice-grid">' + BUSINESS_TYPES.map(function (item) {
+          return choice("template", item[0], item[0], item[1]);
         }).join("") + "</div></div>";
     } else if (wizard.step === 8) {
       var ready = wizard.legalName.trim() && wizard.taxId.trim();
@@ -1716,9 +1731,11 @@
   var SITE_SUGGEST = {
     Restaurant: "classic",
     Clinic: "classic",
+    Dental: "classic",
     Retail: "classic",
     "Professional services": "classic",
     "Auto shop": "modern",
+    HVAC: "modern",
     Salon: "modern",
     "Home services": "modern",
     Studio: "modern"
@@ -1773,7 +1790,7 @@
     var phone = (b.phone && b.phone.aiNumber) ? "Call uses the AI number " + b.phone.aiNumber + "." : "No AI number is on file, so the call button is left off.";
     return '<div class="split"><div class="browser"><div class="browser-bar"><i></i><i></i><i></i><span class="url">' + esc(urlLabel) + "</span></div>" + preview + "</div>" +
       '<section class="card"><div class="card-b">' + banner +
-      "<h2>Website</h2>" + badge("website_generator") + "<p class='help'>Two real designs: Classic and Modern. The eight industry names are not eight layouts. They pick an accent color and a suggested design.</p>" +
+      "<h2>Website</h2>" + badge("website_generator") + "<p class='help'>Two real designs: Classic and Modern. Business type changes the colours, icon, section order, and wording inside those designs.</p>" +
       "<p class='sub'>" + esc(b.category || "This business") + " suggests " + (suggested === "modern" ? "Modern" : "Classic") + ". You can choose either.</p>" +
       '<div class="choice-grid">' +
       templateChoice(b, "classic", "Classic", "Cream page, sticky header, rounded cards, and a large call button.") +
@@ -1839,8 +1856,18 @@
       "</dd></dl><p class='help'>Minutes at about $0.125. Number at $2. Card fees at 2.9% + 30¢ plus 0.7% for subscriptions. Texting fees stay at $0 until registration is on.</p></div></section></div>";
   }
 
+  function categoryOptions(current) {
+    var names = BUSINESS_TYPES.map(function (item) { return item[0]; });
+    if (current && names.indexOf(current) === -1) names.push(current);
+    return names.map(function (name) {
+      return "<option" + (name === current ? " selected" : "") + ">" + esc(name) + "</option>";
+    }).join("");
+  }
+
   function tabSettings(b) {
-    return '<section class="card"><div class="card-h"><h2>Settings</h2>' + badge("business_settings") + '</div><div class="card-b"><div class="grid-2">' +
+    return '<section class="card"><div class="card-h"><h2>Settings</h2>' + badge("business_settings") + '</div><div class="card-b">' +
+      '<div class="field"><label>Business type</label><select class="ctrl" data-set="category">' + categoryOptions(b.category) + "</select></div>" +
+      '<div class="grid-2">' +
       '<div class="field"><label>Hours</label><input class="ctrl" data-set="hours" value="' + esc(b.hours || "") + '"></div>' +
       '<div class="field"><label>Time zone</label><input class="ctrl" data-set="timezone" value="' + esc(b.timezone || "") + '"></div>' +
       '<div class="field"><label>Transfer-to number</label><input class="ctrl" data-set="transfer" value="' + esc(b.transfer || "") + '"></div>' +
@@ -2406,6 +2433,8 @@
       b.transfer = root.querySelector("[data-set=transfer]").value;
       b.owner = b.owner || {};
       b.owner.mobile = root.querySelector("[data-set=mobile]").value;
+      var categoryEl = root.querySelector("[data-set=category]");
+      if (categoryEl && categoryEl.value) b.category = categoryEl.value;
       toast("Settings saved for this session.");
     },
     "import-contacts": function () {
@@ -2600,6 +2629,8 @@
       b.transfer = root.querySelector("[data-set=transfer]").value;
       b.owner = b.owner || {};
       b.owner.mobile = root.querySelector("[data-set=mobile]").value;
+      var categoryEl = root.querySelector("[data-set=category]");
+      if (categoryEl && categoryEl.value) b.category = categoryEl.value;
       persistBiz(b, "Settings saved.").catch(liveFail);
     },
     "pause-biz": function (el) {

@@ -10,9 +10,9 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700&family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet">
 <!--ASSETS-->
-<style>:root{--accent:{{accent}};--accent-ink:{{accentInk}};--accent-soft:{{accentSoft}};}</style>
+<style>:root{--accent:{{accent}};--accent-ink:{{accentInk}};--accent-soft:{{accentSoft}};--paper:{{paper}};--cream:{{cream}};--ink:{{ink}};--navy:{{navy}};--night:{{night}};--muted:{{muted}};--line:{{line}};--orange:{{orange}};--white:{{white}};}</style>
 </head>
-<body class="tpl-modern">
+<body class="tpl-modern {{toneClass}}">
 <a class="skip-link" href="#main">Skip to content</a>
 <header class="site-header" id="top">
   <div class="container header-inner">
@@ -24,14 +24,9 @@
     </button>
     <nav id="site-nav" class="site-nav" aria-label="On this page">
       <ul>
-        {{#services}}<li><a href="#services">Services</a></li>{{/services}}
-        {{#about}}<li><a href="#about">About</a></li>{{/about}}
-        {{#hours}}<li><a href="#hours">Hours</a></li>{{/hours}}
-        {{#reviews}}<li><a href="#reviews">Reviews</a></li>{{/reviews}}
-        {{#address}}<li><a href="#visit">Visit</a></li>{{/address}}
-        {{#showContact}}<li><a href="#contact">Contact</a></li>{{/showContact}}
+        {{#each nav}}<li><a href="{{href}}">{{label}}</a></li>{{/each}}
       </ul>
-      {{#phoneHref}}<a class="btn btn-sm btn-call" href="{{phoneHref}}">Call {{phoneDisplay}}</a>{{/phoneHref}}
+      {{#phoneHref}}<a class="btn btn-sm btn-call{{callClass}}" href="{{phoneHref}}">{{callButton}} {{phoneDisplay}}</a>{{/phoneHref}}
     </nav>
     {{/hasNav}}
   </div>
@@ -44,53 +39,58 @@
         <h1 id="hero-title">{{#headlineLead}}{{headlineLead}} {{/headlineLead}}<span class="hl">{{headlineMark}}</span></h1>
         {{#blurb}}<p class="lead">{{blurb}}</p>{{/blurb}}
         <div class="hero-actions">
-          {{#phoneHref}}<a class="btn btn-call btn-lg" href="{{phoneHref}}">Call {{phoneDisplay}}</a>{{/phoneHref}}
-          {{#bookHref}}<a class="btn btn-book btn-lg" href="{{bookHref}}"{{#bookExternal}} target="_blank" rel="noopener"{{/bookExternal}}>Book now</a>{{/bookHref}}
+          {{#phoneHref}}<a class="btn btn-call btn-lg{{callClass}}" href="{{phoneHref}}">{{callButton}} {{phoneDisplay}}</a>{{/phoneHref}}
+          {{#bookHref}}<a class="btn btn-book btn-lg{{bookClass}}" href="{{bookHref}}"{{#bookExternal}} target="_blank" rel="noopener"{{/bookExternal}}>{{bookLabel}}</a>{{/bookHref}}
         </div>
       </div>
+      <div class="hero-mark">{{=iconSvg}}</div>
     </div>
   </section>
-  {{#services}}
-  <section class="section" id="services">
+  {{#each sections}}
+  {{#isServices}}
+  <section class="section{{bandClass}}{{emphasisClass}}" id="services">
     <div class="container">
       <div class="section-head reveal">
-        <p class="kicker">Services</p>
-        <h2>Services</h2>
+        <p class="kicker">{{kicker}}</p>
+        <h2>{{title}}</h2>
+        {{#note}}<p class="placeholder-note">{{note}}</p>{{/note}}
       </div>
       <ol class="services">
         {{#each services}}
-        <li class="svc reveal">
+        <li class="svc reveal{{placeholderClass}}">
           <div>
             <h3>{{name}}</h3>
             {{#detail}}<p class="detail">{{detail}}</p>{{/detail}}
           </div>
+          {{#showMeta}}
           <div class="svc-meta">
             {{#duration}}<span class="duration">{{duration}}</span>{{/duration}}
             {{#price}}<strong class="price">{{price}}</strong>{{/price}}
           </div>
+          {{/showMeta}}
         </li>
         {{/each}}
       </ol>
     </div>
   </section>
-  {{/services}}
-  {{#about}}
-  <section class="section section-paper" id="about">
+  {{/isServices}}
+  {{#isAbout}}
+  <section class="section{{bandClass}}{{emphasisClass}}" id="about">
     <div class="container about-grid">
       <div class="reveal">
-        <p class="kicker">About</p>
-        <h2>{{name}}</h2>
+        <p class="kicker">{{kicker}}</p>
+        <h2>{{title}}</h2>
       </div>
       <div class="prose reveal">{{about}}</div>
     </div>
   </section>
-  {{/about}}
-  {{#hours}}
-  <section class="section" id="hours">
+  {{/isAbout}}
+  {{#isHours}}
+  <section class="section{{bandClass}}{{emphasisClass}}" id="hours">
     <div class="container narrow">
       <div class="section-head reveal">
-        <p class="kicker">Hours</p>
-        <h2>Hours</h2>
+        <p class="kicker">{{kicker}}</p>
+        <h2>{{title}}</h2>
       </div>
       <ul class="hours reveal">
         {{#each hourLines}}
@@ -99,13 +99,13 @@
       </ul>
     </div>
   </section>
-  {{/hours}}
-  {{#reviews}}
-  <section class="section section-paper" id="reviews">
+  {{/isHours}}
+  {{#isReviews}}
+  <section class="section{{bandClass}}{{emphasisClass}}" id="reviews">
     <div class="container">
       <div class="section-head reveal">
-        <p class="kicker">Reviews</p>
-        <h2>What customers say</h2>
+        <p class="kicker">{{kicker}}</p>
+        <h2>{{title}}</h2>
       </div>
       <ul class="reviews">
         {{#each reviews}}
@@ -118,33 +118,34 @@
       </ul>
     </div>
   </section>
-  {{/reviews}}
-  {{#address}}
-  <section class="visit" id="visit">
+  {{/isReviews}}
+  {{#isVisit}}
+  <section class="visit{{emphasisClass}}" id="visit">
     <div class="container visit-inner reveal">
       <div>
-        <p class="kicker">Location</p>
-        <h2>Visit</h2>
+        <p class="kicker">{{kicker}}</p>
+        <h2>{{title}}</h2>
         <p class="address">{{address}}</p>
       </div>
       <a class="btn btn-book btn-lg" href="{{mapUrl}}" target="_blank" rel="noopener">Open in Maps</a>
     </div>
   </section>
-  {{/address}}
-  {{#showContact}}
-  <section class="final-cta" id="contact">
+  {{/isVisit}}
+  {{#isContact}}
+  <section class="final-cta{{emphasisClass}}" id="contact">
     <div class="container cta-inner reveal">
       <div>
-        <h2>Get in touch</h2>
+        <h2>{{title}}</h2>
         <p>{{ctaText}}</p>
       </div>
       <div class="hero-actions">
-        {{#phoneHref}}<a class="btn btn-call btn-lg" href="{{phoneHref}}">Call {{phoneDisplay}}</a>{{/phoneHref}}
-        {{#bookHref}}<a class="btn btn-book btn-lg" href="{{bookHref}}"{{#bookExternal}} target="_blank" rel="noopener"{{/bookExternal}}>Book now</a>{{/bookHref}}
+        {{#phoneHref}}<a class="btn btn-call btn-lg{{callClass}}" href="{{phoneHref}}">{{callButton}} {{phoneDisplay}}</a>{{/phoneHref}}
+        {{#bookHref}}<a class="btn btn-book btn-lg{{bookClass}}" href="{{bookHref}}"{{#bookExternal}} target="_blank" rel="noopener"{{/bookExternal}}>{{bookLabel}}</a>{{/bookHref}}
       </div>
     </div>
   </section>
-  {{/showContact}}
+  {{/isContact}}
+  {{/each}}
 </main>
 <footer class="site-footer">
   <div class="container footer-grid">
