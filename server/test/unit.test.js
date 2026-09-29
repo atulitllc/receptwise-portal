@@ -15,7 +15,7 @@ process.env.VAPI_CALENDAR_TOOL_IDS = 'tool-check,tool-book';
 
 const vapi = require('../src/integrations/vapi');
 const twilio = require('../src/integrations/twilio');
-const { extractBookings, classifyCall, bookingFromStructured } = require('../src/calls');
+const { extractBookings, classifyCall, bookingFromStructured, zonedInstant } = require('../src/calls');
 const { slugify } = require('../src/businesses');
 const settings = require('../src/settings');
 const { presentNumbers } = require('../src/phoneView');
@@ -159,10 +159,60 @@ test('toE164', () => {
 test('bookings are extracted from calendar tool calls only', () => {
   const b = extractBookings([
     { role: 'tool_calls', toolCalls: [{ function: { name: 'checkAvailability', arguments: '{}' } }] },
+    { role: 'tool_calls', toolCalls: [{ type: 'google.calendar.availability.check', function: { name: 'check_availability', arguments: '{}' } }] },
     { role: 'tool_calls', toolCalls: [{ function: { name: 'scheduleAppointment', arguments: '{"startDateTime":"2026-10-06T10:00:00-04:00","summary":"Intro demo"}' } }] }
   ]);
   assert.equal(b.length, 1);
   assert.equal(b[0].service, 'Intro demo');
+  assert.equal(b[0].startsAt, '2026-10-06T14:00:00.000Z');
+  assert.equal(b[0].customer, '');
+});
+
+test('book_demo summary yields start, customer, phone, and business', () => {
+  const bookings = extractBookings([
+    {
+      role: 'tool_calls',
+      toolCalls: [{
+        type: 'function',
+        function: {
+          name: 'book_demo',
+          arguments: JSON.stringify({
+            summary: 'Receptwise demo – Northline Clinic – Riley Cho – +1 617-555-0142',
+            startDateTime: '2026-10-06T15:00:00',
+            endDateTime: '2026-10-06T15:30:00',
+            timeZone: 'America/New_York',
+            attendees: ['riley@example.test']
+          })
+        }
+      }]
+    }
+  ]);
+  assert.equal(bookings.length, 1);
+  assert.equal(bookings[0].customer, 'Riley Cho');
+  assert.equal(bookings[0].phone, '+1 617-555-0142');
+  assert.equal(bookings[0].service, 'Northline Clinic');
+  assert.equal(bookings[0].email, 'riley@example.test');
+  assert.equal(bookings[0].startsAt, '2026-10-06T19:00:00.000Z');
+  assert.equal(bookings[0].endsAt, '2026-10-06T19:30:00.000Z');
+  assert.equal(bookings[0].timeZone, 'America/New_York');
+  const hyphen = extractBookings([{
+    toolCalls: [{
+      function: {
+        name: 'google.calendar.event.create',
+        arguments: {
+          summary: 'Receptwise demo - Harbor Cafe - Sam Ortiz - (617) 555-0199',
+          startDateTime: '2026-01-15T15:00:00',
+          timeZone: 'America/New_York',
+          attendees: [{ email: 'sam@example.test', displayName: 'Ignored Because Summary Has A Name' }]
+        }
+      }
+    }]
+  }]);
+  assert.equal(hyphen[0].customer, 'Sam Ortiz');
+  assert.equal(hyphen[0].phone, '(617) 555-0199');
+  assert.equal(hyphen[0].service, 'Harbor Cafe');
+  assert.equal(hyphen[0].startsAt, '2026-01-15T20:00:00.000Z');
+  assert.equal(zonedInstant('2026-10-06T10:00:00-04:00', 'America/Los_Angeles'), '2026-10-06T14:00:00.000Z');
 });
 
 test('slugify', () => {

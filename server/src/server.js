@@ -20,10 +20,11 @@ const exportData = require('./exportData');
 const calendarConnection = require('./calendarConnection');
 const voices = require('./voices');
 const websites = require('./website/service');
+const appointments = require('./appointments');
 
 // The portal pages live at the repo root (also published as the GitHub Pages demo).
 const SITE_ROOT = path.join(__dirname, '..', '..');
-const PAGES = ['index', 'dashboard', 'clients', 'add', 'client', 'billing', 'team', 'phone', 'settings', 'integrations'];
+const PAGES = ['index', 'dashboard', 'appointments', 'clients', 'add', 'client', 'billing', 'team', 'phone', 'settings', 'integrations'];
 // Same object the admin badges read from assets/feature-status.js.
 const featureStatus = require(path.join(SITE_ROOT, 'assets', 'feature-status'));
 
@@ -261,6 +262,32 @@ function createApp() {
   api.post('/businesses/:slug/website/regenerate', auth.requireAdmin, wrap(loadBiz), wrap(async (req, res) => {
     const result = await websites.regenerate(req.biz, req.user.id, (req.body || {}).template);
     res.json(Object.assign({ ok: true }, result));
+  }));
+
+  api.get('/appointments', auth.requireUser, wrap(async (req, res) => {
+    const biz = await appointments.resolveBusiness(req.query.business, req.businessScope);
+    const items = await appointments.list({
+      businessId: biz ? biz.id : null,
+      from: appointments.parseInstant(req.query.from, 'From'),
+      to: appointments.parseInstant(req.query.to, 'To'),
+      includeUnscheduled: req.query.unscheduled === '1'
+    });
+    res.json({
+      businessId: biz ? biz.slug : null,
+      timezone: (biz && biz.timezone) || 'America/New_York',
+      appointments: items
+    });
+  }));
+  api.post('/appointments', auth.requireUser, wrap(async (req, res) => {
+    const body = req.body || {};
+    const biz = await appointments.resolveBusiness(body.businessId || body.business, req.businessScope);
+    if (!biz) return res.status(400).json({ error: 'Choose a business.' });
+    const appointment = await appointments.create(biz, body, req.user.id);
+    res.status(201).json({ appointment });
+  }));
+  api.patch('/appointments/:id', auth.requireUser, wrap(async (req, res) => {
+    const appointment = await appointments.update(req.params.id, req.body || {}, req.user.id, req.businessScope);
+    res.json({ appointment });
   }));
 
   api.get('/metrics', auth.requireUser, wrap(async (req, res) => {
