@@ -6,6 +6,10 @@ process.env.ADMIN_PASSWORD = 'pilot-password-10';
 process.env.ADMIN_NAME = 'Studio Admin';
 process.env.VAPI_API_KEY = 'test-vapi-key';
 process.env.VAPI_WEBHOOK_SECRET = 'test-webhook-secret';
+process.env.VAPI_VOICE_PROVIDER = 'cartesia';
+process.env.VAPI_VOICE_ID = 'nora';
+process.env.VAPI_VOICE_MODEL = 'sonic-2';
+process.env.VAPI_CALENDAR_TOOL_IDS = 'tool-check,tool-book';
 process.env.TWILIO_ACCOUNT_SID = 'AC11111111111111111111111111111111';
 process.env.TWILIO_AUTH_TOKEN = 'test-twilio-token';
 process.env.TOKEN_ENCRYPTION_KEY = 'test-token-key';
@@ -40,6 +44,39 @@ global.fetch = async (url, opts = {}) => {
   const method = opts.method || 'GET';
   const target = String(url);
   httpCalls.push({ url: target, method, opts });
+  let path = target;
+  let params = new URLSearchParams();
+  try {
+    const parsed = new URL(target);
+    path = parsed.pathname;
+    params = parsed.searchParams;
+  } catch (e) { /* keep the raw target */ }
+  if (method === 'POST' && path.endsWith('/assistant')) {
+    const body = JSON.parse(opts.body);
+    return jsonRes(200, { id: 'asst-new-harbor', name: body.name });
+  }
+  if (method === 'POST' && path.endsWith('/phone-number')) {
+    const body = JSON.parse(opts.body);
+    return jsonRes(200, { id: 'pn-new-harbor', number: body.number, assistantId: body.assistantId });
+  }
+  if (method === 'POST' && path.endsWith('/call')) {
+    return jsonRes(200, { id: 'call-new-harbor' });
+  }
+  if (target.includes('AvailablePhoneNumbers')) {
+    const area = params.get('AreaCode') || '503';
+    return jsonRes(200, {
+      available_phone_numbers: [{
+        phone_number: '+1' + area + '5550199',
+        friendly_name: '(' + area + ') 555-0199',
+        locality: 'Portland',
+        region: 'OR'
+      }]
+    });
+  }
+  if (target.includes('IncomingPhoneNumbers.json') && method === 'POST') {
+    const form = new URLSearchParams(opts.body);
+    return jsonRes(201, { sid: 'PNharbor', phone_number: form.get('PhoneNumber') });
+  }
   if (target.includes('/assistant/') && method === 'PATCH') return jsonRes(200, { id: ASSISTANT });
   if (target.includes('/assistant/')) {
     return jsonRes(200, {
@@ -105,6 +142,7 @@ global.fetch = async (url, opts = {}) => {
 const db = require('../src/db');
 const auth = require('../src/auth');
 const businesses = require('../src/businesses');
+const vapi = require('../src/integrations/vapi');
 const { createApp } = require('../src/server');
 
 let server;
@@ -680,5 +718,137 @@ describe('control panel API', () => {
     assert.match(sql.text, /Sam Ortiz/);
     assert.equal(sql.text.includes('password_hash'), false);
     assert.equal(sql.text.includes('token_enc'), false);
+  });
+
+  it('onboards a business: save profile, publish, search, buy, and place a test call', async () => {
+    const created = await request('POST', '/api/businesses', {
+      cookie,
+      body: {
+        name: 'Harbor Cafe',
+        category: 'Cafe',
+        city: 'Portland, OR',
+        timezone: 'Pacific Time',
+        hours: 'Tue–Sun 8:00 AM – 3:00 PM',
+        greeting: 'Thanks for calling Harbor Cafe.',
+        address: '418 Lantern Street',
+        transfer: '(503) 555-0101',
+        services: [{ name: 'Brunch table', length: '90 min' }],
+        faqs: [{ q: 'Do you take reservations?', a: 'Yes.' }],
+        blurb: 'A neighborhood cafe.',
+        capabilities: { book: true, reschedule: true, cancel: true, transfer: true, textLink: false }
+      }
+    });
+    assert.equal(created.status, 201, created.text);
+    assert.equal(created.json.business.id, 'harbor-cafe');
+
+    const saved = await request('PUT', '/api/businesses/harbor-cafe', {
+      cookie,
+      body: {
+        hours: 'Tue–Sun 8:00 AM – 4:00 PM',
+        greeting: 'Thanks for calling Harbor Cafe. This call may be recorded.',
+        timezone: 'Pacific Time',
+        services: [{ name: 'Brunch table', length: '90 min', price: '$0' }],
+        transfer: '(503) 555-0172'
+      }
+    });
+    assert.equal(saved.status, 200, saved.text);
+    assert.equal(saved.json.business.hours, 'Tue–Sun 8:00 AM – 4:00 PM');
+    assert.equal(saved.json.business.timezone, 'Pacific Time');
+
+    httpCalls.length = 0;
+    const published = await request('POST', '/api/businesses/harbor-cafe/assistant/publish', { cookie });
+    assert.equal(published.status, 200, published.text);
+    assert.equal(published.json.assistantId, 'asst-new-harbor');
+    assert.equal(published.json.voiceSet, true);
+    assert.equal(published.json.calendarTools, 2);
+
+    const createCall = httpCalls.find((c) => c.method === 'POST' && new URL(c.url).pathname === '/assistant');
+    assert.ok(createCall, 'expected a Vapi assistant create');
+    assert.equal(createCall.opts.headers.Authorization, 'Bearer test-vapi-key');
+    assert.equal(new URL(createCall.url).host, 'api.vapi.ai');
+    const assistant = JSON.parse(createCall.opts.body);
+    assert.equal(assistant.firstMessage, 'Thanks for calling Harbor Cafe. This call may be recorded.');
+    assert.equal(assistant.voice.provider, 'cartesia');
+    assert.equal(assistant.voice.voiceId, 'nora');
+    assert.equal(assistant.voice.model, 'sonic-2');
+    assert.equal(assistant.voice.language, 'en');
+    assert.deepEqual(assistant.model.toolIds, ['tool-check', 'tool-book']);
+    assert.equal(assistant.model.tools[0].destinations[0].number, '+15035550172');
+    assert.equal(assistant.server.url, 'https://panel.example.test/webhooks/vapi');
+    assert.equal(assistant.server.headers['X-Vapi-Secret'], 'test-webhook-secret');
+    const prompt = assistant.model.messages[0].content;
+    assert.match(prompt, /Harbor Cafe/);
+    assert.match(prompt, /Portland, OR/);
+    assert.match(prompt, /Tue–Sun 8:00 AM – 4:00 PM/);
+    assert.match(prompt, /Brunch table/);
+    assert.match(prompt, /you can book appointments/);
+    assert.match(prompt, /check_availability and then the booking tool/);
+    const laOffset = vapi.utcOffset('America/Los_Angeles');
+    assert.match(prompt, new RegExp('The current UTC offset for America/Los_Angeles is ' + laOffset.replace('+', '\\+')));
+    assert.match(prompt, /-07:00 during daylight saving time and -08:00 otherwise/);
+    assert.match(prompt, /Harbor Cafe appointment – \{service\} – \{caller name\} – \{phone\}/);
+    assert.match(prompt, /never promise to send a text/);
+
+    const stored = await db.query(
+      `SELECT a.config, a.vapi_assistant_id FROM assistants a
+       JOIN businesses b ON b.id = a.business_id WHERE b.slug = 'harbor-cafe'`
+    );
+    const configRow = typeof stored.rows[0].config === 'string' ? JSON.parse(stored.rows[0].config) : stored.rows[0].config;
+    assert.equal(stored.rows[0].vapi_assistant_id, 'asst-new-harbor');
+    assert.equal(configRow.server.url, 'https://panel.example.test/webhooks/vapi');
+    assert.equal(configRow.server.headers, undefined);
+    assert.equal(JSON.stringify(configRow).includes('test-webhook-secret'), false);
+
+    const search = await request('GET', '/api/businesses/harbor-cafe/numbers/search?areaCode=503', { cookie });
+    assert.equal(search.status, 200, search.text);
+    assert.equal(search.json.numbers[0].e164, '+15035550199');
+    const searchCall = httpCalls.find((c) => c.url.includes('AvailablePhoneNumbers'));
+    assert.ok(searchCall);
+    assert.equal(new URL(searchCall.url).searchParams.get('AreaCode'), '503');
+    assert.equal(new URL(searchCall.url).host, 'api.twilio.com');
+
+    const bought = await request('POST', '/api/businesses/harbor-cafe/numbers/provision', {
+      cookie,
+      body: { e164: search.json.numbers[0].e164 }
+    });
+    assert.equal(bought.status, 201, bought.text);
+    assert.equal(bought.json.e164, '+15035550199');
+    assert.equal(bought.json.pretty, '(503) 555-0199');
+    assert.equal(bought.json.business.phone.aiNumber, '(503) 555-0199');
+    const numberStep = bought.json.business.checklist.find((item) => item.key === 'number');
+    assert.equal(numberStep.status, 'connected');
+
+    const twilioBuy = httpCalls.find((c) => c.method === 'POST' && c.url.includes('IncomingPhoneNumbers.json'));
+    assert.ok(twilioBuy);
+    assert.equal(new URLSearchParams(twilioBuy.opts.body).get('PhoneNumber'), '+15035550199');
+    const imported = httpCalls.find((c) => c.method === 'POST' && new URL(c.url).pathname === '/phone-number');
+    assert.ok(imported);
+    const importBody = JSON.parse(imported.opts.body);
+    assert.equal(importBody.provider, 'twilio');
+    assert.equal(importBody.number, '+15035550199');
+    assert.equal(importBody.assistantId, 'asst-new-harbor');
+    assert.equal(importBody.smsEnabled, false);
+    assert.equal(importBody.server.url, 'https://panel.example.test/webhooks/vapi');
+    assert.equal(importBody.server.headers['X-Vapi-Secret'], 'test-webhook-secret');
+    assert.equal(importBody.twilioAccountSid, 'AC11111111111111111111111111111111');
+
+    const again = await request('POST', '/api/businesses/harbor-cafe/numbers/provision', {
+      cookie,
+      body: { e164: '+15035550198' }
+    });
+    assert.equal(again.status, 409, again.text);
+
+    const tested = await request('POST', '/api/businesses/harbor-cafe/test-call', {
+      cookie,
+      body: { to: '(617) 555-0144' }
+    });
+    assert.equal(tested.status, 200, tested.text);
+    assert.equal(tested.json.callId, 'call-new-harbor');
+    const testCall = httpCalls.find((c) => c.method === 'POST' && new URL(c.url).pathname === '/call');
+    assert.ok(testCall);
+    const testBody = JSON.parse(testCall.opts.body);
+    assert.equal(testBody.assistantId, 'asst-new-harbor');
+    assert.equal(testBody.phoneNumberId, 'pn-new-harbor');
+    assert.equal(testBody.customer.number, '+16175550144');
   });
 });

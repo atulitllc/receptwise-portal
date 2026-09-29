@@ -8,6 +8,10 @@ process.env.TWILIO_ACCOUNT_SID = '';
 process.env.TWILIO_AUTH_TOKEN = '';
 process.env.TRANSFER_TO_NUMBER = '+16175550100';
 process.env.TOKEN_ENCRYPTION_KEY = 'unit-test-key';
+process.env.VAPI_VOICE_PROVIDER = 'cartesia';
+process.env.VAPI_VOICE_ID = 'nora';
+process.env.VAPI_VOICE_MODEL = 'sonic-2';
+process.env.VAPI_CALENDAR_TOOL_IDS = 'tool-check,tool-book';
 
 const vapi = require('../src/integrations/vapi');
 const twilio = require('../src/integrations/twilio');
@@ -33,11 +37,80 @@ test('assistant payload uses the approved stack and never promises texts', () =>
   assert.equal(p.model.model, 'gpt-4.1');
   assert.equal(p.transcriber.provider, 'deepgram');
   assert.equal(p.firstMessage, 'Hi');
-  assert.match(p.model.messages[0].content, /Malden, MA/);
-  assert.match(p.model.messages[0].content, /never promise to send a text/);
+  const prompt = p.model.messages[0].content;
+  assert.match(prompt, /Malden, MA/);
+  assert.match(prompt, /never promise to send a text/);
+  assert.match(prompt, /you can book appointments/);
+  assert.match(prompt, /check_availability and then the booking tool/);
+  assert.match(prompt, /Never tell callers you can't book/);
+  assert.match(prompt, /never turn a booking request into a callback request/);
+  assert.match(prompt, /Take a callback message only if the caller doesn't want to book a time/);
+  assert.match(prompt, /name, phone number, service, and email/);
+  assert.match(prompt, /Confirm the day, the date, and the time before booking/);
+  assert.match(prompt, /Never say it's booked unless the booking tool confirmed it/);
+  assert.match(prompt, /Only book inside business hours/);
+  assert.match(prompt, /Do not double-book/);
+  assert.match(prompt, /-04:00 during daylight saving time and -05:00 otherwise/);
+  assert.match(prompt, /It changes at daylight saving time/);
+  assert.match(prompt, /Never send times without an offset or with Z/);
+  assert.match(prompt, /check_availability results come back in UTC/);
+  assert.match(prompt, /America\/New_York local time before comparing or speaking/);
+  assert.match(prompt, /exactly 10 digits/);
+  assert.match(prompt, /groups of 3, 3, and 4/);
+  assert.match(prompt, /do not ask for the number again/);
+  assert.match(prompt, /letter by letter/);
+  assert.match(prompt, /at gmail dot com/);
+  assert.match(prompt, /at yahoo dot com/);
+  assert.match(prompt, /at outlook dot com/);
+  assert.match(prompt, /at hotmail dot com/);
+  assert.match(prompt, /at icloud dot com/);
+  assert.match(prompt, /say "dot com" as words/);
+  assert.match(prompt, /spell unusual names/);
+  assert.match(prompt, /ReceptWise appointment – \{service\} – \{caller name\} – \{phone\}/);
+  assert.match(prompt, /attendees = \[caller email\]/);
+  assert.match(prompt, /Never mention other company names/);
+  assert.match(prompt, /transfer the call/);
+  const offset = vapi.utcOffset('America/New_York');
+  assert.match(prompt, new RegExp('The current UTC offset for America/New_York is ' + offset.replace('+', '\\+')));
   assert.equal(p.model.tools[0].type, 'transferCall');
   assert.equal(p.model.tools[0].destinations[0].number, '+16175550100');
+  assert.deepEqual(p.model.toolIds, ['tool-check', 'tool-book']);
+  assert.deepEqual(p.voice, { provider: 'cartesia', voiceId: 'nora', model: 'sonic-2', language: 'en' });
   assert.equal(p.server.url, 'https://x.test/webhooks/vapi');
+});
+
+test('utc offset follows the business time zone and daylight saving time', () => {
+  assert.equal(vapi.utcOffset('America/New_York', new Date('2026-07-15T16:00:00Z')), '-04:00');
+  assert.equal(vapi.utcOffset('America/New_York', new Date('2026-01-15T16:00:00Z')), '-05:00');
+  assert.equal(vapi.utcOffset('America/New_York', new Date('2026-09-29T16:00:00Z')), '-04:00');
+  assert.equal(vapi.utcOffset('America/Los_Angeles', new Date('2026-07-15T16:00:00Z')), '-07:00');
+  assert.equal(vapi.utcOffset('America/Los_Angeles', new Date('2026-01-15T16:00:00Z')), '-08:00');
+  assert.equal(vapi.utcOffset('America/Phoenix', new Date('2026-07-15T16:00:00Z')), '-07:00');
+  assert.equal(vapi.utcOffset('America/Phoenix', new Date('2026-01-15T16:00:00Z')), '-07:00');
+  assert.equal(vapi.utcOffset('Asia/Kolkata', new Date('2026-01-15T16:00:00Z')), '+05:30');
+  const phoenix = vapi.systemPrompt({ name: 'Desert Desk', timezone: 'America/Phoenix', profile: { capabilities: { book: true } } });
+  assert.match(phoenix, /The current UTC offset for America\/Phoenix is -07:00/);
+  assert.match(phoenix, /does not change at daylight saving time/);
+});
+
+test('booking can be turned off, and only Cartesia voices send language', () => {
+  const off = vapi.assistantPayload({
+    id: 2, slug: 'messages-only', name: 'Messages Only', timezone: 'America/Chicago',
+    profile: { capabilities: { book: false, transfer: false } }
+  });
+  assert.match(off.model.messages[0].content, /Do not book appointments; take a message instead/);
+  assert.equal(off.model.messages[0].content.includes('you can book appointments'), false);
+  assert.equal(off.model.toolIds, undefined);
+  assert.equal(off.model.tools.length, 0);
+  const eleven = vapi.buildVoice('11labs', 'voice-1', 'eleven_flash_v2_5');
+  assert.equal(eleven.language, undefined);
+  assert.deepEqual(eleven, { provider: '11labs', voiceId: 'voice-1', model: 'eleven_flash_v2_5' });
+  assert.deepEqual(vapi.buildVoice('cartesia', 'nora', 'sonic-2'), {
+    provider: 'cartesia', voiceId: 'nora', model: 'sonic-2', language: 'en'
+  });
+  assert.deepEqual(vapi.buildVoice('Cartesia', 'nora', ''), {
+    provider: 'Cartesia', voiceId: 'nora', language: 'en'
+  });
 });
 
 test('toE164', () => {
