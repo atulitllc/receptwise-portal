@@ -23,6 +23,7 @@ const cryptoBox = require('../src/cryptoBox');
 const meta = require('../src/integrations/meta');
 const { buildCard } = require('../src/trelloSync');
 const { authorizeUrl, redact } = require('../src/integrations/trello');
+const demoRequests = require('../src/demoRequests');
 
 test('integrations are inert without keys', async () => {
   assert.throws(() => vapi.assertConfigured(), /VAPI_API_KEY/);
@@ -402,7 +403,8 @@ test('feature status registry is the single badge source', () => {
     outreach: 'mockup',
     voice_dropdown: 'real',
     email_domain: 'mockup',
-    receptionist: 'real'
+    receptionist: 'real',
+    demo_requests: 'real'
   };
   Object.keys(expected).forEach((key) => {
     assert.equal(registry[key].status, expected[key], key);
@@ -412,6 +414,110 @@ test('feature status registry is the single badge source', () => {
     assert.ok(allowed.has(registry[key].status), key);
     assert.equal(typeof registry[key].note, 'string', key);
   });
+  assert.equal(registry.demo_requests.label, 'Demo requests');
+});
+
+test('demo request validation accepts the marketing form and normalizes US phones', () => {
+  const site = demoRequests.prepareLead({
+    name: 'Ada Lovelace',
+    business: 'Analytical Engines',
+    phone: '(781) 555-0100',
+    email: 'Ada@Example.com',
+    time: 'Weekday mornings',
+    plan: 'Growth',
+    businessType: 'Cafe',
+    message: 'We miss calls after 5.'
+  });
+  assert.equal(site.action, 'store');
+  assert.equal(site.lead.phone, '+17815550100');
+  assert.equal(site.lead.email, 'ada@example.com');
+  assert.equal(site.lead.businessName, 'Analytical Engines');
+  assert.equal(site.lead.preferredTime, 'Weekday mornings');
+  assert.equal(site.lead.plan, 'Growth');
+  assert.equal(site.lead.businessType, 'Cafe');
+  assert.equal(site.lead.message, 'We miss calls after 5.');
+
+  const snake = demoRequests.prepareLead({
+    name: 'Grace Hopper',
+    business_name: 'Compiler Co',
+    phone_number: '1-781-555-0199',
+    preferred_time: 'Weekends',
+    business_type: 'Retail'
+  });
+  assert.equal(snake.action, 'store');
+  assert.equal(snake.lead.phone, '+17815550199');
+  assert.equal(snake.lead.businessName, 'Compiler Co');
+  assert.equal(snake.lead.preferredTime, 'Weekends');
+  assert.equal(snake.lead.email, '');
+
+  const live = demoRequests.prepareLead({
+    name: 'Ada Lovelace',
+    business_name: 'Analytical Engines',
+    phone: '(781) 555-0100',
+    email: 'ada@example.com',
+    business_type: 'Restaurant',
+    preferred_time: 'Tuesday morning',
+    message: 'We miss calls after 5.',
+    source_page: 'https://www.receptwise.com/',
+    website: ''
+  });
+  assert.equal(live.action, 'store');
+  assert.equal(live.lead.businessName, 'Analytical Engines');
+  assert.equal(live.lead.businessType, 'Restaurant');
+  assert.equal(live.lead.preferredTime, 'Tuesday morning');
+  assert.equal(live.lead.sourcePage, 'https://www.receptwise.com/');
+  assert.equal(live.lead.phone, '+17815550100');
+  assert.deepEqual(live.lead.extra, {});
+
+  const emailOnly = demoRequests.prepareLead({ name: 'Sam', email: 'sam@example.com' });
+  assert.equal(emailOnly.action, 'store');
+  assert.equal(emailOnly.lead.phone, '');
+
+  assert.equal(demoRequests.prepareLead({ phone: '7815550100' }).error, 'Name is required.');
+  assert.equal(demoRequests.prepareLead({ name: 'Sam' }).error, 'Add a phone number or an email.');
+  assert.equal(demoRequests.prepareLead({ name: 'Sam', phone: '555-0100' }).error, 'Enter a valid US phone number.');
+  assert.equal(demoRequests.prepareLead({ name: 'Sam', email: 'not-an-email' }).error, 'Enter a valid email.');
+  assert.equal(demoRequests.prepareLead({ name: 'A'.repeat(121), email: 'a@b.co' }).error, 'Name is too long.');
+  assert.equal(demoRequests.prepareLead({ name: 'Sam', email: 'sam@example.com', message: 'x'.repeat(2001) }).error, 'Message is too long.');
+  assert.equal(demoRequests.prepareLead([]).error, 'Send a JSON object.');
+});
+
+test('demo request honeypot is a silent accept and does not validate', () => {
+  const filled = demoRequests.prepareLead({ website: 'https://spam.example', name: '' });
+  assert.equal(filled.action, 'honeypot');
+  assert.equal(demoRequests.prepareLead({ company_website: 'https://spam.example', name: '' }).action, 'honeypot');
+  assert.equal(demoRequests.prepareLead({ _honeypot: 'bot', name: 'Sam', email: 'sam@example.com' }).action, 'honeypot');
+  assert.equal(demoRequests.prepareLead({ website: '', name: 'Sam', email: 'sam@example.com' }).action, 'store');
+  assert.equal(demoRequests.prepareLead({ company_website: '   ', name: 'Sam', email: 'sam@example.com' }).action, 'store');
+});
+
+test('demo request rate limit is five posts per IP per hour', () => {
+  demoRequests.resetLimits();
+  const start = 1_700_000_000_000;
+  for (let i = 0; i < demoRequests.MAX_PER_HOUR; i++) assert.equal(demoRequests.allowIp('203.0.113.10', start), true);
+  assert.equal(demoRequests.allowIp('203.0.113.10', start + 1000), false);
+  assert.equal(demoRequests.allowIp('203.0.113.11', start + 1000), true);
+  assert.equal(demoRequests.allowIp('203.0.113.10', start + demoRequests.WINDOW_MS), true);
+  demoRequests.resetLimits();
+});
+
+test('demo request CORS allows the marketing origins only', () => {
+  assert.equal(demoRequests.originAllowed('https://www.receptwise.com'), true);
+  assert.equal(demoRequests.originAllowed('https://receptwise.com'), true);
+  assert.equal(demoRequests.originAllowed('https://receptwise-site.pages.dev'), true);
+  assert.equal(demoRequests.originAllowed('https://abc123.receptwise-site.pages.dev'), true);
+  assert.equal(demoRequests.originAllowed('https://atulitllc.github.io'), true);
+  assert.equal(demoRequests.originAllowed('https://receptwise.pages.dev'), false);
+  assert.equal(demoRequests.originAllowed('https://preview.receptwise.pages.dev'), false);
+  assert.equal(demoRequests.originAllowed('https://other.pages.dev'), false);
+  assert.equal(demoRequests.originAllowed('https://pages.dev'), false);
+  assert.equal(demoRequests.originAllowed('http://receptwise.com'), false);
+  assert.equal(demoRequests.originAllowed('https://receptwise.com.evil.test'), false);
+  assert.equal(demoRequests.originAllowed('https://evil.github.io'), false);
+  assert.equal(demoRequests.originAllowed('https://notpages.dev'), false);
+  assert.equal(demoRequests.originAllowed('https://receptwise.com/path'), false);
+  assert.equal(demoRequests.hashIp('203.0.113.10').includes('203.0.113.10'), false);
+  assert.equal(demoRequests.hashIp('203.0.113.10').length, 64);
 });
 
 test('support access hides caller and booking details unless the grant matches', () => {

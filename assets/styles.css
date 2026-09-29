@@ -414,6 +414,8 @@ select.ctrl, input.ctrl, textarea.ctrl {
   width: 100%;
 }
 select.ctrl:focus, input.ctrl:focus, textarea.ctrl:focus { border-color: var(--teal); box-shadow: 0 0 0 3px rgba(14, 124, 114, 0.15); }
+td.lead-status { width: 9.5rem; }
+td.lead-note { max-width: 240px; white-space: pre-wrap; word-break: break-word; }
 textarea.ctrl { min-height: 88px; resize: vertical; }
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
 .field label { font-size: 13px; font-weight: 700; }

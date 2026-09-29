@@ -25,10 +25,14 @@ Session cookie plus `X-RW-Client: portal` on every write. `GET /api/health` does
 
 | Method | Path | Notes |
 | --- | --- | --- |
+| POST | `/api/public/demo-requests` | No session. Exempt from `X-RW-Client`. Live form fields: `name`, `business_name`, `phone`, `email`, `business_type`, `preferred_time`, `message`, `source_page`, honeypot `website`. 16kb JSON, 5 posts per IP per hour. |
+| OPTIONS | `/api/public/demo-requests` | CORS preflight, also exempt from `X-RW-Client`. Allows `https://www.receptwise.com`, `https://receptwise.com`, `https://receptwise-site.pages.dev`, `https://*.receptwise-site.pages.dev`, and `https://atulitllc.github.io`. |
+| GET | `/api/demo-requests` | Admin. Newest first. |
+| PATCH | `/api/demo-requests/:id` | Admin. Body `{ "status": "new" }`, `"contacted"`, or `"closed"`. |
 | POST | `/api/auth/login`, `/api/auth/logout` | bcrypt, rate limit, httpOnly cookie |
 | GET | `/api/me` | current user |
 | GET | `/api/health` | database check |
-| GET | `/api/export?format=json` or `sql` | admin only. Clients, settings, calls, bookings, activity. No passwords or third-party tokens. Caller and customer details are omitted unless support access is on for that business. |
+| GET | `/api/export?format=json` or `sql` | admin only. Clients, settings, calls, bookings, demo requests, activity. No passwords or third-party tokens. Caller and customer details are omitted unless support access is on for that business. |
 | GET | `/api/metrics?business=slug` | calls today/7d/30d, answered, missed, duration, bookings. Recent calls and activity hide caller details unless support access is on. |
 | GET/PUT | `/api/businesses/:slug/support-access` | owner of that business turns Receptwise detail access on or off. Body `{ "enabled": true, "hours": 72 }`. |
 | GET | `/api/appointments?business=slug&from=&to=` | bookings for one business, or every business when `business` is omitted. `from`/`to` are ISO instants. Receptwise staff see `Booked – details hidden` unless support access is on. |

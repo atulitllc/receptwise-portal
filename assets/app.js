@@ -886,7 +886,8 @@
       team: "Team and settings",
       phone: "Phone",
       settings: "Receptionist",
-      integrations: "Integrations"
+      integrations: "Integrations",
+      leads: "Leads"
     };
     var mainNav = [
       ["dashboard.html", "Overview", "dashboard"],
@@ -896,6 +897,7 @@
       ["integrations.html", "Integrations", "integrations"],
       ["clients.html", "Businesses", "clients"]
     ];
+    if (!LIVE || isAdmin()) mainNav.push(["leads.html", "Leads", "leads"]);
     if (!isBusinessViewer()) mainNav.push(["add.html", "Add business", "add"]);
     var groups = [
       ["Main", mainNav],
@@ -3683,6 +3685,16 @@
       var pageName = document.body.dataset.page || "phone";
       var file = pageName === "settings" ? "settings.html" : pageName === "integrations" ? "integrations.html" : "phone.html";
       location.href = file + "?id=" + encodeURIComponent(el.value);
+    } else if (el.dataset.action === "lead-status") {
+      if (!LIVE) return;
+      var leadId = el.dataset.id;
+      var nextStatus = el.value;
+      api("PATCH", "api/demo-requests/" + encodeURIComponent(leadId), { status: nextStatus }).then(function () {
+        toast(nextStatus === "contacted" ? "Marked contacted." : nextStatus === "closed" ? "Marked closed." : "Marked new.");
+      }).catch(function (err) {
+        liveFail(err);
+        if (currentRender) currentRender();
+      });
     } else if (el.dataset.action === "cap-toggle") {
       var business = findBiz(el.dataset.id);
       if (!business) return;
@@ -4685,6 +4697,60 @@
     currentRender();
   }
 
+  function leadWhen(iso) {
+    if (!iso) return "—";
+    var when = new Date(iso);
+    if (isNaN(when.getTime())) return "—";
+    return when.toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  }
+
+  function leadExtra(extra) {
+    if (!extra || typeof extra !== "object") return "";
+    var bits = Object.keys(extra).filter(function (key) { return key !== "plan" && extra[key]; }).map(function (key) {
+      return esc(key) + ": " + esc(extra[key]);
+    });
+    return bits.length ? "<div class='help'>" + bits.join(" · ") + "</div>" : "";
+  }
+
+  function renderLeads(view) {
+    if (!LIVE) {
+      view.innerHTML = '<div class="page-head"><div><h1>Leads</h1><p class="sub">Demo requests from the marketing site</p></div></div>' +
+        featureBar(["demo_requests"]) +
+        '<div class="banner warn">This demo does not store submissions. On the live control panel, admins see requests from the Book a free 20-minute chat form.</div>' + legal();
+      return;
+    }
+    if (!isAdmin()) {
+      view.innerHTML = '<div class="page-head"><div><h1>Leads</h1></div></div>' +
+        '<div class="banner warn">Admins only.</div>' + legal();
+      return;
+    }
+    view.innerHTML = '<p class="sub">Loading leads…</p>';
+    api("GET", "api/demo-requests").then(function (data) {
+      var rows = data.requests || [];
+      var fresh = rows.filter(function (row) { return row.status === "new"; }).length;
+      var body = rows.map(function (row) {
+        var status = ["new", "contacted", "closed"].map(function (value) {
+          var label = value === "new" ? "New" : value === "contacted" ? "Contacted" : "Closed";
+          return '<option value="' + value + '"' + (row.status === value ? " selected" : "") + ">" + label + "</option>";
+        }).join("");
+        return "<tr><td>" + esc(leadWhen(row.createdAt)) + "</td><td>" + esc(row.name || "—") + "</td><td>" +
+          esc(row.businessName || "—") + "</td><td>" + esc(row.phonePretty || row.phone || "—") + "</td><td>" +
+          esc(row.email || "—") + "</td><td>" + esc(row.businessType || "—") + "</td><td>" +
+          esc(row.preferredTime || "—") + "</td><td>" + esc(row.plan || "—") + "</td><td class='lead-note'>" +
+          esc(row.message || "—") + leadExtra(row.extra) + "</td><td class='lead-note'>" + esc(row.sourcePage || "—") +
+          "</td><td class='lead-status'><select class='ctrl' data-action='lead-status' data-id='" + esc(row.id) +
+          "' aria-label='Status for " + esc(row.name || "lead") + "'>" + status + "</select></td></tr>";
+      }).join("");
+      view.innerHTML = '<div class="page-head"><div><h1>Leads</h1><p class="sub">' + fresh + " new · " + rows.length +
+        (rows.length === 1 ? " request" : " requests") + ", newest first</p></div></div>" +
+        featureBar(["demo_requests"]) +
+        '<section class="card"><div class="table-wrap"><table class="data"><thead><tr><th>When</th><th>Name</th><th>Business</th><th>Phone</th><th>Email</th><th>Type</th><th>Preferred time</th><th>Plan</th><th>Message</th><th>Source</th><th>Status</th></tr></thead><tbody>' +
+        (body || '<tr><td colspan="11"><div class="empty">No demo requests yet. The marketing form posts to /api/public/demo-requests.</div></td></tr>') +
+        "</tbody></table></div></section>" + legal();
+    }).catch(function (err) {
+      view.innerHTML = '<div class="banner bad">' + esc(err.message) + "</div>" + legal();
+    });
+  }
   function boot() {
     if (!window.RW_DATA) {
       document.getElementById("app").textContent = "Sample data did not load.";
@@ -4718,6 +4784,7 @@
       else if (page === "settings") renderSettings(view);
       else if (page === "integrations") renderIntegrations(view);
       else if (page === "appointments") renderAppointments(view);
+      else if (page === "leads") renderLeads(view);
       refreshBell();
     };
     if (page === "add") resumeDraft();

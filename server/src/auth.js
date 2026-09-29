@@ -163,15 +163,22 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+function isPublicDemoRequest(req) {
+  const path = String(req.originalUrl || req.url || '').split('?')[0];
+  return path === '/api/public/demo-requests';
+}
+
 // CSRF defence for cookie-authenticated writes: SameSite=Lax cookie + a custom header that
-// cross-site forms cannot set without a CORS preflight (which this server never grants).
+// cross-site forms cannot set without a CORS preflight. The marketing form is the exception:
+// POST and OPTIONS /api/public/demo-requests are public and do not send X-RW-Client.
 function requireAppHeader(req, res, next) {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
+  if (isPublicDemoRequest(req)) return next();
   if (req.get('X-RW-Client') !== 'portal') return res.status(403).json({ error: 'Missing client header.' });
   next();
 }
 
 module.exports = {
-  login, logout, loadUser, requireUser, requireAdmin, requireAppHeader,
+  login, logout, loadUser, requireUser, requireAdmin, requireAppHeader, isPublicDemoRequest,
   createUser, ensureBootstrapAdmin, parseCookies, hashToken, COOKIE
 };
