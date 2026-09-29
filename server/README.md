@@ -15,6 +15,8 @@ npm test
 
 Migrations in `migrations/` run on boot. The first admin is created from `ADMIN_EMAIL` / `ADMIN_PASSWORD` when `users` is empty. Add later teammates with `npm run create-user -- email "Name" team` (it prompts for the password).
 
+Receptwise `admin` and `team` accounts see per-business counts and line health. Call transcripts, recordings, caller names, and booking customer details stay hidden until that business's `owner` turns on support access (`PUT /api/businesses/:slug/support-access`, default 72 hours, at most 168). Each time a Receptwise account then opens those details, the audit log records `support.view` with who, what, and when. `owner` and `staff` accounts belong to one business and see that business's details only.
+
 The process listens on `0.0.0.0:$PORT`.
 
 ## API
@@ -26,11 +28,12 @@ Session cookie plus `X-RW-Client: portal` on every write. `GET /api/health` does
 | POST | `/api/auth/login`, `/api/auth/logout` | bcrypt, rate limit, httpOnly cookie |
 | GET | `/api/me` | current user |
 | GET | `/api/health` | database check |
-| GET | `/api/export?format=json` or `sql` | admin only. Clients, settings, calls, bookings, activity. No passwords or third-party tokens. |
-| GET | `/api/metrics?business=slug` | calls today/7d/30d, answered, missed, duration, bookings, recent calls, activity |
-| GET | `/api/appointments?business=slug&from=&to=` | bookings for one business, or every business when `business` is omitted. `from`/`to` are ISO instants. |
-| POST | `/api/appointments` | add a booking in the portal. Does not write to an external calendar. |
-| PATCH | `/api/appointments/:id` | edit or cancel a booking in the portal |
+| GET | `/api/export?format=json` or `sql` | admin only. Clients, settings, calls, bookings, activity. No passwords or third-party tokens. Caller and customer details are omitted unless support access is on for that business. |
+| GET | `/api/metrics?business=slug` | calls today/7d/30d, answered, missed, duration, bookings. Recent calls and activity hide caller details unless support access is on. |
+| GET/PUT | `/api/businesses/:slug/support-access` | owner of that business turns Receptwise detail access on or off. Body `{ "enabled": true, "hours": 72 }`. |
+| GET | `/api/appointments?business=slug&from=&to=` | bookings for one business, or every business when `business` is omitted. `from`/`to` are ISO instants. Receptwise staff see `Booked – details hidden` unless support access is on. |
+| POST | `/api/appointments` | add a booking in the portal. Does not write to an external calendar. Receptwise staff get 403 while support access is off. |
+| PATCH | `/api/appointments/:id` | edit or cancel a booking in the portal. Same support-access rule as create. |
 | POST | `/api/calls/sync` | backfill from Vapi for every linked business |
 | GET | `/api/businesses/:slug/phone` | live Vapi/Twilio status, or a not-connected state |
 | GET/PUT | `/api/businesses/:slug/settings` | save and push greeting, hours, booking rules, transfer, FAQ |

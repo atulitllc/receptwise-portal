@@ -6,6 +6,7 @@ const db = require('./db');
 const businesses = require('./businesses');
 const calls = require('./calls');
 const audit = require('./audit');
+const privacy = require('./privacy');
 
 const STATUSES = ['Confirmed', 'Cancelled', 'Completed'];
 
@@ -87,7 +88,7 @@ const SELECT = `
   JOIN businesses b ON b.id = k.business_id
   LEFT JOIN calls c ON c.id = k.call_id`;
 
-async function list({ businessId, from, to, includeUnscheduled }) {
+async function list({ businessId, from, to, includeUnscheduled, user }) {
   const params = [];
   const where = ["b.status <> 'archived'"];
   if (businessId) {
@@ -112,7 +113,29 @@ async function list({ businessId, from, to, includeUnscheduled }) {
     SELECT + ' WHERE ' + where.join(' AND ') + ' ORDER BY k.starts_at NULLS LAST, k.id LIMIT $' + params.length,
     params
   );
-  return rows.map(toAppointment);
+  const items = rows.map(toAppointment);
+  const grants = await privacy.activeGrantSet();
+  const revealed = new Set();
+  const out = items.map((item, index) => {
+    const id = rows[index].business_id;
+    if (privacy.allows(user, id, grants)) {
+      revealed.add(Number(id));
+      return item;
+    }
+    return privacy.redactAppointment(item);
+  });
+  if (privacy.isReceptwise(user)) {
+    for (const id of revealed) await privacy.noteView(user, id, 'appointments');
+  }
+  return out;
+}
+
+async function assertCanWrite(user, businessId) {
+  if (!privacy.isReceptwise(user)) return;
+  const grants = await privacy.activeGrantSet();
+  if (!privacy.allows(user, businessId, grants)) {
+    throw fail('Receptwise support access is off for this business.', 403);
+  }
 }
 
 async function getById(id) {
@@ -164,7 +187,8 @@ function normalize(input, biz, creating) {
   };
 }
 
-async function create(biz, input, userId) {
+async function create(biz, input, userId, user) {
+  await assertCanWrite(user, biz.id);
   const fields = normalize(input, biz, true);
   const { rows } = await db.query(
     `INSERT INTO bookings (business_id, call_id, starts_at, ends_at, customer, phone, email, service, timezone, source, status, portal_edited)
@@ -177,7 +201,7 @@ async function create(biz, input, userId) {
   return getById(rows[0].id);
 }
 
-async function update(id, input, userId, scope) {
+async function update(id, input, userId, scope, user) {
   const numeric = Number(id);
   if (!Number.isInteger(numeric) || numeric < 1) throw fail('Appointment not found.', 404);
   const { rows } = await db.query(
@@ -188,6 +212,7 @@ async function update(id, input, userId, scope) {
   if (!existing) throw fail('Appointment not found.', 404);
   const forced = await businessFromScope(scope);
   if (forced && Number(existing.business_id) !== Number(forced.id)) throw fail('Appointment not found.', 404);
+  await assertCanWrite(user, existing.business_id);
   const biz = forced || { id: existing.business_id, timezone: existing.business_timezone, slug: existing.slug };
   const fields = normalize(input, biz, false);
   const sets = ['portal_edited = true', 'updated_at = now()'];

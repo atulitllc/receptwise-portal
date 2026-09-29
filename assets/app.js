@@ -309,6 +309,132 @@
     catch (e) { return null; }
   }
 
+  function isBusinessViewer() {
+    var role = (session() || {}).role;
+    return role === "owner" || role === "staff";
+  }
+
+  function scopeSlug() {
+    var user = session() || {};
+    return user.businessSlug || user.businessId || "";
+  }
+
+  function roleLabel() {
+    var role = (session() || {}).role || "admin";
+    if (role === "owner") return "Owner";
+    if (role === "staff") return "Staff";
+    if (role === "team") return "Team";
+    return "Admin";
+  }
+
+  function demoIdentity(email) {
+    var list = (window.RW_DATA && window.RW_DATA.businesses) || [];
+    var lower = String(email || "").toLowerCase();
+    for (var i = 0; i < list.length; i++) {
+      var owner = list[i].owner || {};
+      if (owner.email && String(owner.email).toLowerCase() === lower) {
+        return {
+          email: email,
+          name: owner.name || nameFromEmail(email),
+          role: "owner",
+          businessId: list[i].id,
+          businessSlug: list[i].id
+        };
+      }
+    }
+    return { email: email, name: nameFromEmail(email), role: "admin", businessId: null, businessSlug: null };
+  }
+
+  function supportStore() {
+    try { return JSON.parse(storageGet("rw_support") || "{}"); }
+    catch (e) { return {}; }
+  }
+
+  function currentSupport(b) {
+    if (b && b.supportAccess && b.supportAccess.expiresAt !== undefined) return b.supportAccess;
+    var row = supportStore()[b && b.id];
+    if (!row || !row.expiresAt) return { enabled: false, active: false, expiresAt: null };
+    var active = new Date(row.expiresAt).getTime() > Date.now();
+    return { enabled: active, active: active, expiresAt: active ? row.expiresAt : null };
+  }
+
+  function detailsOpen(b) {
+    if (!b) return false;
+    if (b.detailsVisible === true) return true;
+    if (b.detailsVisible === false) return false;
+    if (isBusinessViewer()) return String(b.id) === String(scopeSlug());
+    return currentSupport(b).active;
+  }
+
+  function hiddenLabel(status) {
+    var text = String(status || "").toLowerCase();
+    if (text === "cancelled") return "Cancelled – details hidden";
+    if (text === "completed") return "Completed – details hidden";
+    return "Booked – details hidden";
+  }
+
+  function veilCall(call) {
+    return {
+      time: call.time || "",
+      from: "Details hidden",
+      duration: call.duration || "",
+      outcome: call.outcome || "",
+      flag: "",
+      summary: "",
+      lines: [],
+      recordingUrl: "",
+      redacted: true
+    };
+  }
+
+  function veilBooking(booking) {
+    return Object.assign({}, booking, {
+      customer: hiddenLabel(booking.status),
+      phone: "",
+      email: "",
+      service: "",
+      redacted: true
+    });
+  }
+
+  function veilAppointment(appt) {
+    if (!appt || appt.redacted) return appt;
+    var biz = findBiz(appt.businessId);
+    if (detailsOpen(biz || { id: appt.businessId })) return appt;
+    return {
+      id: appt.id,
+      businessId: appt.businessId,
+      businessName: appt.businessName,
+      timezone: appt.timezone,
+      startsAt: appt.startsAt,
+      endsAt: appt.endsAt,
+      customer: hiddenLabel(appt.status),
+      phone: "",
+      email: "",
+      service: "",
+      source: appt.source || "",
+      status: appt.status,
+      callId: null,
+      callHref: null,
+      redacted: true
+    };
+  }
+
+  function veilFeedItem(item) {
+    if (!item || LIVE) return item;
+    var biz = findBiz(item.businessId);
+    if (detailsOpen(biz || { id: item.businessId })) return item;
+    var text = String(item.text || "");
+    if (/^booked/i.test(text) || /\bbooked\b/i.test(text)) return Object.assign({}, item, { text: "Booked – details hidden" });
+    if (/^answered/i.test(text) || /^call\b/i.test(text)) return Object.assign({}, item, { text: "Call · details hidden" });
+    return item;
+  }
+
+  function canEditBusiness(businessId) {
+    if (!businessId || businessId === "all") return isBusinessViewer() && !!scopeSlug();
+    return detailsOpen(findBiz(businessId) || { id: businessId });
+  }
+
   function createdList() {
     if (LIVE) return [];
     if (extraCache) return extraCache;
@@ -351,6 +477,10 @@
       draftRecords().forEach(function (draft) {
         if (!list.some(function (item) { return item.id === draft.id; })) list.push(draft);
       });
+    }
+    if (isBusinessViewer()) {
+      var slug = String(scopeSlug());
+      list = list.filter(function (item) { return item.id === slug; });
     }
     return list;
   }
@@ -723,16 +853,17 @@
       settings: "Receptionist",
       integrations: "Integrations"
     };
+    var mainNav = [
+      ["dashboard.html", "Overview", "dashboard"],
+      ["appointments.html", "Appointments", "appointments"],
+      ["phone.html", "Phone", "phone"],
+      ["settings.html", "Receptionist", "settings"],
+      ["integrations.html", "Integrations", "integrations"],
+      ["clients.html", "Businesses", "clients"]
+    ];
+    if (!isBusinessViewer()) mainNav.push(["add.html", "Add business", "add"]);
     var groups = [
-      ["Main", [
-        ["dashboard.html", "Overview", "dashboard"],
-        ["appointments.html", "Appointments", "appointments"],
-        ["phone.html", "Phone", "phone"],
-        ["settings.html", "Receptionist", "settings"],
-        ["integrations.html", "Integrations", "integrations"],
-        ["clients.html", "Businesses", "clients"],
-        ["add.html", "Add business", "add"]
-      ]],
+      ["Main", mainNav],
       ["Account", [
         ["billing.html", "Billing and plans", "billing"],
         ["team.html", "Team and settings", "team"]
@@ -752,7 +883,7 @@
       nav +
       '<div class="side-spacer"></div>' +
       '<div class="side-user"><div class="avatar me">' + esc(initials(user.name)) + "</div><div><strong>" + esc(user.name) +
-      '</strong><span>Admin</span></div><button type="button" data-action="sign-out">Sign out</button></div></aside>' +
+      '</strong><span>' + esc(roleLabel()) + '</span></div><button type="button" data-action="sign-out">Sign out</button></div></aside>' +
       '<div class="main"><header class="topbar"><h1 id="top-title">' + esc(titles[page] || "ReceptWise") + "</h1>" +
       '<form class="search" action="clients.html" method="get">' + iconSearch() +
       '<input name="q" value="' + esc(q) + '" placeholder="Search businesses" aria-label="Search businesses"></form>' +
@@ -832,13 +963,14 @@
       d.setDate(d.getDate() - (6 - i));
       return '<div class="bar-col' + (i === 6 ? " today" : "") + '"><i style="height:' + Math.max(8, Math.round((n / max) * 100)) + '%"></i><em>' + days[d.getDay()] + "</em></div>";
     }).join("");
-    var feed = (window.RW_DATA.feed || []).map(function (item) {
+    var feed = (window.RW_DATA.feed || []).map(veilFeedItem).map(function (item) {
       var biz = findBiz(item.businessId);
       var name = biz ? biz.name : "Business";
       return "<div class='setting-row'><div><strong>" + esc(name) + "</strong><div class='help'>" + esc(item.text) + "</div></div><span class='help'>" + esc(item.time) + "</span></div>";
     }).join("");
     view.innerHTML = '<div class="page-head"><div><h1>Overview</h1><p class="sub">' + esc(todayLabel()) + " · " + live + " live · " + (list.length - live) + ' still moving through setup</p></div>' +
-      '<div class="head-actions"><a class="btn" href="clients.html">All businesses</a><a class="btn btn-primary" href="add.html">Add business</a></div></div>' +
+      '<div class="head-actions"><a class="btn" href="clients.html">All businesses</a>' +
+      (isBusinessViewer() ? "" : '<a class="btn btn-primary" href="add.html">Add business</a>') + "</div></div>" +
       '<section class="stats"><article class="stat"><em>Businesses</em><b>' + list.length + '</b><span>ReceptWise is pilot client 1</span></article>' +
       '<article class="stat"><em>Calls today</em><b>' + calls + '</b><span>Answered across the book</span></article>' +
       '<article class="stat"><em>Bookings today</em><b>' + bookings + '</b><span>From calls and the websites</span></article>' +
@@ -1553,7 +1685,8 @@
         checkAction(b, item) + "</div>" : "") + "</div>";
     }).join("");
     var activity = (b.activity || []).map(function (item) {
-      return "<div class='setting-row'><div>" + esc(item.text) + "</div><span class='help'>" + esc(item.time) + "</span></div>";
+      var text = detailsOpen(b) ? item.text : (/book/i.test(item.text || "") ? "Booked – details hidden" : item.text);
+      return "<div class='setting-row'><div>" + esc(text) + "</div><span class='help'>" + esc(item.time) + "</span></div>";
     }).join("") || '<div class="empty">No activity yet.</div>';
     var facts = [
       ["Owner", (b.owner && b.owner.name) || "—"],
@@ -1569,7 +1702,25 @@
       '</div></section><section class="card"><div class="card-h"><h2>Activity</h2></div><div class="card-b">' + activity +
       '</div></section><section class="card"><div class="card-h"><h2>Business</h2></div><div class="card-b"><dl class="kvs">' + facts.map(function (row) {
         return "<dt>" + esc(row[0]) + "</dt><dd>" + esc(row[1]) + "</dd>";
-      }).join("") + "</dl></div></section></div></div>" + phonePanel(b);
+      }).join("") + "</dl></div></section>" + supportCard(b) + "</div></div>" + phonePanel(b);
+  }
+
+  function supportCard(b) {
+    var access = currentSupport(b);
+    var mine = (session() || {}).role === "owner" && String(b.id) === String(scopeSlug());
+    var until = access.expiresAt ? new Date(access.expiresAt).toLocaleString() : "";
+    if (mine) {
+      return '<section class="card"><div class="card-h"><h2>Allow Receptwise support access</h2></div><div class="card-b">' +
+        "<p class='help'>Off by default. While this is on, Receptwise staff can see this business's call and booking details. It turns off after the time you choose. The default is 72 hours.</p>" +
+        '<div class="field"><label for="support-hours">Hours</label><input class="ctrl" id="support-hours" type="number" min="1" max="168" value="72"></div>' +
+        (access.active ? "<p>On until " + esc(until) + ".</p>" : "<p>Off. Receptwise sees counts and line health only.</p>") +
+        '<button class="btn' + (access.active ? "" : " btn-primary") + '" type="button" data-action="support-access" data-id="' + esc(b.id) + '" data-enabled="' + (access.active ? "0" : "1") + '">' +
+        (access.active ? "Turn off" : "Allow access") + "</button></div></section>";
+    }
+    if (isBusinessViewer()) return "";
+    return '<section class="card"><div class="card-h"><h2>Receptwise support access</h2></div><div class="card-b"><p>' +
+      (access.active ? "On until " + esc(until) + ". Call and booking details are visible, and each view is recorded." : "Off. Call transcripts, recordings, and customer details stay hidden.") +
+      "</p></div></section>";
   }
 
   function checkAction(b, item) {
@@ -1629,7 +1780,9 @@
       var labels = { book: "Book", reschedule: "Reschedule", cancel: "Cancel", transfer: "Transfer", textLink: "Text a booking link" };
       return '<label class="setting-row"><span>' + labels[key] + '</span><input type="checkbox" data-action="cap-toggle" data-id="' + esc(b.id) + '" data-cap="' + key + '"' + (caps[key] ? " checked" : "") + (key === "textLink" ? " disabled" : "") + "></label>";
     }).join("");
-    var calls = (b.calls || []).map(function (call, index) {
+    var calls = (b.calls || []).map(function (call) {
+      return detailsOpen(b) ? call : veilCall(call);
+    }).map(function (call, index) {
       var open = openCall === String(index);
       return '<div class="call"><button class="call-top" type="button" data-action="toggle-call" data-key="' + index + '"><span><strong>' + esc(call.time) + "</strong> · " + esc(call.from) +
         "<div class='help'>" + esc(call.summary) + "</div></span><span>" + pill(call.outcome === "Booked" ? "connected" : call.flag ? "action" : "neutral") + "</span></button>" +
@@ -1661,7 +1814,8 @@
 
   function tabBookings(b) {
     var rows = (b.bookings || []).map(function (booking) {
-      return "<tr><td>" + esc(booking.when) + "</td><td>" + esc(booking.customer) + "</td><td>" + esc(booking.phone || "—") + "</td><td>" + esc(booking.service) + "</td><td>" + esc(booking.source) + "</td><td>" + esc(booking.status) + "</td></tr>";
+      var item = detailsOpen(b) ? booking : veilBooking(booking);
+      return "<tr><td>" + esc(item.when) + "</td><td>" + esc(item.customer) + "</td><td>" + esc(item.phone || "—") + "</td><td>" + esc(item.service || "—") + "</td><td>" + esc(item.source) + "</td><td>" + esc(item.status) + "</td></tr>";
     }).join("");
     var calendarActions = calendarSignIn(b)
       ? '<div class="head-actions" style="margin-bottom:12px">' + badge("calendar_connection") +
@@ -2510,7 +2664,29 @@
     "appt-edit": function (el) { openAppointmentForm(el.dataset.id); },
     "appt-save": function (el) { saveAppointment(el.dataset.id || ""); },
     "appt-cancel": function (el) { cancelAppointment(el.dataset.id); },
-    "appt-day": function (el) { apptGo({ view: "week", date: el.dataset.date }); }
+    "appt-day": function (el) { apptGo({ view: "week", date: el.dataset.date }); },
+    "support-access": function (el) {
+      var id = el.dataset.id;
+      var enabled = el.dataset.enabled === "1";
+      var hoursEl = document.getElementById("support-hours");
+      var hours = hoursEl ? Number(hoursEl.value) : 72;
+      if (LIVE) {
+        api("PUT", "api/businesses/" + encodeURIComponent(id) + "/support-access", { enabled: enabled, hours: hours }).then(function (data) {
+          var business = findBiz(id);
+          if (business) business.supportAccess = data.supportAccess;
+          apptCache = null;
+          toast(enabled ? "Receptwise support access is on." : "Receptwise support access is off.");
+          if (currentRender) currentRender();
+        }).catch(liveFail);
+        return;
+      }
+      var map = supportStore();
+      if (!enabled) delete map[id];
+      else map[id] = { expiresAt: new Date(Date.now() + (hours || 72) * 3600000).toISOString() };
+      storageSet("rw_support", JSON.stringify(map));
+      toast(enabled ? "Receptwise support access is on for this browser session." : "Receptwise support access is off.");
+      if (currentRender) currentRender();
+    }
   };
 
   function ensureNumberPick(b) {
@@ -2932,7 +3108,7 @@
       }).catch(function (err) { toast(err.message); });
       return;
     }
-    storageSet("rw_session", JSON.stringify({ email: email, name: nameFromEmail(email) }));
+    storageSet("rw_session", JSON.stringify(demoIdentity(email)));
     location.href = "dashboard.html";
   }
 
@@ -2971,7 +3147,7 @@
     var focusCall = "";
     try { focusCall = new URLSearchParams(location.search).get("call") || ""; } catch (e) { focusCall = ""; }
     var recent = (m.recentCalls || []).map(function (call) {
-      var who = call.callerName ? esc(call.callerName) + "<div class='help'>" + esc(call.from) + "</div>" : esc(call.from);
+      var who = call.redacted ? "Details hidden" : (call.callerName ? esc(call.callerName) + "<div class='help'>" + esc(call.from) + "</div>" : esc(call.from));
       var rec = /^https?:\/\//.test(call.recordingUrl || "") ? '<a href="' + esc(call.recordingUrl) + '" target="_blank" rel="noopener">Play</a>' : "—";
       var tone = call.outcome === "Booked" ? "connected" : call.outcome === "Missed" ? "action" : "neutral";
       var focus = focusCall && focusCall === call.id ? ' class="call-focus"' : "";
@@ -3482,10 +3658,10 @@
         };
         var patch = patches[id];
         if (patch) Object.keys(patch).forEach(function (key) { appt[key] = patch[key]; });
-        out.push(appt);
+        out.push(veilAppointment(appt));
       });
     });
-    (edits.created || []).forEach(function (item) { out.push(item); });
+    (edits.created || []).forEach(function (item) { out.push(veilAppointment(item)); });
     return out;
   }
 
@@ -3549,8 +3725,11 @@
     var zoneNote = q.business && q.business !== "all"
       ? "Times shown in " + ((findBiz(q.business) || {}).timezone || "the business time zone") + "."
       : "Times shown in each business's time zone.";
+    var addBtn = canEditBusiness(q.business)
+      ? '<button class="btn btn-primary" type="button" data-action="appt-add">Add appointment</button>'
+      : "";
     return '<div class="page-head"><div><h1>Appointments</h1><p class="sub">' + esc(label) + " · " + esc(zoneNote) + "</p></div>" +
-      '<div class="head-actions"><button class="btn btn-primary" type="button" data-action="appt-add">Add appointment</button></div></div>' +
+      '<div class="head-actions">' + addBtn + "</div></div>" +
       '<div class="cal-toolbar"><div class="left"><div class="seg" role="group" aria-label="Calendar view">' + views + "</div>" +
       '<button class="btn btn-sm" type="button" data-action="appt-prev" aria-label="Previous">Back</button>' +
       '<button class="btn btn-sm" type="button" data-action="appt-today">Today</button>' +
@@ -3741,6 +3920,12 @@
   function openAppointment(id) {
     var appt = findAppt(id);
     if (!appt) return;
+    if (appt.redacted) {
+      openModal(appt.customer || "Appointment",
+        "<p>" + esc(appt.customer || hiddenLabel(appt.status)) + "</p><p class='help'>Receptwise support access is off, so the customer, phone, and call stay hidden.</p>",
+        '<button class="btn btn-primary" type="button" data-action="close-modal">Close</button>');
+      return;
+    }
     var call = appt.callHref ? '<a href="' + esc(appt.callHref) + '">View call</a>' : "No call on file";
     var body = '<dl class="kvs"><dt>When</dt><dd>' + esc(apptWhen(appt)) + "</dd><dt>Customer</dt><dd>" + esc(appt.customer || "—") +
       "</dd><dt>Business</dt><dd>" + esc(appt.businessName || "—") + "</dd><dt>Service</dt><dd>" + esc(appt.service || "—") +

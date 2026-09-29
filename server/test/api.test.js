@@ -205,7 +205,7 @@ describe('control panel API', () => {
   before(async () => {
     await db.migrate();
     await db.query(`TRUNCATE TABLE
-      trello_cards, assistant_backups, oauth_states, bookings, calls, integrations, audit_log,
+      support_access, trello_cards, assistant_backups, oauth_states, bookings, calls, integrations, audit_log,
       phone_numbers, assistants, business_setup, businesses, sessions, users
       RESTART IDENTITY CASCADE`);
     await auth.ensureBootstrapAdmin();
@@ -411,15 +411,18 @@ describe('control panel API', () => {
     assert.equal(res.json.avgDurationSec.today, 95);
     const booked = res.json.recentCalls.find((c) => c.id === 'call-test-booked');
     assert.ok(booked);
-    assert.equal(booked.callerName, 'Sam Ortiz');
+    assert.equal(booked.callerName, '');
+    assert.equal(booked.from, '');
     assert.equal(booked.outcome, 'Booked');
-    assert.equal(booked.summary, 'Sam Ortiz booked a demo for Harbor Cafe.');
-    assert.equal(booked.recordingUrl, 'https://cdn.example.test/rec.wav');
+    assert.equal(booked.summary, '');
+    assert.equal(booked.recordingUrl, '');
+    assert.equal(booked.redacted, true);
     assert.equal(booked.bookingConfirmed, true);
     const missed = res.json.recentCalls.find((c) => c.id === 'call-test-missed');
     assert.equal(missed.outcome, 'Missed');
-    assert.ok(res.json.activity.some((item) => /Sam Ortiz/.test(item.text)));
-    assert.ok(res.json.activity.some((item) => item.kind === 'booking'));
+    assert.equal(JSON.stringify(res.json.activity).includes('Sam Ortiz'), false);
+    assert.ok(res.json.activity.some((item) => item.kind === 'booking' && item.text === 'Booked – details hidden'));
+    assert.ok(res.json.activity.some((item) => item.kind === 'call' && item.text === 'Call · details hidden'));
   });
 
   it('records a social handle without pretending it is connected', async () => {
@@ -588,8 +591,9 @@ describe('control panel API', () => {
     assert.match(updated.desc, /Sam Ortiz moved the Harbor Cafe demo\./);
     assert.match(updated.desc, /Oct/);
     const metrics = await request('GET', '/api/metrics?business=receptwise', { cookie });
-    assert.ok(metrics.json.activity.some((item) => item.text === 'Created a Trello card for a booking (Sam Ortiz).'));
-    assert.ok(metrics.json.activity.some((item) => item.text === 'Updated the Trello card for a booking (Sam Ortiz).'));
+    assert.equal(JSON.stringify(metrics.json.activity).includes('Sam Ortiz'), false);
+    assert.ok(metrics.json.activity.some((item) => item.kind === 'trello.card_created' && item.text === 'Updated a card · details hidden'));
+    assert.ok(metrics.json.activity.some((item) => item.kind === 'trello.card_updated' && item.text === 'Updated a card · details hidden'));
     const cards = await db.query("SELECT count(*)::int AS n FROM trello_cards WHERE event_kind = 'booking'");
     assert.equal(cards.rows[0].n, 1);
   });
@@ -730,9 +734,14 @@ describe('control panel API', () => {
     assert.ok(client);
     assert.equal(client.name, 'ReceptWise');
     assert.ok(json.json.settings.find((item) => item.slug === 'receptwise'));
-    assert.ok(json.json.calls.find((item) => item.caller_name === 'Sam Ortiz' && item.outcome === 'Booked'));
+    const bookedCall = json.json.calls.find((item) => item.outcome === 'Booked' && item.vapi_call_id === 'call-test-booked');
+    assert.ok(bookedCall);
+    assert.equal(bookedCall.caller_name, null);
+    assert.equal(bookedCall.summary, null);
+    assert.equal(bookedCall.recording_url, null);
     assert.ok(json.json.activity.length > 0);
     const packed = JSON.stringify(json.json);
+    assert.equal(packed.includes('Sam Ortiz'), false);
     assert.equal(packed.includes('password_hash'), false);
     assert.equal(packed.includes('token_enc'), false);
     assert.equal(packed.includes('test-vapi-key'), false);
@@ -743,7 +752,7 @@ describe('control panel API', () => {
     assert.match(sql.headers['content-disposition'], /receptwise-export-.*\.sql/);
     assert.match(sql.text, /INSERT INTO businesses/);
     assert.match(sql.text, /INSERT INTO calls/);
-    assert.match(sql.text, /Sam Ortiz/);
+    assert.equal(sql.text.includes('Sam Ortiz'), false);
     assert.equal(sql.text.includes('password_hash'), false);
     assert.equal(sql.text.includes('token_enc'), false);
   });
@@ -1263,6 +1272,33 @@ describe('control panel API', () => {
     });
     assert.equal(demoCall.status, 200, demoCall.text);
 
+    const hidden = await request('GET', '/api/appointments?business=receptwise&from=2026-10-01T00:00:00.000Z&to=2026-11-01T00:00:00.000Z', { cookie });
+    assert.equal(hidden.status, 200, hidden.text);
+    const veiled = hidden.json.appointments.find((item) => item.startsAt === '2026-10-07T19:00:00.000Z');
+    assert.ok(veiled);
+    assert.equal(veiled.customer, 'Booked – details hidden');
+    assert.equal(veiled.phone, '');
+    assert.equal(veiled.email, '');
+    assert.equal(veiled.callId, null);
+    assert.equal(JSON.stringify(hidden.json).includes('Riley'), false);
+    const deniedWrite = await request('POST', '/api/appointments', {
+      cookie,
+      body: {
+        businessId: 'receptwise',
+        customer: 'Should Fail',
+        startsAt: '2026-10-09T11:00:00',
+        timeZone: 'America/New_York'
+      }
+    });
+    assert.equal(deniedWrite.status, 403);
+
+    await db.query(
+      `INSERT INTO support_access (business_id, enabled, expires_at, granted_by)
+       SELECT id, true, now() + interval '72 hours', (SELECT id FROM users WHERE email = 'admin@receptwise.example')
+       FROM businesses WHERE slug = 'receptwise'
+       ON CONFLICT (business_id) DO UPDATE SET enabled = true, expires_at = now() + interval '72 hours'`
+    );
+
     const listed = await request('GET', '/api/appointments?business=receptwise&from=2026-10-01T00:00:00.000Z&to=2026-11-01T00:00:00.000Z', { cookie });
     assert.equal(listed.status, 200, listed.text);
     assert.equal(listed.json.businessId, 'receptwise');
@@ -1361,5 +1397,168 @@ describe('control panel API', () => {
 
     const bad = await request('POST', '/api/appointments', { cookie, body: { businessId: 'receptwise', service: 'Intro demo' } });
     assert.equal(bad.status, 400);
+  });
+
+  it('keeps caller details inside one business until its owner allows Receptwise access', async () => {
+    await db.query('DELETE FROM support_access');
+    const adminBiz = await request('GET', '/api/businesses/receptwise', { cookie });
+    assert.equal(adminBiz.status, 200, adminBiz.text);
+    assert.equal(adminBiz.json.business.detailsVisible, false);
+    assert.ok(adminBiz.json.business.calls.length > 0);
+    assert.ok(adminBiz.json.business.calls.every((call) => call.from === 'Details hidden' && call.summary === '' && call.lines.length === 0 && call.recordingUrl === ''));
+    assert.ok(adminBiz.json.business.bookings.every((booking) => booking.phone === '' && booking.email === '' && /details hidden$/.test(booking.customer)));
+    assert.equal(JSON.stringify(adminBiz.json).includes('Sam Ortiz'), false);
+    assert.equal(JSON.stringify(adminBiz.json).includes('Riley'), false);
+    assert.ok(adminBiz.json.business.callsToday >= 0);
+
+    const blocked = await request('POST', '/api/appointments', {
+      cookie,
+      body: { businessId: 'receptwise', customer: 'Hidden', startsAt: '2026-11-02T15:00:00', timeZone: 'America/New_York' }
+    });
+    assert.equal(blocked.status, 403);
+    const blockedPatch = await request('PATCH', '/api/appointments/1', { cookie, body: { status: 'Completed' } });
+    assert.ok(blockedPatch.status === 403 || blockedPatch.status === 404);
+
+    const quiet = await request('GET', '/api/metrics?business=receptwise', { cookie });
+    assert.equal(quiet.status, 200, quiet.text);
+    assert.equal(JSON.stringify(quiet.json.recentCalls).includes('Sam Ortiz'), false);
+    assert.equal(JSON.stringify(quiet.json.activity).includes('Sam Ortiz'), false);
+    assert.ok(quiet.json.calls.today >= 1);
+
+    const recept = await db.query("SELECT id FROM businesses WHERE slug = 'receptwise'");
+    const owner = await auth.createUser({
+      email: 'owner-privacy@receptwise.example',
+      password: 'owner-password-10',
+      name: 'Pilot Owner',
+      role: 'owner',
+      businessId: recept.rows[0].id
+    });
+    assert.ok(owner);
+    const ownerLogin = await request('POST', '/api/auth/login', {
+      body: { email: 'owner-privacy@receptwise.example', password: 'owner-password-10' }
+    });
+    assert.equal(ownerLogin.status, 200, ownerLogin.text);
+    assert.equal(ownerLogin.json.user.role, 'owner');
+    assert.equal(ownerLogin.json.user.businessSlug, 'receptwise');
+    const ownerCookie = cookieFrom(ownerLogin.setCookie);
+
+    const ownList = await request('GET', '/api/businesses', { cookie: ownerCookie });
+    assert.equal(ownList.status, 200, ownList.text);
+    assert.equal(ownList.json.businesses.length, 1);
+    assert.equal(ownList.json.businesses[0].id, 'receptwise');
+    assert.equal(ownList.json.businesses[0].detailsVisible, true);
+    assert.ok(JSON.stringify(ownList.json).includes('Sam Ortiz') || JSON.stringify(ownList.json).includes('Riley Cho'));
+
+    const viewsBeforeOwn = await db.query("SELECT count(*)::int AS n FROM audit_log WHERE action = 'support.view' AND user_id = $1", [owner.id]);
+    const ownAppts = await request('GET', '/api/appointments?business=receptwise', { cookie: ownerCookie });
+    assert.equal(ownAppts.status, 200, ownAppts.text);
+    assert.ok(ownAppts.json.appointments.some((item) => item.customer === 'Riley Cho' || item.customer === 'Sam Ortiz'));
+    const viewsAfterOwn = await db.query("SELECT count(*)::int AS n FROM audit_log WHERE action = 'support.view' AND user_id = $1", [owner.id]);
+    assert.equal(viewsAfterOwn.rows[0].n, viewsBeforeOwn.rows[0].n);
+
+    const foreignBiz = await request('GET', '/api/businesses/northline-family-clinic', { cookie: ownerCookie });
+    assert.equal(foreignBiz.status, 404);
+    const foreignAppts = await request('GET', '/api/appointments?business=northline-family-clinic', { cookie: ownerCookie });
+    assert.equal(foreignAppts.status, 404);
+    const foreignMetrics = await request('GET', '/api/metrics?business=northline-family-clinic', { cookie: ownerCookie });
+    assert.equal(foreignMetrics.status, 404);
+    const noCreate = await request('POST', '/api/businesses', {
+      cookie: ownerCookie,
+      body: { name: 'Should Fail', timezone: 'Eastern Time', category: 'Cafe' }
+    });
+    assert.equal(noCreate.status, 403);
+
+    const adminGrant = await request('PUT', '/api/businesses/receptwise/support-access', {
+      cookie,
+      body: { enabled: true, hours: 72 }
+    });
+    assert.equal(adminGrant.status, 403);
+
+    const north = await db.query("SELECT id, slug FROM businesses WHERE slug = 'northline-family-clinic'");
+    assert.ok(north.rows[0]);
+    const staff = await auth.createUser({
+      email: 'staff-privacy@northline.example',
+      password: 'staff-password-10',
+      name: 'North Staff',
+      role: 'staff',
+      businessId: north.rows[0].id
+    });
+    assert.ok(staff);
+    const staffLogin = await request('POST', '/api/auth/login', {
+      body: { email: 'staff-privacy@northline.example', password: 'staff-password-10' }
+    });
+    const staffCookie = cookieFrom(staffLogin.setCookie);
+    assert.equal(staffLogin.json.user.businessSlug, 'northline-family-clinic');
+    const cross = await request('GET', '/api/businesses/receptwise', { cookie: staffCookie });
+    assert.equal(cross.status, 404);
+    const crossAppts = await request('GET', '/api/appointments?business=receptwise', { cookie: staffCookie });
+    assert.equal(crossAppts.status, 404);
+    const crossCalls = await request('GET', '/api/appointments', { cookie: staffCookie });
+    assert.equal(crossCalls.status, 200, crossCalls.text);
+    assert.equal(crossCalls.json.businessId, 'northline-family-clinic');
+    assert.equal(JSON.stringify(crossCalls.json).includes('Riley'), false);
+    assert.equal(JSON.stringify(crossCalls.json).includes('Sam Ortiz'), false);
+    const staffGrant = await request('PUT', '/api/businesses/' + north.rows[0].slug + '/support-access', {
+      cookie: staffCookie,
+      body: { enabled: true }
+    });
+    assert.equal(staffGrant.status, 403);
+
+    const badHours = await request('PUT', '/api/businesses/receptwise/support-access', {
+      cookie: ownerCookie,
+      body: { enabled: true, hours: 0 }
+    });
+    assert.equal(badHours.status, 400);
+    const granted = await request('PUT', '/api/businesses/receptwise/support-access', {
+      cookie: ownerCookie,
+      body: { enabled: true }
+    });
+    assert.equal(granted.status, 200, granted.text);
+    assert.equal(granted.json.supportAccess.active, true);
+    assert.ok(granted.json.supportAccess.expiresAt);
+    const hours = (new Date(granted.json.supportAccess.expiresAt).getTime() - Date.now()) / 3600000;
+    assert.ok(hours > 71 && hours <= 72);
+
+    const seen = await request('GET', '/api/appointments?business=receptwise&from=2026-10-01T00:00:00.000Z&to=2026-11-01T00:00:00.000Z', { cookie });
+    assert.ok(seen.json.appointments.some((item) => item.customer === 'Riley Cho'));
+    const opened = await request('GET', '/api/businesses/receptwise', { cookie });
+    assert.equal(opened.json.business.detailsVisible, true);
+    assert.ok(opened.json.business.calls.some((call) => /Sam Ortiz/.test(call.from) || /Riley/.test(call.summary) || call.summary));
+    const views = await db.query(
+      "SELECT user_id, detail FROM audit_log WHERE action = 'support.view' AND business_id = $1",
+      [recept.rows[0].id]
+    );
+    assert.ok(views.rows.length > 0);
+    assert.ok(views.rows.every((row) => Number(row.user_id) !== Number(owner.id)));
+    assert.equal(JSON.stringify(views.rows).includes('Riley'), false);
+    assert.equal(JSON.stringify(views.rows).includes('Sam'), false);
+    assert.ok(views.rows.some((row) => row.detail && (row.detail.what === 'appointments' || row.detail.what === 'business')));
+
+    const teamLogin = await request('POST', '/api/auth/login', {
+      body: { email: 'team@receptwise.example', password: 'team-password-10' }
+    });
+    const teamCookie = cookieFrom(teamLogin.setCookie);
+    const teamOpen = await request('GET', '/api/businesses/receptwise', { cookie: teamCookie });
+    assert.equal(teamOpen.json.business.detailsVisible, true);
+    assert.ok(JSON.stringify(teamOpen.json).includes('Sam Ortiz') || JSON.stringify(teamOpen.json).includes('Riley Cho'));
+
+    const off = await request('PUT', '/api/businesses/receptwise/support-access', {
+      cookie: ownerCookie,
+      body: { enabled: false }
+    });
+    assert.equal(off.status, 200, off.text);
+    assert.equal(off.json.supportAccess.active, false);
+    const closed = await request('GET', '/api/businesses/receptwise', { cookie });
+    assert.equal(closed.json.business.detailsVisible, false);
+    assert.equal(JSON.stringify(closed.json).includes('Sam Ortiz'), false);
+
+    await db.query(
+      "UPDATE support_access SET enabled = true, expires_at = now() - interval '1 hour' WHERE business_id = $1",
+      [recept.rows[0].id]
+    );
+    const expired = await request('GET', '/api/metrics?business=receptwise', { cookie });
+    assert.ok(expired.json.recentCalls.length > 0);
+    assert.ok(expired.json.recentCalls.every((call) => call.redacted === true && call.callerName === ''));
+    assert.equal(JSON.stringify(expired.json).includes('Sam Ortiz'), false);
   });
 });

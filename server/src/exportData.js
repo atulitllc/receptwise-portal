@@ -3,6 +3,7 @@
 // Passwords, session tokens, and third-party tokens are never included.
 const db = require('./db');
 const audit = require('./audit');
+const privacy = require('./privacy');
 
 const SECRET_KEY = /^(api[-_]?key|token|token_enc|access_token|refresh_token|password|password_hash|secret|authorization)$/i;
 
@@ -38,7 +39,7 @@ function insert(table, columns, row) {
   return 'INSERT INTO ' + table + ' (' + columns.join(', ') + ') VALUES (' + values.join(', ') + ');\n';
 }
 
-async function snapshot() {
+async function snapshot(user) {
   const [businesses, setup, phones, assistants, integrations, calls, bookings, activity] = await Promise.all([
     db.query(
       `SELECT id, slug, name, category, city, timezone, status, pilot, profile, receptionist, created_at, updated_at
@@ -95,6 +96,22 @@ async function snapshot() {
   const assistantsBy = {};
   assistants.rows.forEach((row) => { assistantsBy[row.business_id] = scrub(row); });
 
+  const grants = await privacy.activeGrantSet();
+  const revealed = new Set();
+  function keep(businessId) {
+    if (!privacy.allows(user, businessId, grants)) return false;
+    if (privacy.isReceptwise(user)) revealed.add(Number(businessId));
+    return true;
+  }
+  const callsOut = calls.rows.map((row) => scrub(keep(row.business_id) ? row : privacy.scrubCustomerFields(row, 'call')));
+  const bookingsOut = bookings.rows.map((row) => scrub(keep(row.business_id) ? row : privacy.scrubCustomerFields(row, 'booking')));
+  const activityOut = activity.rows.map((row) => scrub(
+    row.business_id && !keep(row.business_id) ? privacy.scrubCustomerFields(row, 'audit') : row
+  ));
+  if (privacy.isReceptwise(user)) {
+    for (const id of revealed) await privacy.noteView(user, id, 'export');
+  }
+
   const clients = businesses.rows.map((row) => {
     const client = scrub(row);
     client.setup = setupBy[row.id] || [];
@@ -114,12 +131,12 @@ async function snapshot() {
   return {
     exportedAt: new Date().toISOString(),
     product: 'ReceptWise',
-    note: 'Clients, receptionist settings, calls, bookings, and activity. Passwords, session tokens, and third-party tokens are omitted. Use pg_dump for a full database backup.',
+    note: 'Clients, receptionist settings, calls, bookings, and activity. Passwords, session tokens, and third-party tokens are omitted. Caller and customer details are omitted unless that business has turned on Receptwise support access. Use pg_dump for a full database backup.',
     clients,
     settings,
-    calls: calls.rows.map(scrub),
-    bookings: bookings.rows.map(scrub),
-    activity: activity.rows.map(scrub)
+    calls: callsOut,
+    bookings: bookingsOut,
+    activity: activityOut
   };
 }
 
@@ -170,7 +187,7 @@ async function send(req, res) {
     err.status = 400;
     throw err;
   }
-  const data = await snapshot();
+  const data = await snapshot(req.user);
   await audit.record(req.user.id, null, 'data.export', { format });
   const day = data.exportedAt.slice(0, 10);
   res.set('Cache-Control', 'no-store');

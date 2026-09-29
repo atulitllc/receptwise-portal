@@ -349,6 +349,47 @@ test('feature status registry is the single badge source', () => {
   });
 });
 
+test('support access hides caller and booking details unless the grant matches', () => {
+  const privacy = require('../src/privacy');
+  const grants = new Set([7]);
+  const admin = { id: 1, role: 'admin', businessId: null };
+  const team = { id: 2, role: 'team', businessId: null };
+  const owner = { id: 3, role: 'owner', businessId: 4 };
+  const staff = { id: 5, role: 'staff', businessId: 4 };
+  assert.equal(privacy.allows(admin, 7, grants), true);
+  assert.equal(privacy.allows(admin, 4, grants), false);
+  assert.equal(privacy.allows(team, 4, grants), false);
+  assert.equal(privacy.allows(owner, 4, grants), true);
+  assert.equal(privacy.allows(owner, 7, grants), false);
+  assert.equal(privacy.allows(staff, 4, new Set()), true);
+  assert.equal(privacy.allows(staff, 9, grants), false);
+  assert.equal(privacy.hiddenLabel('Cancelled'), 'Cancelled – details hidden');
+  assert.equal(privacy.hiddenLabel('Completed'), 'Completed – details hidden');
+  assert.equal(privacy.hiddenLabel('Confirmed'), 'Booked – details hidden');
+  const appt = privacy.redactAppointment({
+    id: 3, businessId: 'harbor', businessName: 'Harbor', timezone: 'America/New_York',
+    startsAt: '2026-10-07T19:00:00.000Z', endsAt: null, customer: 'Riley Cho', phone: '(617) 555-0142',
+    email: 'riley@example.test', service: 'Visit', source: 'Phone', status: 'Confirmed',
+    callId: 'call-1', callHref: 'dashboard.html?call=call-1'
+  });
+  assert.equal(appt.customer, 'Booked – details hidden');
+  assert.equal(appt.phone, '');
+  assert.equal(appt.email, '');
+  assert.equal(appt.service, '');
+  assert.equal(appt.callId, null);
+  assert.equal(appt.callHref, null);
+  assert.equal(appt.startsAt, '2026-10-07T19:00:00.000Z');
+  assert.equal(appt.redacted, true);
+  assert.equal(privacy.redactActivity({ kind: 'call', text: 'Booked · Riley Cho' }).text, 'Call · details hidden');
+  assert.equal(privacy.redactActivity({ kind: 'booking', text: 'Booked Riley Cho' }).text, 'Booked – details hidden');
+  assert.equal(privacy.redactActivity({ kind: 'trello.card_created', text: 'Created a Trello card for a booking (Sam Ortiz).' }).text, 'Updated a card · details hidden');
+  assert.equal(privacy.redactActivity({ kind: 'settings.update', text: 'Saved receptionist settings.' }).text, 'Saved receptionist settings.');
+  const past = privacy.presentGrant({ enabled: true, expires_at: new Date(Date.now() - 1000).toISOString() });
+  assert.equal(past.active, false);
+  const live = privacy.presentGrant({ enabled: true, expires_at: new Date(Date.now() + 3600000).toISOString() });
+  assert.equal(live.active, true);
+});
+
 test('meta dialog URL uses the business login config when set', () => {
   const previous = process.env.META_LOGIN_CONFIG_ID;
   process.env.META_LOGIN_CONFIG_ID = '';

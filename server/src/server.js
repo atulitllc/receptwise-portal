@@ -21,6 +21,7 @@ const calendarConnection = require('./calendarConnection');
 const voices = require('./voices');
 const websites = require('./website/service');
 const appointments = require('./appointments');
+const privacy = require('./privacy');
 
 // The portal pages live at the repo root (also published as the GitHub Pages demo).
 const SITE_ROOT = path.join(__dirname, '..', '..');
@@ -45,15 +46,21 @@ async function teamList() {
   return rows.map((u) => ({
     name: u.name || u.email.split('@')[0],
     email: u.email,
-    role: u.role === 'admin' ? 'Admin' : 'Team',
-    scope: u.role === 'admin' ? 'All businesses, billing, and costs' : 'Assigned businesses'
+    role: u.role === 'admin' ? 'Admin' : u.role === 'owner' ? 'Owner' : u.role === 'staff' ? 'Staff' : 'Team',
+    scope: u.role === 'owner' || u.role === 'staff' ? 'One business' : (u.role === 'admin' ? 'All businesses, billing, and costs' : 'Assigned businesses')
   }));
 }
 
-async function callsByDay() {
+async function callsByDay(businessId) {
+  const params = [];
+  let filter = '';
+  if (businessId) {
+    params.push(businessId);
+    filter = ' AND business_id = $1';
+  }
   const { rows } = await db.query(
     `SELECT (now() AT TIME ZONE 'America/New_York')::date - (coalesce(started_at, created_at) AT TIME ZONE 'America/New_York')::date AS ago, count(*)::int AS n
-     FROM calls WHERE coalesce(started_at, created_at) > now() - interval '8 days' GROUP BY 1`);
+     FROM calls WHERE coalesce(started_at, created_at) > now() - interval '8 days'${filter} GROUP BY 1`, params);
   const out = [0, 0, 0, 0, 0, 0, 0];
   rows.forEach((r) => { if (r.ago >= 0 && r.ago <= 6) out[6 - r.ago] = r.n; });
   return out;
@@ -95,6 +102,16 @@ function createApp() {
   // ---- API ----
   const api = express.Router();
   api.use(auth.requireAppHeader);
+  api.use((req, _res, next) => {
+    if (privacy.isBusinessUser(req.user)) req.businessScope = { businessId: req.user.businessId };
+    next();
+  });
+
+  function requireReceptwise(req, res, next) {
+    if (!req.user) return res.status(401).json({ error: 'Sign in required.' });
+    if (!privacy.isReceptwise(req.user)) return res.status(403).json({ error: 'Receptwise staff only.' });
+    next();
+  }
 
   api.get('/health', wrap(async (_req, res) => {
     await db.query('SELECT 1');
@@ -136,43 +153,46 @@ function createApp() {
     res.json({ numbers: await provisioning.searchNumbers(areaCode) });
   }));
 
-  api.get('/businesses', auth.requireUser, wrap(async (_req, res) => res.json({ businesses: await businesses.listUi() })));
-  api.post('/businesses/draft', auth.requireUser, wrap(async (req, res) => {
+  api.get('/businesses', auth.requireUser, wrap(async (req, res) => res.json({ businesses: await businesses.listUi(req.user) })));
+  api.post('/businesses/draft', auth.requireUser, requireReceptwise, wrap(async (req, res) => {
     const biz = await businesses.createDraft(req.body || {}, req.user.id);
-    res.status(201).json({ business: await businesses.toUi(biz) });
+    res.status(201).json({ business: await businesses.toUi(biz, req.user) });
   }));
-  api.post('/businesses', auth.requireUser, wrap(async (req, res) => {
+  api.post('/businesses', auth.requireUser, requireReceptwise, wrap(async (req, res) => {
     const biz = await businesses.createBusiness(req.body || {}, req.user.id);
-    res.status(201).json({ business: await businesses.toUi(biz) });
+    res.status(201).json({ business: await businesses.toUi(biz, req.user) });
   }));
 
   async function loadBiz(req, res, next) {
     const biz = await businesses.getBySlug(req.params.slug);
     if (!biz) return res.status(404).json({ error: 'Business not found.' });
+    if (privacy.isBusinessUser(req.user) && Number(req.user.businessId) !== Number(biz.id)) {
+      return res.status(404).json({ error: 'Business not found.' });
+    }
     req.biz = biz;
     next();
   }
   const withBiz = [auth.requireUser, wrap(loadBiz)];
 
-  api.get('/businesses/:slug', withBiz, wrap(async (req, res) => res.json({ business: await businesses.toUi(req.biz) })));
+  api.get('/businesses/:slug', withBiz, wrap(async (req, res) => res.json({ business: await businesses.toUi(req.biz, req.user) })));
   api.put('/businesses/:slug', withBiz, wrap(async (req, res) => {
     const updated = await businesses.updateBusiness(req.params.slug, req.body || {}, req.user.id);
-    res.json({ business: await businesses.toUi(updated) });
+    res.json({ business: await businesses.toUi(updated, req.user) });
   }));
   api.put('/businesses/:slug/draft', withBiz, wrap(async (req, res) => {
     const updated = await businesses.updateDraft(req.biz, req.body || {}, req.user.id);
-    res.json({ business: await businesses.toUi(updated) });
+    res.json({ business: await businesses.toUi(updated, req.user) });
   }));
   api.post('/businesses/:slug/draft/finish', withBiz, wrap(async (req, res) => {
     const updated = await businesses.finishDraft(req.biz, req.body || {}, req.user.id);
-    res.json({ business: await businesses.toUi(updated) });
+    res.json({ business: await businesses.toUi(updated, req.user) });
   }));
   api.put('/businesses/:slug/calendar', withBiz, wrap(async (req, res) => {
     const saved = await calendarConnection.saveConnection(req.biz, req.body || {}, req.user.id);
     res.json({
       calendar: saved.calendar,
       calcomKeySaved: saved.calcomKeySaved,
-      business: await businesses.toUi(saved.biz)
+      business: await businesses.toUi(saved.biz, req.user)
     });
   }));
   api.delete('/businesses/:slug', withBiz, wrap(async (req, res) => {
@@ -186,7 +206,7 @@ function createApp() {
       return res.status(400).json({ error: 'Texting stays off until SMS_ENABLED is turned on (after the EIN and A2P registration).' });
     }
     await businesses.setStep(req.biz.id, req.params.step, (req.body || {}).status, String((req.body || {}).detail || ''), {});
-    res.json({ business: await businesses.toUi(req.biz) });
+    res.json({ business: await businesses.toUi(req.biz, req.user) });
   }));
 
   api.post('/businesses/:slug/assistant/publish', withBiz, wrap(async (req, res) => {
@@ -199,7 +219,7 @@ function createApp() {
   // Spends money: admins only.
   api.post('/businesses/:slug/numbers/provision', auth.requireAdmin, wrap(loadBiz), wrap(async (req, res) => {
     const result = await provisioning.provisionNumber(req.biz, req.body || {}, req.user.id);
-    res.status(201).json(Object.assign({ ok: true }, result, { business: await businesses.toUi(req.biz) }));
+    res.status(201).json(Object.assign({ ok: true }, result, { business: await businesses.toUi(req.biz, req.user) }));
   }));
   api.post('/businesses/:slug/test-call', withBiz, wrap(async (req, res) => {
     res.json(Object.assign({ ok: true }, await provisioning.testCall(req.biz, (req.body || {}).to, req.user.id)));
@@ -207,7 +227,7 @@ function createApp() {
   api.post('/businesses/:slug/calls/sync', withBiz, wrap(async (req, res) => {
     const result = await provisioning.syncCalls(req.biz);
     await require('./audit').record(req.user.id, req.biz.id, 'call.sync', result);
-    res.json(Object.assign({ ok: true }, result, { business: await businesses.toUi(req.biz) }));
+    res.json(Object.assign({ ok: true }, result, { business: await businesses.toUi(req.biz, req.user) }));
   }));
 
   api.get('/businesses/:slug/settings', withBiz, wrap(async (req, res) => {
@@ -264,13 +284,21 @@ function createApp() {
     res.json(Object.assign({ ok: true }, result));
   }));
 
+  api.get('/businesses/:slug/support-access', withBiz, wrap(async (req, res) => {
+    res.json({ supportAccess: privacy.presentGrant(await privacy.supportRow(req.biz.id)) });
+  }));
+  api.put('/businesses/:slug/support-access', withBiz, wrap(async (req, res) => {
+    res.json({ supportAccess: await privacy.setAccess(req.biz, req.user, req.body || {}) });
+  }));
+
   api.get('/appointments', auth.requireUser, wrap(async (req, res) => {
     const biz = await appointments.resolveBusiness(req.query.business, req.businessScope);
     const items = await appointments.list({
       businessId: biz ? biz.id : null,
       from: appointments.parseInstant(req.query.from, 'From'),
       to: appointments.parseInstant(req.query.to, 'To'),
-      includeUnscheduled: req.query.unscheduled === '1'
+      includeUnscheduled: req.query.unscheduled === '1',
+      user: req.user
     });
     res.json({
       businessId: biz ? biz.slug : null,
@@ -282,25 +310,39 @@ function createApp() {
     const body = req.body || {};
     const biz = await appointments.resolveBusiness(body.businessId || body.business, req.businessScope);
     if (!biz) return res.status(400).json({ error: 'Choose a business.' });
-    const appointment = await appointments.create(biz, body, req.user.id);
+    const appointment = await appointments.create(biz, body, req.user.id, req.user);
     res.status(201).json({ appointment });
   }));
   api.patch('/appointments/:id', auth.requireUser, wrap(async (req, res) => {
-    const appointment = await appointments.update(req.params.id, req.body || {}, req.user.id, req.businessScope);
+    const appointment = await appointments.update(req.params.id, req.body || {}, req.user.id, req.businessScope, req.user);
     res.json({ appointment });
   }));
 
   api.get('/metrics', auth.requireUser, wrap(async (req, res) => {
-    if (!req.query.business) return res.json(await metrics.collect(null));
+    if (privacy.isBusinessUser(req.user)) {
+      const slug = String(req.query.business || '');
+      if (slug && slug !== 'all' && slug !== req.user.businessSlug) {
+        return res.status(404).json({ error: 'Business not found.' });
+      }
+      return res.json(await metrics.collect(req.user.businessId, req.user));
+    }
+    if (!req.query.business) return res.json(await metrics.collect(null, req.user));
     const biz = await businesses.getBySlug(String(req.query.business));
     if (!biz) return res.status(404).json({ error: 'Business not found.' });
-    res.json(await metrics.collect(biz.id));
+    res.json(await metrics.collect(biz.id, req.user));
   }));
   api.post('/calls/sync', auth.requireUser, wrap(async (req, res) => {
-    const slug = req.body && req.body.business;
+    let slug = req.body && req.body.business;
+    if (privacy.isBusinessUser(req.user)) {
+      if (slug && String(slug) !== req.user.businessSlug) return res.status(404).json({ error: 'Business not found.' });
+      slug = req.user.businessSlug;
+    }
     if (slug) {
       const biz = await businesses.getBySlug(String(slug));
       if (!biz) return res.status(404).json({ error: 'Business not found.' });
+      if (privacy.isBusinessUser(req.user) && Number(req.user.businessId) !== Number(biz.id)) {
+        return res.status(404).json({ error: 'Business not found.' });
+      }
       const result = await provisioning.syncCalls(biz);
       await require('./audit').record(req.user.id, biz.id, 'call.sync', result);
       return res.json(Object.assign({ ok: true }, result));
@@ -311,6 +353,9 @@ function createApp() {
   api.get('/integrations/meta/start', auth.requireUser, wrap(async (req, res) => {
     const biz = await businesses.getBySlug(String(req.query.business || ''));
     if (!biz) return res.status(404).json({ error: 'Business not found.' });
+    if (privacy.isBusinessUser(req.user) && Number(req.user.businessId) !== Number(biz.id)) {
+      return res.status(404).json({ error: 'Business not found.' });
+    }
     res.redirect(await social.beginMeta(biz, req.user.id));
   }));
   api.get('/integrations/meta/callback', wrap(async (req, res) => {
@@ -335,8 +380,9 @@ function createApp() {
   app.get('/assets/data.js', wrap(async (req, res) => {
     let payload = { live: { user: null, integrations: {} }, businesses: [], team: [], feed: [], callsByDay: [] };
     if (req.user) {
+      const homeId = privacy.isBusinessUser(req.user) ? req.user.businessId : null;
       const [list, team, byDay, dash] = await Promise.all([
-        businesses.listUi(), teamList(), callsByDay(), metrics.collect(null)
+        businesses.listUi(req.user), teamList(), callsByDay(homeId), metrics.collect(homeId, req.user)
       ]);
       const integrations = Object.assign(provisioning.status(), {
         meta: meta.configured(),
