@@ -104,6 +104,7 @@ global.fetch = async (url, opts = {}) => {
   }
   if (target.includes('/call')) return jsonRes(200, []);
   if (target.includes('api.twilio.com')) {
+    if (target.includes('/Calls.json') && method === 'POST') return jsonRes(201, { sid: 'CA_TEST_FORWARD', status: 'queued' });
     return jsonRes(200, { incoming_phone_numbers: [{ sid: 'PN123', phone_number: '+17817057179', status: 'in-use' }] });
   }
   if (target.includes('api.trello.com')) {
@@ -179,6 +180,32 @@ function request(method, path, { body, cookie: jar, headers } = {}) {
   });
 }
 
+function requestRaw(method, path, { body, cookie: jar, headers } = {}) {
+  const payload = body == null ? null : String(body);
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port,
+      path,
+      method,
+      headers: Object.assign({
+        ...(jar ? { Cookie: jar } : {}),
+        ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {})
+      }, headers || {})
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        resolve({ status: res.statusCode, text, headers: res.headers });
+      });
+    });
+    req.on('error', reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
 function cookieFrom(setCookie) {
   const raw = (setCookie || []).join(';');
   const match = raw.match(/rw_sid=([^;]+)/);
@@ -189,6 +216,7 @@ describe('control panel API', () => {
   before(async () => {
     await db.migrate();
     await db.query(`TRUNCATE TABLE
+      port_requests, ring_first_numbers, phone_forwarding,
       trello_cards, assistant_backups, oauth_states, bookings, calls, integrations, audit_log,
       phone_numbers, assistants, business_setup, businesses, sessions, users
       RESTART IDENTITY CASCADE`);
@@ -850,5 +878,126 @@ describe('control panel API', () => {
     assert.equal(testBody.assistantId, 'asst-new-harbor');
     assert.equal(testBody.phoneNumberId, 'pn-new-harbor');
     assert.equal(testBody.customer.number, '+16175550144');
+  });
+
+  it('saves forwarding, records a port request, and places an admin test call', async () => {
+    const forwarding = require('../../assets/forwarding');
+    const saved = await request('PUT', '/api/businesses/receptwise/forwarding', {
+      cookie,
+      body: {
+        mode: 'conditional',
+        carrier: 'verizon',
+        rings: 4,
+        businessNumber: '(617) 555-0142',
+        transferNumber: '(617) 555-0100',
+        status: 'not_set_up',
+        aiEnabled: true,
+        hours: {},
+        ringFirst: []
+      }
+    });
+    assert.equal(saved.status, 200, saved.text);
+    assert.equal(saved.json.forwarding.mode, 'conditional');
+    assert.equal(saved.json.forwarding.carrier, 'verizon');
+    assert.equal(saved.json.forwarding.rings, 4);
+    assert.equal(saved.json.forwarding.ringSeconds, 20);
+    assert.equal(saved.json.forwarding.forwardTo, '(781) 705-7179');
+    assert.equal(saved.json.forwarding.status, 'not_set_up');
+    assert.equal(saved.json.business.forwarding.transferNumber, '(617) 555-0100');
+
+    const beforeCalls = httpCalls.filter((c) => c.url.includes('/Calls.json')).length;
+    const unconfirmed = await request('POST', '/api/businesses/receptwise/forwarding/test', { cookie, body: {} });
+    assert.equal(unconfirmed.status, 400, unconfirmed.text);
+    assert.equal(httpCalls.filter((c) => c.url.includes('/Calls.json')).length, beforeCalls);
+
+    const placed = await request('POST', '/api/businesses/receptwise/forwarding/test', { cookie, body: { confirm: true } });
+    assert.equal(placed.status, 200, placed.text);
+    assert.equal(placed.json.placed, true);
+    assert.equal(placed.json.callSid, 'CA_TEST_FORWARD');
+    assert.equal(placed.json.forwarding.status, 'pending_test');
+    const outbound = httpCalls.filter((c) => c.method === 'POST' && c.url.includes('/Calls.json'));
+    const form = new URLSearchParams(outbound[outbound.length - 1].opts.body);
+    assert.equal(form.get('To'), '+16175550142');
+    assert.equal(form.get('From'), '+17817057179');
+    assert.match(form.get('Twiml'), /ReceptWise forwarding test/);
+
+    const created = await request('POST', '/api/users', {
+      cookie,
+      body: { email: 'desk@receptwise.example', name: 'Desk User', password: 'desk-password-10', role: 'team' }
+    });
+    assert.equal(created.status, 201, created.text);
+    const teamLogin = await request('POST', '/api/auth/login', {
+      body: { email: 'desk@receptwise.example', password: 'desk-password-10' }
+    });
+    const teamCookie = cookieFrom(teamLogin.setCookie);
+    const callsBeforeManual = httpCalls.filter((c) => c.url.includes('/Calls.json')).length;
+    const fetchesBefore = httpCalls.length;
+    const manual = await request('POST', '/api/businesses/receptwise/forwarding/test', { cookie: teamCookie, body: { confirm: true } });
+    assert.equal(manual.status, 200, manual.text);
+    assert.equal(manual.json.placed, false);
+    assert.equal(manual.json.manual, true);
+    assert.equal(manual.json.forwarding.status, 'pending_test');
+    assert.equal(httpCalls.filter((c) => c.url.includes('/Calls.json')).length, callsBeforeManual);
+
+    const portReq = await request('POST', '/api/businesses/receptwise/forwarding/port-request', {
+      cookie,
+      body: { businessNumber: '(617) 555-0142', contactName: 'Maya Chen', carrier: 'Verizon', notes: 'Bill is ready' }
+    });
+    assert.equal(portReq.status, 201, portReq.text);
+    assert.equal(portReq.json.request.status, 'requested');
+    assert.equal(httpCalls.length, fetchesBefore);
+    const stored = await db.query('SELECT status FROM port_requests WHERE business_id = (SELECT id FROM businesses WHERE slug = $1)', ['receptwise']);
+    assert.equal(stored.rows[0].status, 'requested');
+
+    const ported = await request('PUT', '/api/businesses/receptwise/forwarding', {
+      cookie,
+      body: {
+        mode: 'ported',
+        rings: 3,
+        aiEnabled: true,
+        hours: {},
+        ringFirst: [{ label: 'Desk', number: '(617) 555-0111' }, { label: 'Cell', number: '617-555-0122' }],
+        transferNumber: '(617) 555-0100',
+        status: 'pending_test'
+      }
+    });
+    assert.equal(ported.status, 200, ported.text);
+    assert.equal(ported.json.forwarding.mode, 'ported');
+    assert.deepEqual(ported.json.forwarding.ringFirst.map((row) => row.number), ['(617) 555-0111', '(617) 555-0122']);
+
+    const params = { To: '+17817057179', From: '+16175550199', CallSid: 'CA_INBOUND', CallStatus: 'ringing' };
+    const voicePath = '/webhooks/twilio/voice';
+    const voiceUrl = 'http://127.0.0.1:' + port + voicePath;
+    const signed = await requestRaw('POST', voicePath, {
+      body: new URLSearchParams(params).toString(),
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-Twilio-Signature': forwarding.twilioSignature(voiceUrl, params, 'test-twilio-token')
+      }
+    });
+    assert.equal(signed.status, 200, signed.text);
+    assert.match(signed.headers['content-type'], /xml/);
+    assert.match(signed.text, /<Dial timeout="15"/);
+    assert.match(signed.text, /\+16175550111/);
+    assert.match(signed.text, /panel\.example\.test\/webhooks\/twilio\/voice\?step=dial/);
+
+    const missedParams = Object.assign({ DialCallStatus: 'no-answer' }, params);
+    const missed = await requestRaw('POST', voicePath, {
+      body: new URLSearchParams(missedParams).toString(),
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-Twilio-Signature': forwarding.twilioSignature(voiceUrl, missedParams, 'test-twilio-token')
+      }
+    });
+    assert.equal(missed.status, 200, missed.text);
+    assert.match(missed.text, /TODO: connect this call/);
+    assert.doesNotMatch(missed.text, /<Dial/);
+    assert.doesNotMatch(missed.text, /vapi\.ai/);
+
+    const bad = await requestRaw('POST', voicePath, {
+      body: new URLSearchParams(params).toString(),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Twilio-Signature': 'nope' }
+    });
+    assert.equal(bad.status, 403);
   });
 });

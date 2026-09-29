@@ -235,6 +235,112 @@ test('trello card text names the caller and links back to the call', () => {
   assert.equal(redact('https://api.trello.com/1/members/me?key=secret&token=tok'), 'https://api.trello.com/1/members/me?key=redacted&token=redacted');
 });
 
+const forwarding = require('../../assets/forwarding');
+const { assertScope } = require('../src/phoneForwarding');
+
+test('ring count becomes seconds and carrier steps stay within published instructions', () => {
+  assert.equal(forwarding.ringsToSeconds(1), 5);
+  assert.equal(forwarding.ringsToSeconds(6), 30);
+  assert.throws(() => forwarding.ringsToSeconds(0), /1 to 6/);
+  assert.throws(() => forwarding.ringsToSeconds(7), /1 to 6/);
+
+  const verizon = forwarding.instructionsText({ carrier: 'verizon', rings: 4, forwardTo: '+15035550194' });
+  assert.match(verizon, /\*715035550194/);
+  assert.match(verizon, /\*73/);
+  assert.match(verizon, /\*925035550194#/);
+  assert.match(verizon, /Check with your carrier/);
+  assert.match(verizon, /do not include a code for 4 rings/);
+
+  const tmobile = forwarding.instructionsText({ carrier: 'tmobile', rings: 2, forwardTo: '(312) 555-0114' });
+  assert.match(tmobile, /\*\*61\*13125550114#/);
+  assert.match(tmobile, /##61#/);
+  assert.match(tmobile, /18056377243/);
+  assert.match(tmobile, /\*\*61\*13125550114\*\*10#/);
+  assert.match(tmobile, /Check with your carrier/);
+
+  const att = forwarding.instructions({ carrier: 'att', rings: 4, forwardTo: '+16175550160' });
+  const attText = forwarding.instructionsText({ carrier: 'att', rings: 4, forwardTo: '+16175550160' });
+  assert.match(attText, /When unanswered/);
+  assert.match(attText, /800\.288\.2020/);
+  assert.match(attText, /\*47 then 24/);
+  assert.equal(att.steps[0].codes.some((item) => item.value.includes('**61*')), false);
+
+  ['comcast', 'spectrum', 'ringcentral'].forEach((carrier) => {
+    const help = forwarding.instructions({ carrier, rings: 3, forwardTo: '+15035550194' });
+    assert.equal(help.steps.every((item) => item.codes.length === 0), true);
+    assert.match(forwarding.instructionsText({ carrier, rings: 3, forwardTo: '+15035550194' }), /Check with your carrier/);
+  });
+
+  const other = forwarding.instructionsText({ carrier: 'other', rings: 4, forwardTo: '+15035550194' });
+  assert.match(other, /\*\*61\*5035550194\*\*20#/);
+  assert.match(other, /not verified for your carrier/);
+});
+
+test('ported inbound TwiML rings first, then stubs the receptionist handoff', () => {
+  const open = forwarding.inboundTwiml({
+    mode: 'ported',
+    rings: 3,
+    aiEnabled: true,
+    afterHours: 'ai_immediate',
+    hours: {},
+    ringFirst: [{ e164: '+16175550111' }, { number: '(617) 555-0122' }]
+  }, {
+    now: new Date('2026-09-29T15:00:00Z'),
+    timeZone: 'America/New_York',
+    actionUrl: 'https://panel.example.test/webhooks/twilio/voice?step=dial'
+  });
+  assert.equal(open.dialed, true);
+  assert.match(open.twiml, /<Dial timeout="15" action="https:\/\/panel\.example\.test\/webhooks\/twilio\/voice\?step=dial"/);
+  assert.match(open.twiml, /\+16175550111/);
+  assert.match(open.twiml, /\+16175550122/);
+
+  const closedHours = { mon: { closed: true }, tue: { closed: true }, wed: { closed: true }, thu: { closed: true }, fri: { closed: true }, sat: { closed: true }, sun: { closed: true } };
+  const after = forwarding.inboundTwiml({
+    mode: 'ported', rings: 4, aiEnabled: true, afterHours: 'ai_immediate', hours: closedHours, ringFirst: [{ e164: '+16175550111' }]
+  }, { now: new Date('2026-09-29T15:00:00Z'), timeZone: 'America/New_York' });
+  assert.equal(after.reason, 'after_hours');
+  assert.doesNotMatch(after.twiml, /<Dial/);
+  assert.match(after.twiml, /TODO: connect this call/);
+  assert.doesNotMatch(after.twiml, /vapi\.ai/);
+
+  const missed = forwarding.inboundTwiml({
+    mode: 'ported', rings: 4, aiEnabled: true, hours: {}, ringFirst: [{ e164: '+16175550111' }]
+  }, { dialStatus: 'no-answer' });
+  assert.match(missed.twiml, /TODO: connect this call/);
+  assert.doesNotMatch(missed.twiml, /<Dial/);
+
+  const quiet = forwarding.inboundTwiml({
+    mode: 'ported', rings: 4, aiEnabled: false, hours: {}, ringFirst: [{ e164: '+16175550111' }]
+  }, { dialStatus: 'no-answer' });
+  assert.match(quiet.twiml, /No one is available/);
+  assert.doesNotMatch(quiet.twiml, /TODO/);
+
+  const answered = forwarding.inboundTwiml({ mode: 'ported', rings: 4, aiEnabled: true, ringFirst: [] }, { dialStatus: 'completed' });
+  assert.match(answered.twiml, /<Hangup\/>/);
+  assert.doesNotMatch(answered.twiml, /<Say>/);
+});
+
+test('Twilio webhook signatures use the published HMAC example', () => {
+  const params = {
+    CallSid: 'CA1234567890ABCDE',
+    Caller: '+14158675309',
+    Digits: '1234',
+    From: '+14158675309',
+    To: '+18005551212'
+  };
+  assert.equal(
+    forwarding.twilioSignature('https://mycompany.com/myapp.php?foo=1&bar=2', params, '12345'),
+    'RSOYDt4T1cUTdK1PDd93/VVr8B8='
+  );
+});
+
+test('a business scope only allows that business', () => {
+  assert.doesNotThrow(() => assertScope(null, { id: 4 }));
+  assert.doesNotThrow(() => assertScope({}, { id: 4 }));
+  assert.doesNotThrow(() => assertScope({ businessId: '4' }, { id: 4 }));
+  assert.throws(() => assertScope({ businessId: 2 }, { id: 4 }), /Business not found/);
+});
+
 test('meta dialog URL uses the business login config when set', () => {
   const previous = process.env.META_LOGIN_CONFIG_ID;
   process.env.META_LOGIN_CONFIG_ID = '';

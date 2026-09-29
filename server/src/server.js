@@ -17,6 +17,7 @@ const social = require('./social');
 const meta = require('./integrations/meta');
 const trelloSync = require('./trelloSync');
 const exportData = require('./exportData');
+const phoneForwarding = require('./phoneForwarding');
 
 // The portal pages live at the repo root (also published as the GitHub Pages demo).
 const SITE_ROOT = path.join(__dirname, '..', '..');
@@ -83,6 +84,11 @@ function createApp() {
     res.json({ ok: true });
   }));
 
+  app.post('/webhooks/twilio/voice', express.urlencoded({ extended: false }), wrap(async (req, res) => {
+    const twiml = await phoneForwarding.handleVoice(req);
+    res.type('text/xml').send(twiml);
+  }));
+
   app.use(express.json({ limit: '1mb' }));
   app.use(wrap(auth.loadUser));
 
@@ -132,6 +138,14 @@ function createApp() {
   }
   const withBiz = [auth.requireUser, wrap(loadBiz)];
 
+  async function activeNumber(businessId) {
+    const { rows } = await db.query(
+      'SELECT e164 FROM phone_numbers WHERE business_id = $1 AND status = \'active\' ORDER BY id DESC LIMIT 1',
+      [businessId]
+    );
+    return rows[0] || null;
+  }
+
   api.get('/businesses/:slug', withBiz, wrap(async (req, res) => res.json({ business: await businesses.toUi(req.biz) })));
   api.put('/businesses/:slug', withBiz, wrap(async (req, res) => {
     const updated = await businesses.updateBusiness(req.params.slug, req.body || {}, req.user.id);
@@ -176,6 +190,27 @@ function createApp() {
   }));
   api.get('/businesses/:slug/phone', withBiz, wrap(async (req, res) => {
     res.json(await phoneView.liveNumbers(req.biz));
+  }));
+  api.get('/businesses/:slug/forwarding', withBiz, wrap(async (req, res) => {
+    phoneForwarding.assertScope(req.businessScope, req.biz);
+    res.json({ forwarding: await phoneForwarding.presentFor(req.biz, await activeNumber(req.biz.id)) });
+  }));
+  api.put('/businesses/:slug/forwarding', withBiz, wrap(async (req, res) => {
+    phoneForwarding.assertScope(req.businessScope, req.biz);
+    const forwarding = await phoneForwarding.save(req.biz, req.body || {}, req.user.id);
+    const fresh = await businesses.getBySlug(req.biz.slug);
+    res.json({ forwarding, business: await businesses.toUi(fresh) });
+  }));
+  api.post('/businesses/:slug/forwarding/test', withBiz, wrap(async (req, res) => {
+    phoneForwarding.assertScope(req.businessScope, req.biz);
+    const result = await phoneForwarding.testForwarding(req.biz, req.user, req.body || {});
+    const fresh = await businesses.getBySlug(req.biz.slug);
+    res.json(Object.assign({ ok: true }, result, { business: await businesses.toUi(fresh) }));
+  }));
+  api.post('/businesses/:slug/forwarding/port-request', withBiz, wrap(async (req, res) => {
+    phoneForwarding.assertScope(req.businessScope, req.biz);
+    const request = await phoneForwarding.requestPort(req.biz, req.body || {}, req.user.id);
+    res.status(201).json({ request });
   }));
   api.get('/businesses/:slug/integrations', withBiz, wrap(async (req, res) => {
     const accounts = await social.listForBusiness(req.biz.id);

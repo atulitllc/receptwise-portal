@@ -30,6 +30,10 @@ Session cookie plus `X-RW-Client: portal` on every write. `GET /api/health` does
 | GET | `/api/metrics?business=slug` | calls today/7d/30d, answered, missed, duration, bookings, recent calls, activity |
 | POST | `/api/calls/sync` | backfill from Vapi for every linked business |
 | GET | `/api/businesses/:slug/phone` | live Vapi/Twilio status, or a not-connected state |
+| GET/PUT | `/api/businesses/:slug/forwarding` | conditional forwarding or ported ring-first setup |
+| POST | `/api/businesses/:slug/forwarding/test` | admin + `confirm: true` calls the business number; otherwise marks a manual test |
+| POST | `/api/businesses/:slug/forwarding/port-request` | records a port request only |
+| POST | `/webhooks/twilio/voice` | ported-number ring-first TwiML. The receptionist handoff is still a stub |
 | GET/PUT | `/api/businesses/:slug/settings` | save and push greeting, hours, booking rules, transfer, FAQ |
 | GET/PUT/DELETE | `/api/businesses/:slug/integrations/:provider` | manual handle, or remove it |
 | GET | `/api/businesses/:slug/trello` | connection status. The key and token are never included. |

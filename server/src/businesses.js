@@ -2,6 +2,7 @@
 // Data access for businesses + mapping DB rows to the shape the portal UI (assets/app.js) renders.
 const db = require('./db');
 const config = require('./config');
+const phoneForwarding = require('./phoneForwarding');
 
 const STEPS = [
   ['number', 'AI number'],
@@ -211,6 +212,7 @@ async function toUi(biz) {
   });
   const phone = Object.assign({ mode: 'forward', carrier: '', forwardType: 'missed', businessNumber: '', tests: [] }, p.phone || {});
   phone.aiNumber = phones.rows[0] ? prettyPhone(phones.rows[0].e164) : '';
+  const forwarding = await phoneForwarding.presentFor(biz, phones.rows[0] || null);
   return Object.assign({
     owner: { name: '', mobile: '', email: '' },
     greeting: '', voice: '', languages: ['English'], transfer: '',
@@ -230,6 +232,7 @@ async function toUi(biz) {
     status: p.paused ? 'paused' : biz.status,
     pilot: biz.pilot,
     phone,
+    forwarding,
     texts: 0,
     minutesUsed: Math.round((stats.rows[0].month_sec || 0) / 60),
     callsToday: stats.rows[0].today,
