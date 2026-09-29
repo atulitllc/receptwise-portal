@@ -17,7 +17,7 @@ const vapi = require('../src/integrations/vapi');
 const twilio = require('../src/integrations/twilio');
 const { extractBookings, classifyCall, bookingFromStructured, zonedInstant } = require('../src/calls');
 const { slugify, normalizeSubdomain } = require('../src/businesses');
-const { classifyHost, notFoundPage } = require('../src/portalHost');
+const { classifyHost, notFoundPage, RESERVED, apexRedirectTarget } = require('../src/portalHost');
 const settings = require('../src/settings');
 const { presentNumbers } = require('../src/phoneView');
 const cryptoBox = require('../src/cryptoBox');
@@ -670,11 +670,20 @@ test('a business scope only allows that business', () => {
 });
 
 test('customer panel hosts are one label under receptwise.com', () => {
+  assert.deepEqual([...RESERVED], ['panel', 'www', 'api']);
   assert.deepEqual(classifyHost('panel.receptwise.com'), { kind: 'primary', reserved: 'panel' });
   assert.equal(classifyHost('www.receptwise.com').kind, 'primary');
   assert.equal(classifyHost('api.receptwise.com').reserved, 'api');
   assert.deepEqual(classifyHost('sphere.receptwise.com'), { kind: 'customer', label: 'sphere' });
   assert.equal(classifyHost('receptwise.com').kind, 'primary');
+  assert.equal(classifyHost('receptwise.com:443').kind, 'primary');
+  assert.notEqual(classifyHost('receptwise.com').kind, 'customer');
+  assert.equal(apexRedirectTarget('receptwise.com', '/client.html?id=harbor'), 'https://www.receptwise.com/client.html?id=harbor');
+  assert.equal(apexRedirectTarget('ReceptWise.com:8443', '/'), 'https://www.receptwise.com/');
+  assert.equal(apexRedirectTarget('www.receptwise.com', '/'), '');
+  assert.equal(apexRedirectTarget('panel.receptwise.com', '/'), '');
+  assert.equal(apexRedirectTarget('sphere.receptwise.com', '/x'), '');
+  assert.equal(apexRedirectTarget('receptwise.receptwise.com', '/'), '');
   assert.equal(classifyHost('receptwise-portal.onrender.com').kind, 'primary');
   assert.equal(classifyHost('localhost').kind, 'primary');
   assert.equal(classifyHost('foo.bar.receptwise.com').kind, 'primary');

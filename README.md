@@ -79,7 +79,7 @@ Pilot client 1 is seeded as ReceptWise (Malden, MA) and linked to assistant `c3c
 
 ## Customer panels
 
-`*.receptwise.com` already points at this service. `panel.receptwise.com` is the main control panel and behaves as it does today. `www` and `api` are reserved the same way. The Render hostname (`*.onrender.com`) is also the full panel. `receptwise.com` itself is not a customer panel.
+`*.receptwise.com` already points at this service. `panel.receptwise.com` is the main control panel and behaves as it does today. `www` and `api` are reserved the same way. The Render hostname (`*.onrender.com`) is also the full panel. `receptwise.com` itself is not a customer panel. A request whose Host is exactly `receptwise.com` or `receptwise.com:<port>` answers 301 to `https://www.receptwise.com` plus the original path and query. `www`, `panel`, `api`, and business subdomains are not redirected.
 
 Any other single label is a customer panel: `https://<slug>.receptwise.com`. The slug is a unique `subdomain` on the business. A new business gets one from its name (lowercase letters, numbers, and hyphens). An admin can change it on the business page, which also shows the URL. Reserved names and duplicates are rejected. Renaming a business does not change the address. ReceptWise uses `receptwise`. SPHERE, when that business is already in the database, uses `sphere`.
 
