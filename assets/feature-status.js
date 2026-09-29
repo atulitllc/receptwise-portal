@@ -97,6 +97,11 @@
       label: "Texting",
       status: "mockup",
       note: "Registration status is a canned message. Texting stays off until SMS is enabled."
+    },
+    demo_requests: {
+      label: "Demo requests",
+      status: "real",
+      note: "The marketing site form saves into Leads. Admins can mark each request new, contacted, or closed."
     }
   };
 });

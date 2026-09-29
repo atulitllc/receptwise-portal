@@ -21,10 +21,31 @@ Sign-in on the static demo accepts any email and password. Sample data includes 
 | Business | `client.html?id=receptwise` | Setup checklist, phone and forwarding, and the older tabs |
 | Billing and plans | `billing.html` | Solo / Small / Growing tiers |
 | Team and settings | `team.html` | Teammates and the legal entity |
+| Leads | `leads.html` | Demo requests from the marketing site. Admins only on the live panel. |
 
 On the live server, `assets/data.js` is generated per request. When `window.RW_LIVE` is present, the pages call the API. On GitHub Pages nothing calls a server.
 
 The company that owns the product is **[Placeholder]** in the footer and on the team page.
+
+## Marketing demo requests
+
+The public form on the marketing site posts JSON to `POST /api/public/demo-requests`. No sign-in and no `X-RW-Client` header. Admins see the rows under **Leads**, newest first, and can mark each one new, contacted, or closed.
+
+```json
+{
+  "name": "Ada Lovelace",
+  "business": "Analytical Engines",
+  "phone": "(781) 555-0100",
+  "email": "ada@example.com",
+  "time": "Weekday mornings",
+  "plan": "Growth",
+  "businessType": "Cafe",
+  "message": "We miss calls after 5.",
+  "company_website": ""
+}
+```
+
+`name` is required, plus a `phone` or an `email`. `business`, `time`, `plan`, `businessType`, and `message` are optional. A 10-digit US phone (or 11 digits starting with 1) is stored as E.164, the same way the panel already normalizes numbers (`(781) 555-0100` becomes `+17815550100`). `company_website` is a honeypot: leave it empty, and add it as a hidden input. A filled honeypot returns `{ "ok": true }` and is not stored. The same response is a real save. Browsers on `https://receptwise.com`, `https://www.receptwise.com`, `https://atulitllc.github.io`, and `https://*.pages.dev` can POST. Other origins are rejected. There is no email notification; this app has no mail provider.
 
 ## What works once keys are set
 
@@ -76,7 +97,7 @@ Download an export or a `pg_dump` before changing databases so the new instance 
 
 ### Export and backup
 
-An admin can download the working data from **Team and settings → Export data** (JSON) or **Export SQL**. The file includes clients, receptionist settings, calls, bookings, and activity. It leaves out passwords, session tokens, and third-party tokens (Meta, Trello). `GET /api/export?format=json` and `GET /api/export?format=sql` are admin-only.
+An admin can download the working data from **Team and settings → Export data** (JSON) or **Export SQL**. The file includes clients, receptionist settings, calls, bookings, demo requests, and activity. It leaves out passwords, session tokens, and third-party tokens (Meta, Trello). `GET /api/export?format=json` and `GET /api/export?format=sql` are admin-only.
 
 That download is the copy to grab before the free database expires. A full backup, including password hashes and encrypted tokens, is `pg_dump` from your machine using the external database URL on the Render Postgres page.
 

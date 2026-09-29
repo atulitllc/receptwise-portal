@@ -40,7 +40,7 @@ function insert(table, columns, row) {
 }
 
 async function snapshot(user) {
-  const [businesses, setup, phones, assistants, integrations, calls, bookings, activity, forwarding, ringFirst, portRequests] = await Promise.all([
+  const [businesses, setup, phones, assistants, integrations, calls, bookings, activity, forwarding, ringFirst, portRequests, demoRequests] = await Promise.all([
     db.query(
       `SELECT id, slug, name, category, city, timezone, status, pilot, profile, receptionist, created_at, updated_at
        FROM businesses ORDER BY id`
@@ -83,6 +83,11 @@ async function snapshot(user) {
     db.query(
       `SELECT id, business_id, business_number, contact_name, contact_phone, carrier, notes, status, created_by, created_at
        FROM port_requests ORDER BY id`
+    ),
+    db.query(
+      `SELECT id, name, business_name, phone, email, business_type, preferred_time, message, plan, extra,
+              source_page, user_agent, ip_hash, status, created_at, updated_at
+       FROM demo_requests ORDER BY id`
     )
   ]);
 
@@ -143,11 +148,12 @@ async function snapshot(user) {
   return {
     exportedAt: new Date().toISOString(),
     product: 'ReceptWise',
-    note: 'Clients, receptionist settings, calls, bookings, and activity. Passwords, session tokens, and third-party tokens are omitted. Caller and customer details are omitted unless that business has turned on Receptwise support access. Use pg_dump for a full database backup.',
+    note: 'Clients, receptionist settings, calls, bookings, demo requests, and activity. Passwords, session tokens, and third-party tokens are omitted. Caller and customer details are omitted unless that business has turned on Receptwise support access. Use pg_dump for a full database backup.',
     clients,
     settings,
     calls: callsOut,
     bookings: bookingsOut,
+    demoRequests: demoRequests.rows.map(scrub),
     activity: activityOut
   };
 }
@@ -185,6 +191,9 @@ function toSql(data) {
   data.bookings.forEach((booking) => {
     sql += insert('bookings', ['id', 'business_id', 'call_id', 'starts_at', 'ends_at', 'customer', 'phone', 'email', 'service', 'source', 'status', 'google_event_id', 'calcom_uid', 'timezone', 'created_at', 'updated_at'], booking);
   });
+  (data.demoRequests || []).forEach((lead) => {
+    sql += insert('demo_requests', ['id', 'name', 'business_name', 'phone', 'email', 'business_type', 'preferred_time', 'message', 'plan', 'extra', 'source_page', 'user_agent', 'ip_hash', 'status', 'created_at', 'updated_at'], lead);
+  });
   data.activity.forEach((item) => {
     sql += insert('audit_log', ['id', 'created_at', 'action', 'detail', 'business_id'], {
       id: item.id,
@@ -194,7 +203,7 @@ function toSql(data) {
       business_id: item.business_id
     });
   });
-  ['businesses', 'phone_numbers', 'calls', 'bookings', 'integrations', 'audit_log', 'ring_first_numbers', 'port_requests'].forEach((table) => {
+  ['businesses', 'phone_numbers', 'calls', 'bookings', 'integrations', 'audit_log', 'ring_first_numbers', 'port_requests', 'demo_requests'].forEach((table) => {
     sql += "SELECT setval('" + table + "_id_seq', GREATEST((SELECT COALESCE(MAX(id), 1) FROM " + table + '), 1));\n';
   });
   sql += 'COMMIT;\n';

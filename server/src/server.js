@@ -17,6 +17,7 @@ const social = require('./social');
 const meta = require('./integrations/meta');
 const trelloSync = require('./trelloSync');
 const exportData = require('./exportData');
+const demoRequests = require('./demoRequests');
 const calendarConnection = require('./calendarConnection');
 const businessCalendar = require('./businessCalendar');
 const voices = require('./voices');
@@ -27,7 +28,7 @@ const phoneForwarding = require('./phoneForwarding');
 
 // The portal pages live at the repo root (also published as the GitHub Pages demo).
 const SITE_ROOT = path.join(__dirname, '..', '..');
-const PAGES = ['index', 'dashboard', 'appointments', 'clients', 'add', 'client', 'billing', 'team', 'phone', 'settings', 'integrations'];
+const PAGES = ['index', 'dashboard', 'appointments', 'clients', 'add', 'client', 'billing', 'team', 'phone', 'settings', 'integrations', 'leads'];
 // Same object the admin badges read from assets/feature-status.js.
 const featureStatus = require(path.join(SITE_ROOT, 'assets', 'feature-status'));
 
@@ -142,6 +143,9 @@ function createApp() {
     }
   }));
 
+  // Public marketing form. Own body limit, no session and no X-RW-Client header.
+  demoRequests.mountPublic(app, wrap);
+
   app.use(express.json({ limit: '1mb' }));
   app.use(wrap(auth.loadUser));
 
@@ -187,6 +191,13 @@ function createApp() {
     const u = await auth.createUser(req.body || {});
     if (!u) return res.status(409).json({ error: 'That email already has an account.' });
     res.status(201).json({ user: u });
+  }));
+
+  api.get('/demo-requests', auth.requireAdmin, wrap(async (_req, res) => {
+    res.json({ requests: await demoRequests.list() });
+  }));
+  api.patch('/demo-requests/:id', auth.requireAdmin, wrap(async (req, res) => {
+    res.json({ request: await demoRequests.setStatus(req.params.id, (req.body || {}).status, req.user.id) });
   }));
 
   api.get('/integrations/status', auth.requireUser, (_req, res) => res.json(provisioning.status()));

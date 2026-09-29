@@ -225,6 +225,7 @@ const db = require('../src/db');
 const auth = require('../src/auth');
 const businesses = require('../src/businesses');
 const vapi = require('../src/integrations/vapi');
+const demoRequests = require('../src/demoRequests');
 const { createApp } = require('../src/server');
 
 let server;
@@ -298,7 +299,7 @@ describe('control panel API', () => {
     await db.migrate();
     await db.query(`TRUNCATE TABLE
       support_access, port_requests, ring_first_numbers, phone_forwarding,
-      trello_cards, assistant_backups, oauth_states, bookings, calls, integrations, audit_log,
+      demo_requests, trello_cards, assistant_backups, oauth_states, bookings, calls, integrations, audit_log,
       phone_numbers, assistants, business_setup, businesses, sessions, users
       RESTART IDENTITY CASCADE`);
     await auth.ensureBootstrapAdmin();
@@ -332,6 +333,8 @@ describe('control panel API', () => {
     assert.equal(res.json.website_generator.status, 'in_progress');
     assert.equal(res.json.cloudflare_pages.status, 'in_progress');
     assert.equal(res.json.website, undefined);
+    assert.equal(res.json.demo_requests.status, 'real');
+    assert.equal(res.json.demo_requests.label, 'Demo requests');
   });
 
   it('logs in with the seeded admin', async () => {
@@ -2286,5 +2289,210 @@ describe('control panel API', () => {
     assert.equal(removed.json.warning, 'Using the shared demo calendar');
     const restored = httpCalls.filter((call) => call.method === 'PATCH' && call.url.includes('/assistant/')).pop();
     assert.deepEqual(JSON.parse(restored.opts.body).model.toolIds, ['tool-check', 'tool-book']);
+  });
+
+  function publicPost(body, headers) {
+    return request('POST', '/api/public/demo-requests', {
+      body,
+      headers: Object.assign({ 'X-RW-Client': '' }, headers || {})
+    });
+  }
+
+  async function clearLeads() {
+    demoRequests.resetLimits();
+    await db.query('DELETE FROM demo_requests');
+  }
+
+  it('saves a marketing demo request without auth and normalizes the phone', async () => {
+    await clearLeads();
+    const denied = await request('GET', '/api/demo-requests', { headers: { 'X-RW-Client': '' } });
+    assert.equal(denied.status, 401);
+
+    const saved = await publicPost({
+      name: 'Ada Lovelace',
+      business: 'Analytical Engines',
+      phone: '(781) 555-0100',
+      email: 'Ada@Example.com',
+      time: 'Weekday mornings',
+      plan: 'Growth',
+      businessType: 'Cafe',
+      message: 'We miss calls after 5.',
+      city: 'Malden'
+    }, {
+      Origin: 'https://receptwise.com',
+      Referer: 'https://receptwise.com/#chat',
+      'User-Agent': 'SiteTest/1.0',
+      'X-Forwarded-For': '203.0.113.50'
+    });
+    assert.equal(saved.status, 200, saved.text);
+    assert.equal(saved.json.ok, true);
+    assert.equal(saved.headers['access-control-allow-origin'], 'https://receptwise.com');
+    assert.equal(saved.json.id, undefined);
+
+    const row = await db.query('SELECT * FROM demo_requests');
+    assert.equal(row.rows.length, 1);
+    assert.equal(row.rows[0].phone, '+17815550100');
+    assert.equal(row.rows[0].email, 'ada@example.com');
+    assert.equal(row.rows[0].business_name, 'Analytical Engines');
+    assert.equal(row.rows[0].preferred_time, 'Weekday mornings');
+    assert.equal(row.rows[0].plan, 'Growth');
+    assert.equal(row.rows[0].business_type, 'Cafe');
+    assert.equal(row.rows[0].status, 'new');
+    assert.equal(row.rows[0].source_page, 'https://receptwise.com/#chat');
+    assert.equal(row.rows[0].user_agent, 'SiteTest/1.0');
+    assert.equal(row.rows[0].ip_hash, demoRequests.hashIp('203.0.113.50'));
+    assert.equal(JSON.stringify(row.rows[0]).includes('203.0.113.50'), false);
+    assert.equal(row.rows[0].extra.city, 'Malden');
+
+    const missing = await publicPost({ phone: '7815550100' }, { 'X-Forwarded-For': '203.0.113.51' });
+    assert.equal(missing.status, 400);
+    assert.equal(missing.json.error, 'Name is required.');
+    const neither = await publicPost({ name: 'No Contact' }, { 'X-Forwarded-For': '203.0.113.52' });
+    assert.equal(neither.status, 400);
+    assert.equal(neither.json.error, 'Add a phone number or an email.');
+    const shortPhone = await publicPost({ name: 'Short', phone: '555-0100' }, { 'X-Forwarded-For': '203.0.113.53' });
+    assert.equal(shortPhone.status, 400);
+    assert.equal(shortPhone.json.error, 'Enter a valid US phone number.');
+    const badEmail = await publicPost({ name: 'Bad', email: 'not-an-email' }, { 'X-Forwarded-For': '203.0.113.54' });
+    assert.equal(badEmail.status, 400);
+    assert.equal(badEmail.json.error, 'Enter a valid email.');
+    const still = await db.query('SELECT count(*)::int AS n FROM demo_requests');
+    assert.equal(still.rows[0].n, 1);
+  });
+
+  it('drops a filled honeypot without storing a row', async () => {
+    await clearLeads();
+    const res = await publicPost({
+      name: 'Bot',
+      email: 'bot@example.com',
+      company_website: 'https://spam.example'
+    }, { 'X-Forwarded-For': '203.0.113.60' });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.json, { ok: true });
+    const count = await db.query('SELECT count(*)::int AS n FROM demo_requests');
+    assert.equal(count.rows[0].n, 0);
+  });
+
+  it('rate limits demo requests to five per IP per hour', async () => {
+    await clearLeads();
+    const ip = '198.51.100.20';
+    for (let i = 0; i < 5; i++) {
+      const ok = await publicPost(
+        { name: 'Lead ' + i, email: 'lead' + i + '@example.com' },
+        { 'X-Forwarded-For': ip }
+      );
+      assert.equal(ok.status, 200, ok.text);
+    }
+    const blocked = await publicPost(
+      { name: 'Lead 6', email: 'lead6@example.com' },
+      { 'X-Forwarded-For': ip }
+    );
+    assert.equal(blocked.status, 429);
+    assert.match(blocked.json.error, /Too many requests/);
+    const other = await publicPost(
+      { name: 'Other IP', email: 'other@example.com' },
+      { 'X-Forwarded-For': '198.51.100.21' }
+    );
+    assert.equal(other.status, 200, other.text);
+    const count = await db.query('SELECT count(*)::int AS n FROM demo_requests');
+    assert.equal(count.rows[0].n, 6);
+  });
+
+  it('answers CORS preflight for the marketing origins only', async () => {
+    async function preflight(origin) {
+      return request('OPTIONS', '/api/public/demo-requests', {
+        headers: {
+          'X-RW-Client': '',
+          Origin: origin,
+          'Access-Control-Request-Method': 'POST',
+          'Access-Control-Request-Headers': 'content-type'
+        }
+      });
+    }
+    for (const origin of [
+      'https://receptwise.com',
+      'https://www.receptwise.com',
+      'https://atulitllc.github.io',
+      'https://receptwise.pages.dev',
+      'https://preview.receptwise.pages.dev'
+    ]) {
+      const res = await preflight(origin);
+      assert.equal(res.status, 204, origin + ' ' + res.text);
+      assert.equal(res.headers['access-control-allow-origin'], origin);
+      assert.equal(res.headers['access-control-allow-methods'], 'POST, OPTIONS');
+      assert.equal(res.headers['access-control-allow-headers'], 'Content-Type');
+      assert.equal(String(res.headers['access-control-allow-methods']).includes('GET'), false);
+    }
+    const blocked = await preflight('https://evil.example');
+    assert.equal(blocked.status, 403);
+    assert.equal(blocked.headers['access-control-allow-origin'], undefined);
+    const httpOrigin = await preflight('http://receptwise.com');
+    assert.equal(httpOrigin.status, 403);
+    const postBlocked = await publicPost(
+      { name: 'Nope', email: 'nope@example.com' },
+      { Origin: 'https://evil.example', 'X-Forwarded-For': '203.0.113.70' }
+    );
+    assert.equal(postBlocked.status, 403);
+    assert.equal(postBlocked.headers['access-control-allow-origin'], undefined);
+  });
+
+  it('rejects an oversized demo request body', async () => {
+    await clearLeads();
+    const res = await publicPost({
+      name: 'Big',
+      email: 'big@example.com',
+      message: 'x'.repeat(20 * 1024)
+    }, { Origin: 'https://www.receptwise.com', 'X-Forwarded-For': '203.0.113.80' });
+    assert.equal(res.status, 413);
+    assert.equal(res.headers['access-control-allow-origin'], 'https://www.receptwise.com');
+    const count = await db.query('SELECT count(*)::int AS n FROM demo_requests');
+    assert.equal(count.rows[0].n, 0);
+  });
+
+  it('lists demo requests newest first and lets an admin change status', async () => {
+    await clearLeads();
+    await publicPost({ name: 'First', email: 'first@example.com', business: 'One' }, { 'X-Forwarded-For': '203.0.113.90' });
+    await publicPost({ name: 'Second', phone: '7815550100', time: 'Anytime works' }, { 'X-Forwarded-For': '203.0.113.91' });
+
+    const team = await request('POST', '/api/users', {
+      cookie,
+      body: { email: 'leads-team@receptwise.example', name: 'Leads Team', password: 'team-password-10', role: 'team' }
+    });
+    assert.equal(team.status, 201, team.text);
+    const teamLogin = await request('POST', '/api/auth/login', {
+      body: { email: 'leads-team@receptwise.example', password: 'team-password-10' }
+    });
+    const teamCookie = cookieFrom(teamLogin.setCookie);
+    const forbidden = await request('GET', '/api/demo-requests', { cookie: teamCookie });
+    assert.equal(forbidden.status, 403);
+
+    const list = await request('GET', '/api/demo-requests', { cookie });
+    assert.equal(list.status, 200, list.text);
+    assert.equal(list.json.requests.length, 2);
+    assert.equal(list.json.requests[0].name, 'Second');
+    assert.equal(list.json.requests[0].phone, '+17815550100');
+    assert.equal(list.json.requests[0].phonePretty, '(781) 555-0100');
+    assert.equal(list.json.requests[0].preferredTime, 'Anytime works');
+    assert.equal(list.json.requests[1].name, 'First');
+    assert.equal(list.json.requests[0].ipHash, undefined);
+
+    const updated = await request('PATCH', '/api/demo-requests/' + list.json.requests[0].id, {
+      cookie,
+      body: { status: 'contacted' }
+    });
+    assert.equal(updated.status, 200, updated.text);
+    assert.equal(updated.json.request.status, 'contacted');
+    const again = await request('GET', '/api/demo-requests', { cookie });
+    assert.equal(again.json.requests[0].status, 'contacted');
+    const bad = await request('PATCH', '/api/demo-requests/' + list.json.requests[0].id, {
+      cookie,
+      body: { status: 'won' }
+    });
+    assert.equal(bad.status, 400);
+    const teamPatch = await request('PATCH', '/api/demo-requests/' + list.json.requests[1].id, {
+      cookie: teamCookie,
+      body: { status: 'closed' }
+    });
+    assert.equal(teamPatch.status, 403);
   });
 });
