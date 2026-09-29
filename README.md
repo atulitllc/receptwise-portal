@@ -78,11 +78,11 @@ Pilot client 1 is seeded as ReceptWise (Malden, MA) and linked to assistant `c3c
 
 ## Customer panels
 
-`*.receptwise.com` already points at this service. `panel.receptwise.com` is the main control panel and behaves as it does today. `www`, `api`, and `sphere` are reserved the same way, as are `receptwise.com` itself and the Render hostname.
+`*.receptwise.com` already points at this service. `panel.receptwise.com` is the main control panel and behaves as it does today. `www` and `api` are reserved the same way. The Render hostname (`*.onrender.com`) is also the full panel. `receptwise.com` itself is not a customer panel.
 
-Any other single label is a customer panel: `https://<slug>.receptwise.com`. The slug is a unique `subdomain` on the business. A new business gets one from its name (lowercase letters, numbers, and hyphens). An admin can change it on the business page, which also shows the URL. Reserved names and duplicates are rejected. Renaming a business does not change the address.
+Any other single label is a customer panel: `https://<slug>.receptwise.com`. The slug is a unique `subdomain` on the business. A new business gets one from its name (lowercase letters, numbers, and hyphens). An admin can change it on the business page, which also shows the URL. Reserved names and duplicates are rejected. Renaming a business does not change the address. ReceptWise uses `receptwise`. SPHERE, when that business is already in the database, uses `sphere`.
 
-On that host the sign-in page shows the business name. After sign-in, a customer account for that business opens its dashboard (`client.html`). Admins and team can still sign in there. An unknown slug shows a not-found page instead of the main panel. The sign-in cookie is for that host only.
+On that host the sign-in page shows the business name, and every page and API response is that business only. There is no business switcher and no list of other businesses, including after an admin signs in. A customer account for that business opens its dashboard (`client.html`). Admins and team can still sign in. An unknown slug shows a not-found page instead of the main panel. The sign-in cookie is for that host only. The list of every business stays on `panel.receptwise.com` and the Render hostname.
 
 ## Deploy on Render
 

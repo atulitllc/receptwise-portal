@@ -672,7 +672,7 @@ test('customer panel hosts are one label under receptwise.com', () => {
   assert.deepEqual(classifyHost('panel.receptwise.com'), { kind: 'primary', reserved: 'panel' });
   assert.equal(classifyHost('www.receptwise.com').kind, 'primary');
   assert.equal(classifyHost('api.receptwise.com').reserved, 'api');
-  assert.equal(classifyHost('sphere.receptwise.com').reserved, 'sphere');
+  assert.deepEqual(classifyHost('sphere.receptwise.com'), { kind: 'customer', label: 'sphere' });
   assert.equal(classifyHost('receptwise.com').kind, 'primary');
   assert.equal(classifyHost('receptwise-portal.onrender.com').kind, 'primary');
   assert.equal(classifyHost('localhost').kind, 'primary');

@@ -36,21 +36,38 @@ function cookieOptions() {
   };
 }
 
-async function createUser({ email, password, name, role, businessId }) {
+async function createUser({ email, password, name, role, businessId, business }) {
   if (!email || !password) throw new Error('email and password are required');
   if (password.length < 10) throw new Error('password must be at least 10 characters');
   const storedRole = role === 'team' || role === 'owner' || role === 'staff' ? role : 'admin';
   const scoped = storedRole === 'owner' || storedRole === 'staff';
-  if (scoped && !businessId) {
-    const err = new Error('Owner and staff accounts belong to one business.');
-    err.status = 400;
-    throw err;
+  let linkedId = null;
+  if (scoped) {
+    const raw = business || businessId;
+    if (raw == null || String(raw).trim() === '') {
+      const err = new Error('Owner and staff accounts belong to one business.');
+      err.status = 400;
+      throw err;
+    }
+    if (/^\d+$/.test(String(raw))) linkedId = Number(raw);
+    else {
+      const found = await db.query(
+        "SELECT id FROM businesses WHERE slug = $1 AND status <> 'archived'",
+        [String(raw).trim()]
+      );
+      if (!found.rows[0]) {
+        const err = new Error('That business was not found.');
+        err.status = 400;
+        throw err;
+      }
+      linkedId = found.rows[0].id;
+    }
   }
   const hash = await bcrypt.hash(password, 12);
   const { rows } = await db.query(
     `INSERT INTO users (email, name, role, password_hash, business_id) VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT (lower(email)) DO NOTHING RETURNING id, email, name, role, business_id`,
-    [email.trim(), name || '', storedRole, hash, scoped ? businessId : null]
+    [email.trim(), name || '', storedRole, hash, linkedId]
   );
   if (!rows[0]) return null;
   return publicUser(rows[0]);

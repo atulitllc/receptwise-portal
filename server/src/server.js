@@ -45,8 +45,15 @@ function timingSafeEqual(a, b) {
   return x.length === y.length && crypto.timingSafeEqual(x, y);
 }
 
-async function teamList() {
-  const { rows } = await db.query('SELECT id, email, name, role FROM users WHERE NOT disabled ORDER BY id');
+async function teamList(businessId) {
+  const params = [];
+  let sql = 'SELECT id, email, name, role, business_id FROM users WHERE NOT disabled';
+  if (businessId) {
+    params.push(businessId);
+    sql += ' AND (role <> \'customer\' OR business_id = $1)';
+  }
+  sql += ' ORDER BY id';
+  const { rows } = await db.query(sql, params);
   return rows.map((u) => ({
     name: u.name || u.email.split('@')[0],
     email: u.email,
@@ -242,9 +249,18 @@ function createApp() {
   }));
 
   api.get('/export', auth.requireAdmin, wrap(exportData.send));
-  api.get('/users', auth.requireAdmin, wrap(async (_req, res) => res.json({ users: await teamList() })));
+  api.get('/users', auth.requireAdmin, wrap(async (req, res) => {
+    const portal = portalBiz(req);
+    res.json({ users: await teamList(portal ? portal.id : null) });
+  }));
   api.post('/users', auth.requireAdmin, wrap(async (req, res) => {
-    const u = await auth.createUser(req.body || {});
+    const portal = portalBiz(req);
+    const body = req.body || {};
+    if (portal && body.role === 'customer') {
+      const slug = String(body.business || body.businessId || '').trim();
+      if (slug !== portal.slug) return res.status(403).json({ error: 'That account is not for this business.' });
+    }
+    const u = await auth.createUser(body);
     if (!u) return res.status(409).json({ error: 'That email already has an account.' });
     res.status(201).json({ user: u });
   }));
@@ -577,7 +593,7 @@ function createApp() {
         ? await Promise.all(scope.rows.map((row) => businesses.toUi(row, req.user)))
         : await businesses.listUi(req.user);
       const [team, byDay, dash] = await Promise.all([
-        scope.team ? teamList() : [],
+        scope.team ? teamList(scope.businessId) : [],
         callsByDay(scope.businessId),
         metrics.collect(scope.businessId, req.user)
       ]);

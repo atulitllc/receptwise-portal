@@ -61,12 +61,18 @@ async function uniqueSubdomain(client, base) {
   return stem.slice(0, 48) + '-' + Date.now();
 }
 
+function pinnedSubdomain(row) {
+  const name = String((row && row.name) || '').trim().toLowerCase();
+  const slug = String((row && row.slug) || '').trim().toLowerCase();
+  if (slug === 'receptwise' || name === 'receptwise') return 'receptwise';
+  if (slug === 'sphere' || name === 'sphere') return 'sphere';
+  return '';
+}
+
 async function backfillSubdomains() {
   const { rows } = await db.query("SELECT id, name, slug, subdomain FROM businesses WHERE subdomain IS NULL OR subdomain = ''");
   for (const row of rows) {
-    const preferred = row.slug === 'receptwise' || String(row.name || '').toLowerCase() === 'receptwise'
-      ? 'receptwise'
-      : slugify(row.name);
+    const preferred = pinnedSubdomain(row) || slugify(row.name);
     const subdomain = await uniqueSubdomain({ query: db.query }, preferred);
     await db.query(
       "UPDATE businesses SET subdomain = $2 WHERE id = $1 AND (subdomain IS NULL OR subdomain = '')",
@@ -636,7 +642,7 @@ async function seedPilot() {
 }
 
 module.exports = {
-  STEPS, STEP_KEYS, slugify, normalizeSubdomain, panelUrl, createBusiness, updateBusiness, createDraft, updateDraft, finishDraft, deleteDraft,
+  STEPS, STEP_KEYS, slugify, normalizeSubdomain, panelUrl, pinnedSubdomain, createBusiness, updateBusiness, createDraft, updateDraft, finishDraft, deleteDraft,
   getBySlug, getBySubdomain, toUi, listUi, seedPilot,
   setStep, prettyPhone, callToUi, tzFromLabel, defaultReceptionist
 };

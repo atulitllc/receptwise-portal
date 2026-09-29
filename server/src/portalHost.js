@@ -2,7 +2,7 @@
 // Host routing for per-business panels. panel.receptwise.com (and the other
 // reserved names) stay the main control panel. <slug>.receptwise.com is a customer panel.
 
-const RESERVED = Object.freeze(['panel', 'www', 'api', 'sphere']);
+const RESERVED = Object.freeze(['panel', 'www', 'api']);
 const ROOT = 'receptwise.com';
 
 function classifyHost(host) {
