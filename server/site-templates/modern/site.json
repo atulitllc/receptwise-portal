@@ -1,6 +1,8 @@
 {
   "name": "",
+  "headline": "",
   "blurb": "",
+  "about": "",
   "category": "",
   "city": "",
   "hours": "",
@@ -11,6 +13,7 @@
   "bookingUrl": "",
   "bookHref": "",
   "services": [],
+  "reviews": [],
   "accent": "#1d4ed8",
   "template": "modern"
 }

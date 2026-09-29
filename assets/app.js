@@ -1776,8 +1776,8 @@
       "<h2>Website</h2>" + badge("website_generator") + "<p class='help'>Two real designs: Classic and Modern. The eight industry names are not eight layouts. They pick an accent color and a suggested design.</p>" +
       "<p class='sub'>" + esc(b.category || "This business") + " suggests " + (suggested === "modern" ? "Modern" : "Classic") + ". You can choose either.</p>" +
       '<div class="choice-grid">' +
-      templateChoice(b, "classic", "Classic", "Warm page, rounded buttons, large call button.") +
-      templateChoice(b, "modern", "Modern", "Dark hero, sharp type, accent bar.") +
+      templateChoice(b, "classic", "Classic", "Cream page, sticky header, rounded cards, and a large call button.") +
+      templateChoice(b, "modern", "Modern", "Black header, sharp type, ruled services, and a thin accent bar.") +
       "</div>" +
       '<div class="head-actions">' + button + "</div>" +
       links +

@@ -666,7 +666,7 @@ a.tab:hover { background: white; text-decoration: none; }
 .mini-site { padding: 18px 16px 16px; }
 .mini-site strong { font-size: 20px; letter-spacing: -0.03em; }
 .mini-actions { display: flex; gap: 8px; margin-top: 12px; }
-.site-frame { width: 100%; height: 640px; border: 0; background: #fff; display: block; }
+.site-frame { width: 100%; height: 760px; border: 0; background: #fff; display: block; }
 .browser-bar .url { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .qr {
   width: 84px;

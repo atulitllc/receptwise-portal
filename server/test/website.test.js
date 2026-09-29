@@ -69,14 +69,26 @@ test('rendered page is filled in HTML and omits missing sections', () => {
   assert.match(classic, /Harbor &amp; Rye/);
   assert.match(classic, /Supper and a good glass of wine/);
   assert.match(classic, /Dinner/);
-  assert.match(classic, /90 min · \$45/);
+  assert.match(classic, /90 min/);
+  assert.match(classic, /\$45/);
+  assert.match(modern, /90 min/);
+  assert.match(modern, /\$45/);
   assert.match(classic, /tel:\+12065550199/);
   assert.match(classic, /href="https:\/\/cal\.example\/harbor" target="_blank"/);
   assert.match(classic, /--accent:#c2410c/);
   assert.match(classic, /id="hours"/);
   assert.match(classic, /Open in Maps/);
+  assert.match(classic, /nav-toggle/);
+  assert.match(classic, /class="site-header"/);
+  assert.match(classic, /class="wave"/);
+  assert.match(modern, /hero-dark/);
+  assert.match(modern, /nav-toggle/);
+  assert.doesNotMatch(classic, /id="reviews"/);
+  assert.doesNotMatch(classic, /id="about"/);
+  assert.match(classic, /does not take form submissions/);
   assert.doesNotMatch(classic, /\{\{/);
   assert.doesNotMatch(classic, /<script/i);
+  assert.doesNotMatch(modern, /\{\{/);
   const sparse = buildSite({ name: 'Northline', category: 'Clinic', city: '', profile: { services: [] } }, '');
   const bare = previewHtml(sparse, 'classic');
   assert.match(bare, /Northline/);
@@ -84,8 +96,11 @@ test('rendered page is filled in HTML and omits missing sections', () => {
   assert.doesNotMatch(bare, /id="services"/);
   assert.doesNotMatch(bare, /id="visit"/);
   assert.doesNotMatch(bare, /id="contact"/);
+  assert.doesNotMatch(bare, /id="about"/);
+  assert.doesNotMatch(bare, /id="reviews"/);
   assert.doesNotMatch(bare, /class="lead"/);
   assert.doesNotMatch(bare, /Call /);
+  assert.match(bare, /does not take form submissions/);
   const telOnly = buildSite({
     name: 'Maple Street <Auto>',
     category: 'Auto shop',
@@ -97,6 +112,49 @@ test('rendered page is filled in HTML and omits missing sections', () => {
   assert.doesNotMatch(telHtml, /target="_blank" rel="noopener">Book now/);
   assert.match(telHtml, />Book now</);
   assert.equal(telOnly.accent, '#1d4ed8');
+});
+
+test('about and reviews render only from business data', () => {
+  const rich = buildSite({
+    name: 'Harbor & Rye',
+    category: 'Restaurant',
+    city: 'Seattle, WA',
+    profile: {
+      blurb: 'Supper and a good glass of wine.',
+      headline: 'A short menu and a long evening',
+      about: 'Twelve tables, one window, and a kitchen that closes when the food runs out.',
+      hours: 'Tue–Fri 5:00 PM – 10:00 PM\nSat–Sun 4:00 PM – 10:00 PM',
+      address: '12 Pike St, Seattle, WA',
+      services: [{ name: 'Dinner', length: '90 min', price: '$45', detail: 'A set menu.' }],
+      reviews: [
+        { author: 'Dana Whitfield', stars: 5, when: 'Sep 26', text: 'Easy to get a table and the staff was kind.' },
+        { text: '' }
+      ],
+      bookingUrl: 'https://cal.example/harbor'
+    }
+  }, '+12065550199');
+  assert.equal(rich.reviews.length, 1);
+  assert.equal(rich.hourLines.length, 2);
+  const html = previewHtml(rich, 'classic');
+  assert.match(html, /A short menu and a long/);
+  assert.match(html, />evening</);
+  assert.match(html, /Twelve tables, one window/);
+  assert.match(html, /id="about"/);
+  assert.match(html, /id="reviews"/);
+  assert.match(html, /Easy to get a table and the staff was kind\./);
+  assert.match(html, /Dana Whitfield/);
+  assert.match(html, /5 out of 5 stars/);
+  assert.match(html, /A set menu\./);
+  assert.match(html, /Tue–Fri 5:00 PM – 10:00 PM/);
+  assert.equal((html.match(/id="reviews"/g) || []).length, 1);
+  const modern = previewHtml(rich, 'modern');
+  assert.match(modern, /id="reviews"/);
+  assert.match(modern, /Dana Whitfield/);
+  assert.doesNotMatch(modern, /class="wave"/);
+  const saved = JSON.parse(renderFiles(rich, 'modern', { pagesUrl: 'https://example.github.io/harbor-site/' })['site.json']);
+  assert.equal(saved.headline, 'A short menu and a long evening');
+  assert.equal(saved.reviews[0].author, 'Dana Whitfield');
+  assert.equal(saved.about.includes('Twelve tables'), true);
 });
 
 test('generated files keep site.json and do not call the network', () => {

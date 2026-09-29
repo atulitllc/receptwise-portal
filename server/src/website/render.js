@@ -100,14 +100,66 @@ function serviceItems(list) {
   return list.map((item) => {
     if (typeof item === 'string') {
       const name = plain(item);
-      return name ? { name, meta: '' } : null;
+      return name ? { name, detail: '', price: '', duration: '', meta: '' } : null;
     }
     if (!item || typeof item !== 'object') return null;
     const name = plain(item.name || item.title);
     if (!name) return null;
-    const meta = [plain(item.length || item.duration), plain(item.price)].filter(Boolean).join(' · ');
-    return { name, meta };
+    const duration = plain(item.length || item.duration);
+    const price = plain(item.price);
+    const detail = plain(item.detail || item.description || item.summary);
+    const meta = [duration, price].filter(Boolean).join(' · ');
+    return { name, detail, price, duration, meta };
   }).filter(Boolean);
+}
+
+function starFields(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return { stars: '', starsLabel: '' };
+  const s = Math.round(n);
+  if (s < 1 || s > 5) return { stars: '', starsLabel: '' };
+  return {
+    stars: '★★★★★'.slice(0, s) + '☆☆☆☆☆'.slice(0, 5 - s),
+    starsLabel: s + ' out of 5 stars'
+  };
+}
+
+// Only reviews that are already on the business. Nothing is invented.
+function reviewItems(list) {
+  if (!Array.isArray(list)) return [];
+  return list.map((item) => {
+    if (typeof item === 'string') {
+      const text = plain(item);
+      return text ? { text, author: '', when: '', stars: '', starsLabel: '', byline: '' } : null;
+    }
+    if (!item || typeof item !== 'object') return null;
+    const text = plain(item.text || item.quote || item.body);
+    if (!text) return null;
+    const author = plain(item.author || item.name);
+    const when = plain(item.when || item.date);
+    const stars = starFields(item.stars != null ? item.stars : item.rating);
+    return {
+      text,
+      author,
+      when,
+      stars: stars.stars,
+      starsLabel: stars.starsLabel,
+      byline: [author, when].filter(Boolean).join(' · ')
+    };
+  }).filter(Boolean);
+}
+
+function blockText(value) {
+  if (value == null) return '';
+  if (Array.isArray(value)) return value.map((item) => blockText(item)).filter(Boolean).join('\n\n');
+  if (typeof value !== 'string') return '';
+  return value.replace(/\r\n/g, '\n').trim();
+}
+
+function splitHeadline(text) {
+  const words = String(text || '').split(' ').filter(Boolean);
+  if (words.length <= 1) return { headlineLead: '', headlineMark: words[0] || '' };
+  return { headlineLead: words.slice(0, -1).join(' '), headlineMark: words[words.length - 1] };
 }
 
 function phoneFields(e164) {
@@ -146,12 +198,33 @@ function buildSite(biz, e164) {
   const booking = bookingLink(profile);
   const address = plainAddress(profile.address);
   const accent = /^#[0-9a-fA-F]{6}$/.test(style.accent) ? style.accent : '#0e7c72';
+  const name = plain(biz && biz.name) || 'Local business';
+  const category = plain(biz && biz.category);
+  const city = plain(biz && biz.city);
+  const headline = plain(profile.headline || profile.tagline) || name;
+  const parts = splitHeadline(headline);
+  const about = blockText(profile.about || profile.story || profile.description);
+  const hours = plainHours(profile.hours);
+  const services = serviceItems(profile.services);
+  const reviews = reviewItems(profile.reviews || profile.testimonials);
+  const showContact = Boolean(phone.phoneHref || booking);
+  const place = city ? ' in ' + city : '';
+  let ctaText = '';
+  if (phone.phoneHref && booking) ctaText = 'Call ' + name + place + ', or book a time.';
+  else if (phone.phoneHref) ctaText = 'Call ' + name + place + '.';
+  else if (booking) ctaText = 'Book a time with ' + name + place + '.';
   return {
-    name: plain(biz && biz.name) || 'Local business',
+    name,
+    headline,
+    headlineLead: parts.headlineLead,
+    headlineMark: parts.headlineMark,
     blurb: plain(profile.blurb),
-    category: plain(biz && biz.category),
-    city: plain(biz && biz.city),
-    hours: plainHours(profile.hours),
+    about,
+    category,
+    city,
+    eyebrow: [category, city].filter(Boolean).join(' · '),
+    hours,
+    hourLines: hours.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => ({ line })),
     address,
     mapUrl: address ? 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(address) : '',
     phoneDisplay: phone.phoneDisplay,
@@ -159,11 +232,16 @@ function buildSite(biz, e164) {
     bookingUrl: booking,
     bookHref: booking || phone.phoneHref,
     bookExternal: Boolean(booking),
-    services: serviceItems(profile.services),
+    services,
+    reviews,
     accent,
     accentInk: onAccent(accent),
     accentSoft: mixWhite(accent, 0.88),
-    showContact: Boolean(phone.phoneHref || booking)
+    showContact,
+    hasNav: Boolean(services.length || about || hours || reviews.length || address || showContact),
+    ctaText,
+    privacy: name + ' shares this page so people can see services, hours, and how to get in touch. This page does not take form submissions. Do not send medical, financial, or account details here.',
+    year: String(new Date().getFullYear())
   };
 }
 
@@ -272,7 +350,9 @@ function renderDocument(site, templateId, { inlineCss } = {}) {
 function siteRecord(site, templateId) {
   return {
     name: site.name,
+    headline: site.headline,
     blurb: site.blurb,
+    about: site.about,
     category: site.category,
     city: site.city,
     hours: site.hours,
@@ -283,6 +363,7 @@ function siteRecord(site, templateId) {
     bookingUrl: site.bookingUrl,
     bookHref: site.bookHref,
     services: site.services,
+    reviews: site.reviews,
     accent: site.accent,
     template: templateId
   };
