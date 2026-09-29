@@ -310,6 +310,47 @@ a.avatar.me {
 .pill.pilot { background: var(--teal-soft); color: var(--teal-dark); }
 .pill.neutral { background: #eef2f6; color: var(--ink-soft); }
 
+/* Feature status: text plus a dot, so status is not color alone. */
+.pill.feat { gap: 6px; }
+.pill.feat .feat-dot,
+.feat-mini i {
+  width: 7px;
+  height: 7px;
+  border-radius: 99px;
+  background: currentColor;
+  flex: none;
+}
+.pill.feat.real, .feat-mini.real { background: var(--green-soft); color: var(--green); }
+.pill.feat.mockup, .feat-mini.mockup { background: #e7edf3; color: #24364c; }
+.pill.feat.in_progress, .feat-mini.in_progress { background: var(--blue-soft); color: #0a3d73; }
+.feat-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 12px; }
+.feat-row { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: flex-end; }
+.feat-mini {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: 99px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.5;
+  letter-spacing: 0;
+  vertical-align: middle;
+}
+.head-actions .pill { align-self: center; }
+.check-label { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .progress {
   height: 6px;
   background: #e7edf2;
@@ -416,7 +457,7 @@ textarea.ctrl { min-height: 88px; resize: vertical; }
   align-items: center;
   color: var(--ink-soft);
 }
-.step-btn i {
+.step-btn > i {
   width: 22px;
   height: 22px;
   border-radius: 99px;
@@ -427,8 +468,9 @@ textarea.ctrl { min-height: 88px; resize: vertical; }
   background: #eef2f6;
   flex: none;
 }
+.step-btn span { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
 .step-btn.on { background: var(--teal-soft); color: var(--ink); }
-.step-btn.on i { background: var(--teal); color: white; }
+.step-btn.on > i { background: var(--teal); color: white; }
 .wizard-panel { padding: 18px 18px 16px; }
 .wizard-panel h2 { font-size: 18px; letter-spacing: -0.02em; margin-bottom: 4px; }
 .wizard-nav { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; }
@@ -471,6 +513,10 @@ textarea.ctrl { min-height: 88px; resize: vertical; }
 
 .tabs { display: flex; gap: 4px; flex-wrap: wrap; margin: 12px 0; }
 .tab {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
   border: 0;
   background: transparent;
   padding: 8px 10px;
