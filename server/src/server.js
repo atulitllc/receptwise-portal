@@ -476,7 +476,9 @@ function createApp() {
     res.json(await websites.preview(req.biz, req.query.template));
   }));
   api.post('/businesses/:slug/website/generate', auth.requireAdmin, wrap(loadBiz), wrap(async (req, res) => {
-    const result = await websites.generate(req.biz, (req.body || {}).template, req.user.id);
+    const body = req.body || {};
+    const biz = await domains.saveSiteChoice(req.biz, body, req.user);
+    const result = await websites.generate(biz, body.template, req.user.id);
     res.status(201).json(Object.assign({ ok: true }, result));
   }));
   api.get('/businesses/:slug/domains', auth.requireAdmin, wrap(loadBiz), wrap(async (req, res) => {
@@ -486,7 +488,9 @@ function createApp() {
     res.json(await domains.recheck(req.biz, req.body || {}, req.user));
   }));
   api.post('/businesses/:slug/website/regenerate', auth.requireAdmin, wrap(loadBiz), wrap(async (req, res) => {
-    const result = await websites.regenerate(req.biz, req.user.id, (req.body || {}).template);
+    const body = req.body || {};
+    const biz = await domains.saveSiteChoice(req.biz, body, req.user);
+    const result = await websites.regenerate(biz, req.user.id, body.template);
     res.json(Object.assign({ ok: true }, result));
   }));
 

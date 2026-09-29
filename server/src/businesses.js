@@ -7,6 +7,7 @@ const voices = require('./voices');
 const privacy = require('./privacy');
 const phoneForwarding = require('./phoneForwarding');
 const portalHost = require('./portalHost');
+const cloudflare = require('./website/cloudflare');
 
 const STEPS = [
   ['number', 'AI number'],
@@ -28,7 +29,7 @@ const TEXTING_HOLD = 'Texting stays off until the final company tax ID is on fil
 const PROFILE_KEYS = [
   'address', 'website', 'hours', 'staff', 'locations', 'tier', 'plan', 'price', 'minutesCap', 'setupFee',
   'card', 'nextInvoice', 'trial', 'owner', 'phone', 'greeting', 'voice', 'languages', 'transfer',
-  'capabilities', 'services', 'faqs', 'blurb', 'template', 'domain', 'domainStatus', 'reviewLink', 'socialAccounts',
+  'capabilities', 'services', 'faqs', 'blurb', 'template', 'domain', 'domainStatus', 'siteHost', 'reviewLink', 'socialAccounts',
   'reviews', 'posts', 'campaigns', 'contacts', 'suppressed', 'activity', 'paused'
 ];
 
@@ -84,6 +85,7 @@ async function backfillSubdomains() {
 function pickProfile(input) {
   const out = {};
   for (const k of PROFILE_KEYS) if (input && input[k] !== undefined) out[k] = input[k];
+  if (out.siteHost !== undefined && out.siteHost !== 'hosted' && out.siteHost !== 'custom') out.siteHost = '';
   // Phone "aiNumber" is owned by the server (phone_numbers table), never by the client.
   if (out.phone && typeof out.phone === 'object') {
     out.phone = Object.assign({}, out.phone);
@@ -525,7 +527,10 @@ async function toUi(biz, user, ctx) {
     live: true,
     generatedWebsite: generatedWebsite(website.rows[0]),
     subdomain: biz.subdomain || '',
-    panelUrl: panelUrl(biz.subdomain)
+    panelUrl: panelUrl(biz.subdomain),
+    hostedHostname: cloudflare.hostedHostname(biz),
+    hostedUrl: cloudflare.hostedUrl(biz),
+    siteHost: cloudflare.effectiveSiteHost(biz)
   });
   const grants = ctx && ctx.grants ? ctx.grants : await privacy.activeGrantSet();
   const support = ctx && Object.prototype.hasOwnProperty.call(ctx, 'support') ? ctx.support : await privacy.supportRow(biz.id);

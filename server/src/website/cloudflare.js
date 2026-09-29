@@ -47,8 +47,76 @@ function customDomain(biz) {
   return hostnameOf(profile.domain || profile.customDomain || wizard.domain || '');
 }
 
-// receptwise.com is a proxied placeholder that redirects to www. Attaching it (or any name under it)
-// to Pages replaces the Render wildcard and breaks customer panels. Those names stay off Pages.
+// Panel hosts are <slug>.receptwise.com. The public site is <slug>-site.receptwise.com.
+// panel, www, and api are reserved the same way as the customer panel.
+const SITE_ROOT = 'receptwise.com';
+const RESERVED_SITE_SLUGS = new Set(['panel', 'www', 'api']);
+
+function fitSiteSlug(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(raw)) return '';
+  if (RESERVED_SITE_SLUGS.has(raw)) return '';
+  const cut = raw.slice(0, 58).replace(/-+$/g, '');
+  if (!cut || RESERVED_SITE_SLUGS.has(cut)) return '';
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,56}[a-z0-9])?$/.test(cut)) return '';
+  return cut;
+}
+
+function slugifySiteName(name) {
+  const raw = String(name || '')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 58)
+    .replace(/-+$/g, '');
+  return fitSiteSlug(raw);
+}
+
+// Prefer the business subdomain. If that field is missing or reserved, use the business slug, then the name.
+function siteSlug(biz) {
+  if (!biz) return '';
+  const fromSubdomain = fitSiteSlug(biz.subdomain);
+  if (fromSubdomain) return fromSubdomain;
+  const fromSlug = fitSiteSlug(biz.slug);
+  if (fromSlug) return fromSlug;
+  return slugifySiteName(biz.name);
+}
+
+function hostedHostname(biz) {
+  const slug = siteSlug(biz);
+  if (!slug) return '';
+  return slug + '-site.' + SITE_ROOT;
+}
+
+function hostedUrl(biz) {
+  const host = hostedHostname(biz);
+  return host ? 'https://' + host : '';
+}
+
+function isHostedSiteHostname(hostname) {
+  const host = hostnameOf(hostname);
+  const match = host.match(/^([a-z0-9](?:[a-z0-9-]{0,56}[a-z0-9])?)-site\.receptwise\.com$/);
+  if (!match || RESERVED_SITE_SLUGS.has(match[1])) return false;
+  return (match[1] + '-site').length <= 63;
+}
+
+function effectiveSiteHost(biz) {
+  const profile = (biz && biz.profile) || {};
+  if (profile.siteHost === 'hosted' || profile.siteHost === 'custom') return profile.siteHost;
+  return customDomain(biz) ? 'custom' : 'hosted';
+}
+
+// Hosted when the admin chose it, or when no customer domain is saved. A saved custom domain wins otherwise.
+function publishHostname(biz) {
+  const custom = customDomain(biz);
+  const hosted = hostedHostname(biz);
+  if (effectiveSiteHost(biz) === 'custom' && custom) return custom;
+  return hosted;
+}
+
+// The apex stays off Pages. A panel host such as sphere.receptwise.com stays off Pages.
+// The one exception is the public site hostname {slug}-site.receptwise.com.
 function pagesBlockedReason(hostname) {
   const raw = String(hostname || '').trim().toLowerCase()
     .replace(/^[a-z][a-z0-9+.-]*:\/\//, '')
@@ -57,11 +125,12 @@ function pagesBlockedReason(hostname) {
     .replace(/:\d+$/, '')
     .replace(/\.$/, '');
   const host = hostnameOf(hostname) || raw;
-  if (!host || host === 'receptwise.com' || host.endsWith('.receptwise.com')) {
-    if (!host) return '';
-    if (host === 'receptwise.com') {
-      return 'receptwise.com stays a proxied placeholder that redirects to www and is never attached to Pages.';
-    }
+  if (!host) return '';
+  if (host === 'receptwise.com') {
+    return 'receptwise.com stays a proxied placeholder that redirects to www and is never attached to Pages.';
+  }
+  if (isHostedSiteHostname(host)) return '';
+  if (host.endsWith('.receptwise.com')) {
     return host + ' stays on the Render panel. Names under receptwise.com are never attached to Pages.';
   }
   return '';
@@ -214,13 +283,45 @@ async function findZone(hostname) {
   return null;
 }
 
+async function upsertCname(zoneId, hostname, content, proxied) {
+  if (!zoneId || !hostname || hostname === 'receptwise.com' || hostname === '*.receptwise.com') return false;
+  const listed = await cf('GET', '/zones/' + encodeURIComponent(zoneId) + '/dns_records', {
+    query: { type: 'CNAME', name: hostname, per_page: '100' }
+  });
+  const records = Array.isArray(listed) ? listed : [];
+  const existing = records.find((rec) => rec && String(rec.name || '').replace(/\.$/, '').toLowerCase() === hostname);
+  const json = { type: 'CNAME', name: hostname, content, proxied: Boolean(proxied), ttl: 1 };
+  if (!existing) {
+    await cf('POST', '/zones/' + encodeURIComponent(zoneId) + '/dns_records', { json });
+    return true;
+  }
+  const current = String(existing.content || '').replace(/\.$/, '').toLowerCase();
+  if (Boolean(existing.proxied) === Boolean(proxied) && current === content.toLowerCase()) return true;
+  await cf('PATCH', '/zones/' + encodeURIComponent(zoneId) + '/dns_records/' + encodeURIComponent(existing.id), { json });
+  return true;
+}
+
+// Customer domains stay proxied. A receptwise.com site hostname is DNS-only so it does not orange-cloud the name.
 async function ensureCname(hostname, project) {
-  const zone = await findZone(hostname);
-  if (!zone) return false;
+  const host = hostnameOf(hostname);
+  if (!host || host === 'receptwise.com' || host === '*.receptwise.com') return false;
   const content = project + '.pages.dev';
+  if (isHostedSiteHostname(host)) {
+    try {
+      const zoneId = config.cloudflare && config.cloudflare.zoneId;
+      if (zoneId) return await upsertCname(zoneId, host, content, false);
+      const zone = await findZone(host);
+      if (!zone) return false;
+      return await upsertCname(zone.id, host, content, false);
+    } catch (err) {
+      return false;
+    }
+  }
+  const zone = await findZone(host);
+  if (!zone) return false;
   try {
     await cf('POST', '/zones/' + encodeURIComponent(zone.id) + '/dns_records', {
-      json: { type: 'CNAME', name: hostname, content, proxied: true, ttl: 1 }
+      json: { type: 'CNAME', name: host, content, proxied: true, ttl: 1 }
     });
     return true;
   } catch (err) {
@@ -267,11 +368,12 @@ async function attachDomain(project, hostname) {
   let createdRecord = false;
   if (domainStatus !== 'error') createdRecord = await ensureCname(hostname, project);
   const instruction = dnsInstruction(hostname, project);
+  const hosted = isHostedSiteHostname(hostname);
   return {
     domain: hostname,
     domainStatus,
     dns: createdRecord
-      ? 'CNAME ' + hostname + ' → ' + project + '.pages.dev was created in this Cloudflare account.'
+      ? ('CNAME ' + hostname + ' → ' + project + '.pages.dev was created in this Cloudflare account.' + (hosted ? ' DNS only.' : ''))
       : instruction,
     domainError
   };
@@ -323,6 +425,12 @@ module.exports = {
   hashFile,
   hostnameOf,
   customDomain,
+  siteSlug,
+  hostedHostname,
+  hostedUrl,
+  isHostedSiteHostname,
+  effectiveSiteHost,
+  publishHostname,
   pagesBlockedReason,
   dnsInstruction,
   findZone,

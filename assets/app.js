@@ -1797,7 +1797,9 @@
     return '<section class="card" id="domains-card"><div class="card-h"><h2>Domains</h2><div>' + badge("domains_hosting") +
       '<button class="btn btn-sm" type="button" data-action="recheck-domains" data-id="' + esc(b.id) + '">Re-check</button></div></div>' +
       '<div class="card-b"><div id="domains-body"><p class="help">Checking the panel…</p></div>' +
-      '<div class="field"><label for="domains-host">Website domain</label><input class="ctrl" id="domains-host" value="" placeholder="www.cafe.example"></div></div></section>';
+      siteHostChoices(b) +
+      '<div class="field"><label for="domains-host">Custom domain</label><input class="ctrl" id="domains-host" value="' + esc(domainDraft(b)) + '" placeholder="www.cafe.example"></div>' +
+      '<p class="help">Leave the custom domain blank to publish on the free receptwise.com address. The customer does not have to buy a domain.</p></div></section>';
   }
 
   var domainsSeq = 0;
@@ -1813,9 +1815,24 @@
     if (panel.url) html += "<p><strong>Customer panel</strong><br><a href='" + esc(panel.url) + "' target='_blank' rel='noopener'>" + esc(panel.url) + "</a></p>";
     if (panel.reservedNote) html += "<p class='banner warn'>" + esc(panel.reservedNote) + "</p>";
     html += "<p class='banner " + (health.ok ? "ok" : "bad") + "'>" + esc(health.detail || "Not checked") + "</p>";
+    if (site.hostedUrl) {
+      html += "<p><strong>Free site address</strong><br><a href='" + esc(site.hostedUrl) + "' target='_blank' rel='noopener'>" + esc(site.hostedUrl) + "</a></p>";
+    }
+    if (site.siteHost === "custom" && site.customDomain) {
+      html += "<p class='help'>Publishing on the custom domain.</p>";
+    } else if (site.siteHost === "custom") {
+      html += "<p class='help'>Custom domain is selected, but none is saved, so the free receptwise.com address is used.</p>";
+    } else if (site.siteHost) {
+      html += "<p class='help'>Publishing on the receptwise.com subdomain.</p>";
+    }
     if (site.message) html += "<p>" + esc(site.message) + "</p>";
     var input = document.getElementById("domains-host");
-    if (input && document.activeElement !== input) input.value = site.domain || "";
+    var recheckBtn = document.querySelector("[data-action='recheck-domains']");
+    var pickedId = recheckBtn && recheckBtn.getAttribute("data-id");
+    if (!(pickedId && siteHostPick[pickedId])) markSiteHost(site.siteHost);
+    if (input && document.activeElement !== input && !(pickedId && Object.prototype.hasOwnProperty.call(siteDomainDraft, pickedId))) {
+      input.value = site.customDomain || "";
+    }
     if (site.verification || site.ssl) {
       html += "<dl class='kvs'><dt>Verification</dt><dd>" + esc(site.verification || "—") + "</dd><dt>SSL</dt><dd>" + esc(site.ssl || "—") + "</dd></dl>";
     }
@@ -2297,6 +2314,8 @@
   }
 
   var siteTemplatePick = {};
+  var siteHostPick = {};
+  var siteDomainDraft = {};
   var SITE_SUGGEST = {
     Restaurant: "classic",
     Clinic: "classic",
@@ -2320,6 +2339,68 @@
     var stored = b.generatedWebsite && b.generatedWebsite.template;
     if (stored === "classic" || stored === "modern") return stored;
     return SITE_SUGGEST[b.category] || "classic";
+  }
+
+  function hostedSiteUrl(b) {
+    if (b && b.hostedUrl) return b.hostedUrl;
+    var source = (b && b.subdomain) || (b && b.slug) || (b && b.id) || (b && b.name) || "";
+    var slug = String(source).toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 58).replace(/-+$/g, "");
+    if (!slug || slug === "panel" || slug === "www" || slug === "api") {
+      var fromName = String((b && b.name) || "").toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 58).replace(/-+$/g, "");
+      slug = fromName;
+    }
+    if (!slug || slug === "panel" || slug === "www" || slug === "api") return "";
+    return "https://" + slug + "-site.receptwise.com";
+  }
+
+  function domainDraft(b) {
+    if (b && Object.prototype.hasOwnProperty.call(siteDomainDraft, b.id)) return siteDomainDraft[b.id];
+    return (b && b.domain) || "";
+  }
+
+  function chosenSiteHost(b) {
+    if (!b) return "hosted";
+    var picked = siteHostPick[b.id];
+    if (picked === "hosted" || picked === "custom") return picked;
+    if (b.siteHost === "hosted" || b.siteHost === "custom") return b.siteHost;
+    return b.domain && String(b.domain).trim() ? "custom" : "hosted";
+  }
+
+  function websitePublishBody(b) {
+    var domainInput = document.getElementById("site-custom-domain");
+    var body = { template: chosenSiteTemplate(b), siteHost: chosenSiteHost(b) };
+    if (domainInput) body.domain = domainInput.value.trim();
+    return body;
+  }
+
+  function siteHostChoices(b) {
+    var mode = chosenSiteHost(b);
+    var hosted = hostedSiteUrl(b);
+    var panel = (b && (b.panelUrl || (b.subdomain ? "https://" + b.subdomain + ".receptwise.com" : ""))) || "";
+    function one(id, title, detail) {
+      var on = mode === id ? " on" : "";
+      return '<button class="choice' + on + '" type="button" data-action="pick-site-host" data-id="' + esc(b.id) + '" data-host="' + id + '" aria-pressed="' + (mode === id ? "true" : "false") + '"><b>' +
+        esc(title) + "</b><span>" + esc(detail) + "</span></button>";
+    }
+    var note = hosted
+      ? "<p class='help'>Public site: <a href='" + esc(hosted) + "' target='_blank' rel='noopener'>" + esc(hosted) + "</a>" +
+        (panel ? ". The panel stays at " + esc(panel) + "." : ".") + "</p>"
+      : "";
+    return '<div class="choice-grid" id="site-host-choice">' +
+      one("hosted", "receptwise.com subdomain", hosted ? hosted.replace(/^https:\/\//, "") : "Free hostname") +
+      one("custom", "Custom domain", "A domain the customer buys") +
+      "</div>" + note;
+  }
+
+  function markSiteHost(mode) {
+    if (mode !== "hosted" && mode !== "custom") return;
+    var grid = document.getElementById("site-host-choice");
+    if (!grid) return;
+    grid.querySelectorAll("[data-host]").forEach(function (btn) {
+      var on = btn.getAttribute("data-host") === mode;
+      btn.classList.toggle("on", on);
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+    });
   }
 
   function templateChoice(b, id, title, detail) {
@@ -2385,6 +2466,10 @@
       templateChoice(b, "classic", "Classic", "Cream page, sticky header, rounded cards, and a large call button.") +
       templateChoice(b, "modern", "Modern", "Black header, sharp type, ruled services, and a thin accent bar.") +
       "</div>" +
+      "<h3>Where it is published</h3>" +
+      "<p class='help'>Use the free receptwise.com address when the customer does not buy a domain. That address is separate from the customer panel.</p>" +
+      siteHostChoices(b) +
+      '<div class="field"><label for="site-custom-domain">Custom domain</label><input class="ctrl" id="site-custom-domain" value="' + esc(domainDraft(b)) + '" placeholder="www.cafe.example"></div>' +
       '<div class="head-actions">' + button + "</div>" +
       links +
       "<p class='help'>" + esc(phone) + " Book now uses a saved booking or calendar link, or the AI number when there is no link.</p>" +
@@ -3109,6 +3194,13 @@
       siteTemplatePick[el.dataset.id] = el.dataset.template;
       currentRender();
     },
+    "pick-site-host": function (el) {
+      if (el.dataset.host !== "hosted" && el.dataset.host !== "custom") return;
+      var typed = document.getElementById("site-custom-domain") || document.getElementById("domains-host");
+      if (typed) siteDomainDraft[el.dataset.id] = typed.value;
+      siteHostPick[el.dataset.id] = el.dataset.host;
+      currentRender();
+    },
     "generate-website": function () {
       toast("Generating a GitHub repository runs on the live control panel.");
     },
@@ -3750,14 +3842,19 @@
     },
     "recheck-domains": function (el) {
       var input = document.getElementById("domains-host");
-      var body = {};
+      var biz = findBiz(el.dataset.id);
+      var body = { siteHost: chosenSiteHost(biz) };
       if (input) body.domain = input.value.trim();
       var node = document.getElementById("domains-body");
       if (node) node.innerHTML = "<p class='help'>Checking…</p>";
       el.disabled = true;
       api("POST", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/domains/recheck", body).then(function (data) {
         el.disabled = false;
-        if (data.business) replaceBiz(data.business);
+        if (data.business) {
+          replaceBiz(data.business);
+          delete siteHostPick[data.business.id];
+          delete siteDomainDraft[data.business.id];
+        }
         paintDomains(data);
         toast("Domains re-checked.");
       }).catch(function (err) {
@@ -3770,8 +3867,10 @@
       var b = findBiz(el.dataset.id);
       if (!b) return;
       el.disabled = true;
-      api("POST", "api/businesses/" + encodeURIComponent(b.id) + "/website/generate", { template: chosenSiteTemplate(b) }).then(function (data) {
+      api("POST", "api/businesses/" + encodeURIComponent(b.id) + "/website/generate", websitePublishBody(b)).then(function (data) {
         replaceBiz(data.business);
+        delete siteHostPick[b.id];
+        delete siteDomainDraft[b.id];
         toast(data.pagesEnabled ? "Website repository created." : "Website repository created. Turn on GitHub Pages from the repository settings.");
         currentRender();
       }).catch(function (err) {
@@ -3783,8 +3882,10 @@
       var b = findBiz(el.dataset.id);
       if (!b) return;
       el.disabled = true;
-      api("POST", "api/businesses/" + encodeURIComponent(b.id) + "/website/regenerate", { template: chosenSiteTemplate(b) }).then(function (data) {
+      api("POST", "api/businesses/" + encodeURIComponent(b.id) + "/website/regenerate", websitePublishBody(b)).then(function (data) {
         replaceBiz(data.business);
+        delete siteHostPick[b.id];
+        delete siteDomainDraft[b.id];
         toast("Pull request opened. Main was not overwritten.");
         currentRender();
       }).catch(function (err) {

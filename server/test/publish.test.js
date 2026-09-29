@@ -91,6 +91,7 @@ function installFetch({ pagesFail, emptyRepo } = {}) {
       if (method === 'GET' && target.pathname === '/client/v4/zones') {
         return json(200, { success: true, result: [{ id: 'zone-1', name: 'dual-example.com' }] });
       }
+      if (method === 'GET' && target.pathname.endsWith('/dns_records')) return json(200, { success: true, result: [] });
       if (method === 'POST' && target.pathname.endsWith('/dns_records')) return json(200, { success: true, result: { id: 'rec' } });
       return json(500, { success: false, errors: [{ message: 'unexpected cloudflare ' + method + ' ' + target.pathname }] });
     }
@@ -150,6 +151,48 @@ test('generate publishes GitHub and Cloudflare from the same files', async () =>
     config.github.token = previousToken;
     config.cloudflare.token = previousCf;
     config.cloudflare.accountId = previousAccount;
+    global.fetch = previousFetch;
+  }
+});
+
+test('a business with no custom domain is published at {slug}-site.receptwise.com', async () => {
+  await db.migrate();
+  const previousFetch = global.fetch;
+  const previousToken = config.github.token;
+  const previousCf = config.cloudflare.token;
+  const previousAccount = config.cloudflare.accountId;
+  const previousZone = config.cloudflare.zoneId;
+  github.clearOwnerCache();
+  config.github.token = 'gh-test';
+  config.cloudflare.token = 'cf-test';
+  config.cloudflare.accountId = 'account-1';
+  config.cloudflare.zoneId = 'zone-1';
+  const seen = installFetch();
+  const biz = await makeBiz('Sphere Host ' + Date.now(), '');
+  try {
+    const created = await websites.generate(biz, 'classic', null);
+    const hosted = biz.subdomain + '-site.receptwise.com';
+    assert.equal(created.cloudflare.status, 'deployed');
+    assert.equal(created.cloudflare.domain, hosted);
+    assert.notEqual(created.cloudflare.domain, biz.subdomain + '.receptwise.com');
+    assert.match(created.cloudflare.dns, /DNS only/);
+    const attach = seen.calls.find((call) => call.method === 'POST' && call.path.endsWith('/domains'));
+    assert.equal(attach.body.name, hosted);
+    const dns = seen.calls.find((call) => call.method === 'POST' && call.path.endsWith('/dns_records'));
+    assert.equal(dns.body.type, 'CNAME');
+    assert.equal(dns.body.name, hosted);
+    assert.equal(dns.body.proxied, false);
+    assert.match(dns.body.content, /\.pages\.dev$/);
+    assert.equal(seen.calls.some((call) => call.body && call.body.name === 'receptwise.com'), false);
+    assert.equal(created.business.siteHost, 'hosted');
+    assert.equal(created.business.hostedHostname, hosted);
+  } finally {
+    await db.query('DELETE FROM businesses WHERE id = $1', [biz.id]);
+    github.clearOwnerCache();
+    config.github.token = previousToken;
+    config.cloudflare.token = previousCf;
+    config.cloudflare.accountId = previousAccount;
+    config.cloudflare.zoneId = previousZone;
     global.fetch = previousFetch;
   }
 });
