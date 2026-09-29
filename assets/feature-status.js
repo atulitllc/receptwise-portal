@@ -66,7 +66,12 @@
     website_generator: {
       label: "Website generator",
       status: "in_progress",
-      note: "Classic and Modern templates generate a GitHub repository, and Regenerate opens a pull request. It needs GITHUB_TOKEN on Render."
+      note: "Classic and Modern templates generate a GitHub repository, and Regenerate opens a pull request. The same files are also uploaded to Cloudflare Pages when that account is configured. It needs GITHUB_TOKEN on Render."
+    },
+    cloudflare_pages: {
+      label: "Cloudflare Pages",
+      status: "in_progress",
+      note: "Generate and Regenerate upload the same site to Cloudflare Pages with Direct Upload. It needs CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID. Without them the Website tab says Cloudflare not configured and GitHub still publishes."
     },
     outreach: {
       label: "Outreach",

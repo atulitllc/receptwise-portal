@@ -32,7 +32,7 @@
     bookings: ["bookings", "calendar_connection"],
     reviews: ["reviews"],
     social: ["social"],
-    website: ["website_generator"],
+    website: ["website_generator", "cloudflare_pages"],
     outreach: ["outreach"],
     billing: ["billing"],
     settings: ["business_settings"]
@@ -1742,14 +1742,32 @@
       esc(title) + "</b><span>" + esc(detail) + "</span></button>";
   }
 
+  function cloudflareLinks(site, cloudflareReady) {
+    if (!site) return "";
+    var html = "";
+    if (site.cloudflareStatus === "not_configured" && cloudflareReady) html += "<p class='banner warn'>Cloudflare not configured</p>";
+    if (site.cloudflareUrl) html += '<p><a href="' + esc(site.cloudflareUrl) + '" target="_blank" rel="noopener">Cloudflare Pages</a></p>';
+    if (site.cloudflareDomain) {
+      html += '<p><a href="https://' + esc(site.cloudflareDomain) + '" target="_blank" rel="noopener">' + esc(site.cloudflareDomain) + "</a></p>";
+      if (site.cloudflareDomainStatus) html += "<p class='help'>Domain status: " + esc(site.cloudflareDomainStatus) + ".</p>";
+    }
+    if (site.cloudflareDns) html += "<p class='help'>" + esc(site.cloudflareDns) + "</p>";
+    if (site.cloudflareDeployedAt) html += "<p class='help'>Cloudflare deploy " + esc(String(site.cloudflareDeployedAt)) + ".</p>";
+    if (site.cloudflareError) html += "<p class='banner warn'>" + esc(site.cloudflareError) + "</p>";
+    if (site.cloudflareStatus === "error" && !site.cloudflareError) html += "<p class='banner warn'>Cloudflare deploy did not finish.</p>";
+    return html;
+  }
+
   function tabWebsite(b) {
     var site = b.generatedWebsite || null;
     var admin = liveAdmin();
     var githubReady = !!(LIVE && window.RW_LIVE && window.RW_LIVE.integrations && window.RW_LIVE.integrations.github);
+    var cloudflareReady = !!(LIVE && window.RW_LIVE && window.RW_LIVE.integrations && window.RW_LIVE.integrations.cloudflare);
     var banner = "";
     if (LIVE && admin && !githubReady) banner = '<div class="banner warn">Needs GITHUB_TOKEN on Render</div>';
     else if (LIVE && !admin) banner = '<div class="banner warn">Only an admin can generate the website.</div>';
     else if (!LIVE) banner = '<div class="note">Generating a GitHub repository runs on the live control panel. This demo does not create a repo.</div>';
+    if (LIVE && admin && !cloudflareReady) banner += '<div class="banner warn">Cloudflare not configured</div>';
     var suggested = SITE_SUGGEST[b.category] || "classic";
     var urlLabel = (site && site.pagesUrl) || "Not generated yet";
     var preview = admin
@@ -1760,8 +1778,10 @@
     if (site && site.repoUrl) {
       links = '<div style="margin-top:12px"><p><a href="' + esc(site.repoUrl) + '" target="_blank" rel="noopener">' + esc(site.repoFullName || "GitHub repository") + "</a></p>" +
         '<p><a href="' + esc(site.pagesUrl) + '" target="_blank" rel="noopener">GitHub Pages URL</a></p>' +
+        (site.lastGeneratedAt ? "<p class='help'>GitHub updated " + esc(String(site.lastGeneratedAt)) + ".</p>" : "") +
         "<p class='help'>That is the address GitHub Pages would use after you publish. This panel does not host the site.</p>" +
-        (site.lastPrUrl ? '<p><a href="' + esc(site.lastPrUrl) + '" target="_blank" rel="noopener">Latest pull request</a></p><p class="help">Regenerate commits to a new branch and opens a pull request. It does not overwrite main.</p>' : "") +
+        (site.lastPrUrl ? '<p><a href="' + esc(site.lastPrUrl) + '" target="_blank" rel="noopener">Latest pull request</a></p><p class="help">Regenerate commits to a new branch and opens a pull request. It does not overwrite main. The same files are uploaded to Cloudflare Pages.</p>' : "") +
+        cloudflareLinks(site, cloudflareReady) +
         "</div>";
     }
     var button = "";
@@ -1773,7 +1793,7 @@
     var phone = (b.phone && b.phone.aiNumber) ? "Call uses the AI number " + b.phone.aiNumber + "." : "No AI number is on file, so the call button is left off.";
     return '<div class="split"><div class="browser"><div class="browser-bar"><i></i><i></i><i></i><span class="url">' + esc(urlLabel) + "</span></div>" + preview + "</div>" +
       '<section class="card"><div class="card-b">' + banner +
-      "<h2>Website</h2>" + badge("website_generator") + "<p class='help'>Two real designs: Classic and Modern. The eight industry names are not eight layouts. They pick an accent color and a suggested design.</p>" +
+      "<h2>Website</h2>" + badge("website_generator") + badge("cloudflare_pages") + "<p class='help'>Two real designs: Classic and Modern. The eight industry names are not eight layouts. They pick an accent color and a suggested design. Generate and Regenerate publish the same files to GitHub and, when Cloudflare is configured, to Cloudflare Pages.</p>" +
       "<p class='sub'>" + esc(b.category || "This business") + " suggests " + (suggested === "modern" ? "Modern" : "Classic") + ". You can choose either.</p>" +
       '<div class="choice-grid">' +
       templateChoice(b, "classic", "Classic", "Warm page, rounded buttons, large call button.") +

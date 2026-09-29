@@ -7,18 +7,41 @@ function assertConfigured() {
   if (!config.github.token) throw new NotConfiguredError('GitHub', ['GITHUB_TOKEN']);
 }
 
-function orgName() {
-  const org = String(config.github.org || 'atulitllc').trim() || 'atulitllc';
-  if (!/^[A-Za-z0-9-]+$/.test(org)) {
-    const err = new Error('GITHUB_ORG must be a GitHub organization login.');
+function ownerLogin() {
+  const owner = String(config.github.owner || config.github.org || 'atulitllc').trim() || 'atulitllc';
+  if (!/^[A-Za-z0-9-]+$/.test(owner)) {
+    const err = new Error('GITHUB_ORG must be a GitHub username or organization.');
     err.status = 500;
     throw err;
   }
-  return org;
+  return owner;
 }
 
-function pagesUrlFor(org, repo) {
-  return 'https://' + String(org).toLowerCase() + '.github.io/' + String(repo).toLowerCase() + '/';
+// Kept so callers that still say "org" keep working. The value is the repo owner, user or organization.
+function orgName() {
+  return ownerLogin();
+}
+
+function pagesUrlFor(owner, repo) {
+  return 'https://' + String(owner).toLowerCase() + '.github.io/' + String(repo).toLowerCase() + '/';
+}
+
+// Remember whether this token's user is the configured owner, so we do not call GET /user on every file.
+let ownerKind = null;
+
+function clearOwnerCache() {
+  ownerKind = null;
+}
+
+async function createsReposAsUser(owner) {
+  const token = config.github.token;
+  const key = String(owner || '').toLowerCase();
+  if (ownerKind && ownerKind.token === token && ownerKind.owner === key) return ownerKind.asUser;
+  const me = await gh('GET', '/user');
+  const login = String(me && me.login || '').toLowerCase();
+  const asUser = login.length > 0 && login === key;
+  ownerKind = { token, owner: key, asUser };
+  return asUser;
 }
 
 // attempt 0 is the base name. Later attempts are base-2, base-3, ...
@@ -92,9 +115,9 @@ function nameTaken(err) {
   return blob.includes('already exists') || blob.includes('name already');
 }
 
-async function repoExists(org, name) {
+async function repoExists(owner, name) {
   try {
-    await gh('GET', '/repos/' + encodeURIComponent(org) + '/' + encodeURIComponent(name));
+    await gh('GET', '/repos/' + encodeURIComponent(owner) + '/' + encodeURIComponent(name));
     return true;
   } catch (err) {
     if (err.upstreamStatus === 404) return false;
@@ -102,8 +125,10 @@ async function repoExists(org, name) {
   }
 }
 
-async function createRepo(org, name, description) {
-  return gh('POST', '/orgs/' + encodeURIComponent(org) + '/repos', {
+async function createRepo(owner, name, description) {
+  const asUser = await createsReposAsUser(owner);
+  const path = asUser ? '/user/repos' : '/orgs/' + encodeURIComponent(owner) + '/repos';
+  return gh('POST', path, {
     name,
     description: String(description || '').slice(0, 350),
     private: false,
@@ -115,19 +140,19 @@ async function createRepo(org, name, description) {
   });
 }
 
-async function createUniqueRepo(org, base, description) {
+async function createUniqueRepo(owner, base, description) {
   for (let attempt = 0; attempt < 30; attempt++) {
     const name = repoCandidate(base, attempt);
-    if (await repoExists(org, name)) continue;
+    if (await repoExists(owner, name)) continue;
     try {
-      const repo = await createRepo(org, name, description);
+      const repo = await createRepo(owner, name, description);
       return { name, repo };
     } catch (err) {
       if (nameTaken(err)) continue;
       throw err;
     }
   }
-  const err = new Error('No free repository name in the GitHub organization.');
+  const err = new Error('No free repository name for this GitHub account.');
   err.status = 409;
   throw err;
 }
@@ -232,7 +257,9 @@ function branchName(date) {
 
 module.exports = {
   assertConfigured,
+  ownerLogin,
   orgName,
+  clearOwnerCache,
   pagesUrlFor,
   repoCandidate,
   nameTaken,
