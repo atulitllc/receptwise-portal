@@ -6,6 +6,7 @@ const calendarConnection = require('./calendarConnection');
 const voices = require('./voices');
 const privacy = require('./privacy');
 const phoneForwarding = require('./phoneForwarding');
+const portalHost = require('./portalHost');
 
 const STEPS = [
   ['number', 'AI number'],
@@ -33,6 +34,51 @@ const PROFILE_KEYS = [
 
 function slugify(name) {
   return String(name || '').toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'business';
+}
+
+function normalizeSubdomain(value) {
+  const s = String(value || '').toLowerCase().trim();
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(s)) return '';
+  return s;
+}
+
+function panelUrl(subdomain) {
+  return subdomain ? 'https://' + subdomain + '.receptwise.com' : '';
+}
+
+async function uniqueSubdomain(client, base) {
+  let stem = normalizeSubdomain(base) || 'business';
+  if (portalHost.RESERVED.includes(stem)) stem = stem + '-panel';
+  let candidate = stem;
+  for (let i = 2; i < 100; i++) {
+    if (!portalHost.RESERVED.includes(candidate)) {
+      const { rows } = await client.query('SELECT 1 FROM businesses WHERE lower(subdomain) = lower($1)', [candidate]);
+      if (!rows.length) return candidate;
+    }
+    const suffix = '-' + i;
+    candidate = stem.slice(0, 63 - suffix.length) + suffix;
+  }
+  return stem.slice(0, 48) + '-' + Date.now();
+}
+
+function pinnedSubdomain(row) {
+  const name = String((row && row.name) || '').trim().toLowerCase();
+  const slug = String((row && row.slug) || '').trim().toLowerCase();
+  if (slug === 'receptwise' || name === 'receptwise') return 'receptwise';
+  if (slug === 'sphere' || name === 'sphere') return 'sphere';
+  return '';
+}
+
+async function backfillSubdomains() {
+  const { rows } = await db.query("SELECT id, name, slug, subdomain FROM businesses WHERE subdomain IS NULL OR subdomain = ''");
+  for (const row of rows) {
+    const preferred = pinnedSubdomain(row) || slugify(row.name);
+    const subdomain = await uniqueSubdomain({ query: db.query }, preferred);
+    await db.query(
+      "UPDATE businesses SET subdomain = $2 WHERE id = $1 AND (subdomain IS NULL OR subdomain = '')",
+      [row.id, subdomain]
+    );
+  }
 }
 
 function pickProfile(input) {
@@ -152,11 +198,33 @@ async function createBusiness(input, userId, opts) {
   applyVoice(profile);
   return db.tx(async (c) => {
     const slug = await uniqueSlug(c, slugify(input.slug || name));
+    const requested = input.subdomain !== undefined && input.subdomain !== null && String(input.subdomain).trim() !== ''
+      ? normalizeSubdomain(input.subdomain)
+      : '';
+    if (input.subdomain && !requested) {
+      const e = new Error('Use lowercase letters, numbers, and hyphens.');
+      e.status = 400;
+      throw e;
+    }
+    if (requested && portalHost.RESERVED.includes(requested)) {
+      const e = new Error('That address is reserved.');
+      e.status = 400;
+      throw e;
+    }
+    if (requested) {
+      const taken = await c.query('SELECT 1 FROM businesses WHERE lower(subdomain) = lower($1)', [requested]);
+      if (taken.rows.length) {
+        const e = new Error('That address is already used.');
+        e.status = 409;
+        throw e;
+      }
+    }
+    const subdomain = requested || await uniqueSubdomain(c, slugify(name));
     const { rows } = await c.query(
-      `INSERT INTO businesses (slug, name, category, city, timezone, status, pilot, profile, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      `INSERT INTO businesses (slug, name, category, city, timezone, status, pilot, profile, created_by, subdomain)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
       [slug, name, String(input.category || ''), String(input.city || ''), tzFromLabel(input.timezone),
-        status, Boolean(input.pilot), profile, userId || null]
+        status, Boolean(input.pilot), profile, userId || null, subdomain]
     );
     const biz = rows[0];
     // Client-supplied checklist is advisory; the number/test steps are server-owned.
@@ -166,10 +234,39 @@ async function createBusiness(input, userId, opts) {
   });
 }
 
-async function updateBusiness(slug, input, userId) {
+async function resolveSubdomain(biz, input, role) {
+  if (!input || input.subdomain === undefined) return biz.subdomain || '';
+  const next = normalizeSubdomain(input.subdomain);
+  if (!next) {
+    const e = new Error('Use lowercase letters, numbers, and hyphens.');
+    e.status = 400;
+    throw e;
+  }
+  if (portalHost.RESERVED.includes(next)) {
+    const e = new Error('That address is reserved.');
+    e.status = 400;
+    throw e;
+  }
+  if (next === (biz.subdomain || '')) return next;
+  if (role !== 'admin') {
+    const e = new Error('Admins set the panel address.');
+    e.status = 403;
+    throw e;
+  }
+  const taken = await db.query('SELECT id FROM businesses WHERE lower(subdomain) = lower($1) AND id <> $2', [next, biz.id]);
+  if (taken.rows.length) {
+    const e = new Error('That address is already used.');
+    e.status = 409;
+    throw e;
+  }
+  return next;
+}
+
+async function updateBusiness(slug, input, userId, actor) {
   const biz = await getBySlug(slug);
   if (!biz) return null;
   const profile = applyVoice(Object.assign({}, biz.profile, pickProfile(input)));
+  const subdomain = await resolveSubdomain(biz, input, actor && actor.role);
   const fields = {
     name: input.name !== undefined ? String(input.name).trim() || biz.name : biz.name,
     category: input.category !== undefined ? String(input.category) : biz.category,
@@ -179,9 +276,9 @@ async function updateBusiness(slug, input, userId) {
     status: biz.status === 'draft' ? 'draft' : (['setup', 'live', 'paused'].includes(input.status) ? input.status : biz.status)
   };
   const { rows } = await db.query(
-    `UPDATE businesses SET name = $2, category = $3, city = $4, timezone = $5, status = $6, profile = $7, updated_at = now()
+    `UPDATE businesses SET name = $2, category = $3, city = $4, timezone = $5, status = $6, profile = $7, subdomain = $8, updated_at = now()
      WHERE id = $1 RETURNING *`,
-    [biz.id, fields.name, fields.category, fields.city, fields.timezone, fields.status, profile]
+    [biz.id, fields.name, fields.category, fields.city, fields.timezone, fields.status, profile, subdomain || null]
   );
   await db.query('INSERT INTO audit_log (user_id, business_id, action, detail) VALUES ($1, $2, $3, $4)',
     [userId || null, biz.id, 'business.update', { keys: Object.keys(input || {}).slice(0, 40) }]);
@@ -263,6 +360,14 @@ async function deleteDraft(biz, userId) {
 
 async function getBySlug(slug) {
   const { rows } = await db.query('SELECT * FROM businesses WHERE slug = $1 AND status <> \'archived\'', [slug]);
+  return rows[0] || null;
+}
+
+async function getBySubdomain(label) {
+  const { rows } = await db.query(
+    "SELECT * FROM businesses WHERE lower(subdomain) = lower($1) AND status <> 'archived'",
+    [label]
+  );
   return rows[0] || null;
 }
 
@@ -418,7 +523,9 @@ async function toUi(biz, user, ctx) {
     })),
     checklist,
     live: true,
-    generatedWebsite: generatedWebsite(website.rows[0])
+    generatedWebsite: generatedWebsite(website.rows[0]),
+    subdomain: biz.subdomain || '',
+    panelUrl: panelUrl(biz.subdomain)
   });
   const grants = ctx && ctx.grants ? ctx.grants : await privacy.activeGrantSet();
   const support = ctx && Object.prototype.hasOwnProperty.call(ctx, 'support') ? ctx.support : await privacy.supportRow(biz.id);
@@ -531,10 +638,11 @@ async function seedPilot() {
     console.log('Seeded pilot business: ReceptWise (Malden, MA)');
   }
   await ensurePilotBindings(biz.id);
+  await backfillSubdomains();
 }
 
 module.exports = {
-  STEPS, STEP_KEYS, slugify, createBusiness, updateBusiness, createDraft, updateDraft, finishDraft, deleteDraft,
-  getBySlug, toUi, listUi, seedPilot,
+  STEPS, STEP_KEYS, slugify, normalizeSubdomain, panelUrl, pinnedSubdomain, createBusiness, updateBusiness, createDraft, updateDraft, finishDraft, deleteDraft,
+  getBySlug, getBySubdomain, toUi, listUi, seedPilot,
   setStep, prettyPhone, callToUi, tzFromLabel, defaultReceptionist
 };

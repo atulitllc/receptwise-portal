@@ -74,7 +74,15 @@ Without those keys the panel stays honest: phone says **Not connected**, setting
 - **Voice.** The live assistant already uses ElevenLabs. `VAPI_VOICE_ID` is only required when publishing a brand-new assistant from the business page.
 - **Trello.** Create a Power-Up API key and token (steps below), paste them on Integrations, or set `TRELLO_API_KEY` and `TRELLO_TOKEN`. Choose a board and a list. Cards are not created until that list is saved. Set `APP_BASE_URL` so each card links back to the call.
 
-Pilot client 1 is seeded as ReceptWise (Malden, MA) and linked to assistant `c3c8899c-e42d-494b-bf47-3af37f942341` and number `+1 781-705-7179` (`60a44606-c827-4f01-b381-852e247a8003`). Override those with `VAPI_ASSISTANT_ID`, `VAPI_PHONE_NUMBER_ID`, and `PILOT_PHONE_E164` if they change.
+Pilot client 1 is seeded as ReceptWise (Malden, MA) and linked to assistant `c3c8899c-e42d-494b-bf47-3af37f942341` and number `+1 781-705-7179` (`60a44606-c827-4f01-b381-852e247a8003`). Override those with `VAPI_ASSISTANT_ID`, `VAPI_PHONE_NUMBER_ID`, and `PILOT_PHONE_E164` if they change. Its customer panel is `https://receptwise.receptwise.com`.
+
+## Customer panels
+
+`*.receptwise.com` already points at this service. `panel.receptwise.com` is the main control panel and behaves as it does today. `www` and `api` are reserved the same way. The Render hostname (`*.onrender.com`) is also the full panel. `receptwise.com` itself is not a customer panel.
+
+Any other single label is a customer panel: `https://<slug>.receptwise.com`. The slug is a unique `subdomain` on the business. A new business gets one from its name (lowercase letters, numbers, and hyphens). An admin can change it on the business page, which also shows the URL. Reserved names and duplicates are rejected. Renaming a business does not change the address. ReceptWise uses `receptwise`. SPHERE, when that business is already in the database, uses `sphere`.
+
+On that host the sign-in page shows the business name, and every page and API response is that business only. There is no business switcher and no list of other businesses, including after an admin signs in. A customer account for that business opens its dashboard (`client.html`). Admins and team can still sign in. An unknown slug shows a not-found page instead of the main panel. The sign-in cookie is for that host only. The list of every business stays on `panel.receptwise.com` and the Render hostname.
 
 ## Deploy on Render
 

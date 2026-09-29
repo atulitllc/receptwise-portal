@@ -2559,4 +2559,199 @@ describe('control panel API', () => {
     });
     assert.equal(teamPatch.status, 403);
   });
+
+  it('routes customer panel hosts and keeps the main panel on reserved names', async () => {
+    const pilot = await request('GET', '/assets/data.js', {
+      headers: { Host: 'receptwise.receptwise.com', 'X-RW-Client': '' }
+    });
+    assert.equal(pilot.status, 200, pilot.text);
+    assert.match(pilot.text, /"businessName":"ReceptWise"/);
+    assert.match(pilot.text, /"subdomain":"receptwise"/);
+    assert.match(pilot.text, /"panelUrl":"https:\/\/receptwise\.receptwise\.com"/);
+
+    for (const host of ['panel.receptwise.com', 'www.receptwise.com', 'api.receptwise.com', 'receptwise-portal.onrender.com']) {
+      const page = await request('GET', '/', { headers: { Host: host, 'X-RW-Client': '' } });
+      assert.equal(page.status, 200, host);
+      assert.match(page.text, /Sign in/);
+      assert.match(page.text, /data-page="login"/);
+      const data = await request('GET', '/assets/data.js', { headers: { Host: host, 'X-RW-Client': '' } });
+      assert.match(data.text, /"portal":null/);
+    }
+
+    const missing = await request('GET', '/', { headers: { Host: 'missing.receptwise.com', 'X-RW-Client': '' } });
+    assert.equal(missing.status, 404);
+    assert.match(missing.text, /This panel was not found/);
+    assert.equal(missing.text.includes('data-page="login"'), false);
+    const missingApi = await request('POST', '/api/auth/login', {
+      headers: { Host: 'missing.receptwise.com' },
+      body: { email: 'admin@receptwise.example', password: 'pilot-password-10' }
+    });
+    assert.equal(missingApi.status, 404);
+    assert.match(missingApi.json.error, /not found/i);
+
+    const created = await request('GET', '/api/businesses/harbor-cafe', { cookie });
+    assert.equal(created.status, 200, created.text);
+    assert.equal(created.json.business.subdomain, 'harbor-cafe');
+    assert.equal(created.json.business.panelUrl, 'https://harbor-cafe.receptwise.com');
+
+    const reservedName = await request('POST', '/api/businesses', {
+      cookie,
+      body: { name: 'Panel', category: 'Cafe', city: 'Salem, MA' }
+    });
+    assert.equal(reservedName.status, 201, reservedName.text);
+    assert.equal(reservedName.json.business.subdomain, 'panel-panel');
+
+    const renamed = await request('PUT', '/api/businesses/harbor-cafe', {
+      cookie,
+      body: { subdomain: 'harbor' }
+    });
+    assert.equal(renamed.status, 200, renamed.text);
+    assert.equal(renamed.json.business.subdomain, 'harbor');
+    assert.equal(renamed.json.business.panelUrl, 'https://harbor.receptwise.com');
+
+    const reserved = await request('PUT', '/api/businesses/harbor-cafe', {
+      cookie,
+      body: { subdomain: 'panel' }
+    });
+    assert.equal(reserved.status, 400);
+    const collision = await request('PUT', '/api/businesses/harbor-cafe', {
+      cookie,
+      body: { subdomain: 'receptwise' }
+    });
+    assert.equal(collision.status, 409);
+
+    const team = await request('POST', '/api/users', {
+      cookie,
+      body: { email: 'panel-team@receptwise.example', name: 'Panel Team', password: 'team-password-10', role: 'team' }
+    });
+    assert.equal(team.status, 201, team.text);
+    const teamLogin = await request('POST', '/api/auth/login', {
+      body: { email: 'panel-team@receptwise.example', password: 'team-password-10' }
+    });
+    const teamCookie = cookieFrom(teamLogin.setCookie);
+    const denied = await request('PUT', '/api/businesses/harbor-cafe', {
+      cookie: teamCookie,
+      body: { subdomain: 'other-cafe' }
+    });
+    assert.equal(denied.status, 403);
+    const unchanged = await request('PUT', '/api/businesses/harbor-cafe', {
+      cookie: teamCookie,
+      body: { subdomain: 'harbor', name: 'Harbor Cafe' }
+    });
+    assert.equal(unchanged.status, 200, unchanged.text);
+    assert.equal(unchanged.json.business.subdomain, 'harbor');
+
+    const customer = await request('POST', '/api/users', {
+      cookie,
+      body: { email: 'owner@harbor.test', name: 'Harbor Owner', password: 'harbor-password-10', role: 'owner', business: 'harbor-cafe' }
+    });
+    assert.equal(customer.status, 201, customer.text);
+    assert.equal(customer.json.user.role, 'owner');
+    assert.equal(customer.json.user.businessSlug, 'harbor-cafe');
+
+    const ownerLogin = await request('POST', '/api/auth/login', {
+      headers: { Host: 'harbor.receptwise.com' },
+      body: { email: 'owner@harbor.test', password: 'harbor-password-10' }
+    });
+    assert.equal(ownerLogin.status, 200, ownerLogin.text);
+    assert.equal(ownerLogin.json.home, 'client.html?id=harbor-cafe');
+    const ownerCookie = cookieFrom(ownerLogin.setCookie);
+
+    const wrongHost = await request('POST', '/api/auth/login', {
+      headers: { Host: 'receptwise.receptwise.com' },
+      body: { email: 'owner@harbor.test', password: 'harbor-password-10' }
+    });
+    assert.equal(wrongHost.status, 403);
+
+    const adminThere = await request('POST', '/api/auth/login', {
+      headers: { Host: 'harbor.receptwise.com' },
+      body: { email: 'admin@receptwise.example', password: 'pilot-password-10' }
+    });
+    assert.equal(adminThere.status, 200, adminThere.text);
+    assert.equal(adminThere.json.home, 'dashboard.html');
+
+    const ownList = await request('GET', '/api/businesses', { cookie: ownerCookie, headers: { Host: 'harbor.receptwise.com' } });
+    assert.equal(ownList.status, 200, ownList.text);
+    assert.deepEqual(ownList.json.businesses.map((b) => b.id), ['harbor-cafe']);
+    const other = await request('GET', '/api/businesses/receptwise', { cookie: ownerCookie, headers: { Host: 'harbor.receptwise.com' } });
+    assert.equal(other.status, 404);
+    const blocked = await request('POST', '/api/businesses', {
+      cookie: ownerCookie,
+      headers: { Host: 'harbor.receptwise.com' },
+      body: { name: 'Nope Cafe', category: 'Cafe' }
+    });
+    assert.equal(blocked.status, 403);
+
+    const scoped = await request('GET', '/assets/data.js', {
+      cookie: ownerCookie,
+      headers: { Host: 'harbor.receptwise.com', 'X-RW-Client': '' }
+    });
+    assert.match(scoped.text, /"businessName":"Harbor Cafe"/);
+    assert.match(scoped.text, /"role":"owner"/);
+  });
+
+  it('scopes an admin on sphere.receptwise.com to that business only', async () => {
+    const created = await request('POST', '/api/businesses', {
+      cookie,
+      body: { name: 'SPHERE', category: 'Retail', city: 'Boston, MA' }
+    });
+    assert.equal(created.status, 201, created.text);
+    assert.equal(created.json.business.id, 'sphere');
+    assert.equal(created.json.business.subdomain, 'sphere');
+
+    await db.query("UPDATE businesses SET subdomain = NULL WHERE slug = 'sphere'");
+    const fs = require('fs');
+    const path = require('path');
+    await db.query(fs.readFileSync(path.join(__dirname, '../migrations/008_sphere_subdomain.sql'), 'utf8'));
+    const pinned = await db.query("SELECT subdomain FROM businesses WHERE slug = 'sphere'");
+    assert.equal(pinned.rows[0].subdomain, 'sphere');
+
+    const host = { Host: 'sphere.receptwise.com' };
+    const list = await request('GET', '/api/businesses', { cookie, headers: host });
+    assert.equal(list.status, 200, list.text);
+    assert.deepEqual(list.json.businesses.map((b) => b.id), ['sphere']);
+
+    const other = await request('GET', '/api/businesses/receptwise', { cookie, headers: host });
+    assert.equal(other.status, 404);
+    const harbor = await request('GET', '/api/businesses/harbor-cafe', { cookie, headers: host });
+    assert.equal(harbor.status, 404);
+
+    const metrics = await request('GET', '/api/metrics?business=receptwise', { cookie, headers: host });
+    assert.equal(metrics.status, 404);
+    const ownMetrics = await request('GET', '/api/metrics', { cookie, headers: host });
+    assert.equal(ownMetrics.status, 200, ownMetrics.text);
+    assert.equal(JSON.stringify(ownMetrics.json).includes('ReceptWise'), false);
+    assert.equal(JSON.stringify(ownMetrics.json).includes('Harbor Cafe'), false);
+
+    const panel = await request('GET', '/api/businesses', { cookie, headers: { Host: 'panel.receptwise.com' } });
+    assert.equal(panel.status, 200, panel.text);
+    assert.ok(panel.json.businesses.some((b) => b.id === 'receptwise'));
+    assert.ok(panel.json.businesses.some((b) => b.id === 'sphere'));
+    const renderHost = await request('GET', '/api/businesses', {
+      cookie,
+      headers: { Host: 'receptwise-portal.onrender.com' }
+    });
+    assert.ok(renderHost.json.businesses.length > 1);
+
+    const data = await request('GET', '/assets/data.js', {
+      cookie,
+      headers: Object.assign({ 'X-RW-Client': '' }, host)
+    });
+    const marker = '})(';
+    const payload = JSON.parse(data.text.slice(data.text.lastIndexOf(marker) + marker.length).replace(/\);\s*$/, ''));
+    assert.deepEqual(payload.businesses.map((b) => b.id), ['sphere']);
+    assert.equal(payload.live.portal.subdomain, 'sphere');
+    assert.equal(payload.businesses.some((b) => b.id === 'receptwise'), false);
+
+    const exported = await request('GET', '/api/export?format=json', { cookie, headers: host });
+    assert.equal(exported.status, 200, exported.text);
+    assert.deepEqual(exported.json.clients.map((c) => c.slug), ['sphere']);
+
+    const add = await request('POST', '/api/businesses', {
+      cookie,
+      headers: host,
+      body: { name: 'Other Shop', category: 'Retail' }
+    });
+    assert.equal(add.status, 403);
+  });
 });

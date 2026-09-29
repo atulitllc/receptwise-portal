@@ -39,55 +39,62 @@ function insert(table, columns, row) {
   return 'INSERT INTO ' + table + ' (' + columns.join(', ') + ') VALUES (' + values.join(', ') + ');\n';
 }
 
-async function snapshot(user) {
+async function snapshot(user, businessId) {
+  const params = businessId ? [businessId] : [];
+  const onlyBiz = businessId ? 'WHERE id = $1' : '';
+  const onlyChild = businessId ? 'WHERE business_id = $1' : '';
+  const onlyAudit = businessId ? 'WHERE a.business_id = $1' : '';
   const [businesses, setup, phones, assistants, integrations, calls, bookings, activity, forwarding, ringFirst, portRequests, demoRequests] = await Promise.all([
     db.query(
-      `SELECT id, slug, name, category, city, timezone, status, pilot, profile, receptionist, created_at, updated_at
-       FROM businesses ORDER BY id`
+      `SELECT id, slug, name, category, city, timezone, status, pilot, subdomain, profile, receptionist, created_at, updated_at
+       FROM businesses ${onlyBiz} ORDER BY id`, params
     ),
     db.query(
       `SELECT business_id, step_key, status, detail, owner, is_next, data, updated_at
-       FROM business_setup ORDER BY business_id, step_key`
+       FROM business_setup ${onlyChild} ORDER BY business_id, step_key`, params
     ),
     db.query(
       `SELECT id, business_id, e164, provider, twilio_sid, vapi_phone_number_id, sms_enabled, status, created_at
-       FROM phone_numbers ORDER BY id`
+       FROM phone_numbers ${onlyChild} ORDER BY id`, params
     ),
     db.query(
       `SELECT business_id, vapi_assistant_id, config, published_at, updated_at
-       FROM assistants ORDER BY business_id`
+       FROM assistants ${onlyChild} ORDER BY business_id`, params
     ),
     db.query(
       `SELECT id, business_id, provider, account_label, handle, profile_url, external_id, status, meta, created_at, updated_at
-       FROM integrations ORDER BY id`
+       FROM integrations ${onlyChild} ORDER BY id`, params
     ),
     db.query(
       `SELECT id, business_id, vapi_call_id, direction, from_number, to_number, status, started_at, ended_at,
               duration_sec, ended_reason, outcome, summary, caller_name, caller_email, caller_business, call_type,
               booking_confirmed, booked_start, answered, structured, recording_url, created_at
-       FROM calls ORDER BY id`
+       FROM calls ${onlyChild} ORDER BY id`, params
     ),
     db.query(
       `SELECT id, business_id, call_id, starts_at, ends_at, customer, phone, email, service, source, status, google_event_id, calcom_uid, timezone, created_at, updated_at
-       FROM bookings ORDER BY id`
+       FROM bookings ${onlyChild} ORDER BY id`, params
     ),
     db.query(
       `SELECT a.id, a.created_at, a.action, a.detail, a.business_id, b.slug AS business_slug, u.email AS actor_email
        FROM audit_log a
        LEFT JOIN businesses b ON b.id = a.business_id
        LEFT JOIN users u ON u.id = a.user_id
-       ORDER BY a.id`
+       ${onlyAudit}
+       ORDER BY a.id`, params
     ),
-    db.query('SELECT * FROM phone_forwarding ORDER BY business_id'),
-    db.query('SELECT id, business_id, label, e164, position FROM ring_first_numbers ORDER BY id'),
+    db.query('SELECT * FROM phone_forwarding ' + onlyChild + ' ORDER BY business_id', params),
+    db.query('SELECT id, business_id, label, e164, position FROM ring_first_numbers ' + onlyChild + ' ORDER BY id', params),
     db.query(
       `SELECT id, business_id, business_number, contact_name, contact_phone, carrier, notes, status, created_by, created_at
-       FROM port_requests ORDER BY id`
+       FROM port_requests ${onlyChild} ORDER BY id`, params
     ),
     db.query(
-      `SELECT id, name, business_name, phone, email, business_type, preferred_time, message, plan, extra,
+      businessId
+        ? 'SELECT id FROM demo_requests WHERE false'
+        : `SELECT id, name, business_name, phone, email, business_type, preferred_time, message, plan, extra,
               source_page, user_agent, ip_hash, status, created_at, updated_at
-       FROM demo_requests ORDER BY id`
+           FROM demo_requests ORDER BY id`
     )
   ]);
 
@@ -164,7 +171,7 @@ function toSql(data) {
   sql += '-- Apply after migrations have created the tables. This file does not restore sign-in or connected-account tokens.\n';
   sql += 'BEGIN;\n';
   data.clients.forEach((client) => {
-    sql += insert('businesses', ['id', 'slug', 'name', 'category', 'city', 'timezone', 'status', 'pilot', 'profile', 'receptionist', 'created_at', 'updated_at'], client);
+    sql += insert('businesses', ['id', 'slug', 'name', 'category', 'city', 'timezone', 'status', 'pilot', 'subdomain', 'profile', 'receptionist', 'created_at', 'updated_at'], client);
     (client.setup || []).forEach((step) => { sql += insert('business_setup', ['business_id', 'step_key', 'status', 'detail', 'owner', 'is_next', 'data', 'updated_at'], step); });
     (client.phoneNumbers || []).forEach((phone) => {
       sql += insert('phone_numbers', ['id', 'business_id', 'e164', 'provider', 'twilio_sid', 'vapi_phone_number_id', 'sms_enabled', 'status', 'created_at'], phone);
@@ -217,7 +224,8 @@ async function send(req, res) {
     err.status = 400;
     throw err;
   }
-  const data = await snapshot(req.user);
+  const portal = req.customerPortal && req.customerPortal.business;
+  const data = await snapshot(req.user, portal ? portal.id : null);
   await audit.record(req.user.id, null, 'data.export', { format });
   const day = data.exportedAt.slice(0, 10);
   res.set('Cache-Control', 'no-store');

@@ -889,16 +889,17 @@
       integrations: "Integrations",
       leads: "Leads"
     };
+    var single = onCustomerHost();
     var mainNav = [
       ["dashboard.html", "Overview", "dashboard"],
       ["appointments.html", "Appointments", "appointments"],
       ["phone.html", "Phone", "phone"],
       ["settings.html", "Receptionist", "settings"],
-      ["integrations.html", "Integrations", "integrations"],
-      ["clients.html", "Businesses", "clients"]
+      ["integrations.html", "Integrations", "integrations"]
     ];
-    if (!LIVE || isAdmin()) mainNav.push(["leads.html", "Leads", "leads"]);
-    if (!isBusinessViewer()) mainNav.push(["add.html", "Add business", "add"]);
+    if (!single && (!LIVE || isAdmin())) mainNav.push(["leads.html", "Leads", "leads"]);
+    if (!single) mainNav.push(["clients.html", "Businesses", "clients"]);
+    if (!single && !isBusinessViewer()) mainNav.push(["add.html", "Add business", "add"]);
     var groups = [
       ["Main", mainNav],
       ["Account", [
@@ -922,8 +923,8 @@
       '<div class="side-user"><div class="avatar me">' + esc(initials(user.name)) + "</div><div><strong>" + esc(user.name) +
       '</strong><span>' + esc(roleLabel()) + '</span></div><button type="button" data-action="sign-out">Sign out</button></div></aside>' +
       '<div class="main"><header class="topbar"><h1 id="top-title">' + esc(titles[page] || "ReceptWise") + "</h1>" +
-      '<form class="search" action="clients.html" method="get">' + iconSearch() +
-      '<input name="q" value="' + esc(q) + '" placeholder="Search businesses" aria-label="Search businesses"></form>' +
+      (single ? "" : '<form class="search" action="clients.html" method="get">' + iconSearch() +
+      '<input name="q" value="' + esc(q) + '" placeholder="Search businesses" aria-label="Search businesses"></form>') +
       '<div class="bell-wrap"><button class="icon-btn" type="button" data-action="toggle-bell" aria-label="Alerts">' + iconBell() +
       (alerts.length ? '<span class="badge">' + alerts.length + "</span>" : "") + "</button>" +
       '<div id="bell-panel" class="bell-panel"></div></div>' +
@@ -1040,6 +1041,10 @@
   }
 
   function renderClients(view) {
+    if (onCustomerHost()) {
+      location.replace("client.html?id=" + encodeURIComponent(customerPortal().businessId));
+      return;
+    }
     var filters = clientQuery();
     var types = [];
     allBusinesses().forEach(function (b) { if (types.indexOf(b.category) === -1) types.push(b.category); });
@@ -2393,7 +2398,8 @@
       : tabOverview(b);
     view.innerHTML = '<section class="card client-head"><div class="client-ident"><div class="avatar" style="background:' + colorFor(b.category) + '">' + esc(initials(b.name)) +
       "</div><div><h1 class='client-title'>" + esc(b.name) + "</h1><p class='sub'>" + esc(b.category) + " · " + esc(b.city) + " · " + esc((b.owner && b.owner.name) || "") +
-      "</p><div class='pills'>" + pill(b.status) + '<span class="pill neutral">' + esc(b.plan) + "</span>" + (b.pilot ? '<span class="pill pilot">Pilot</span>' : "") + "</div></div></div>" +
+      "</p><div class='pills'>" + pill(b.status) + '<span class="pill neutral">' + esc(b.plan) + "</span>" + (b.pilot ? '<span class="pill pilot">Pilot</span>' : "") + "</div>" +
+      panelAddress(b) + "</div></div>" +
       '<div class="head-actions">' + (b.status === "draft" ? '<a class="btn btn-primary" href="add.html?draft=' + encodeURIComponent(b.id) + '">Resume setup</a>' : '') +
       '<button class="btn" type="button" data-action="call-receptionist" data-id="' + esc(b.id) + '">Call the receptionist</button>' +
       '<button class="btn btn-primary" type="button" data-action="send-steps" data-id="' + esc(b.id) + '">Send owner their steps</button></div></section>' +
@@ -2494,17 +2500,51 @@
       exportCard + legal();
   }
 
+  function customerPortal() {
+    return (window.RW_LIVE && window.RW_LIVE.portal) || null;
+  }
+
+  function onCustomerHost() {
+    return !!(customerPortal() && customerPortal().businessId);
+  }
+
+  function landing(user, home) {
+    if (home) return home;
+    if (user && (user.role === "owner" || user.role === "staff") && user.businessSlug) {
+      return "client.html?id=" + encodeURIComponent(user.businessSlug);
+    }
+    return "dashboard.html";
+  }
+
+  function panelAddress(b) {
+    if (!b || !b.subdomain) return "";
+    var url = b.panelUrl || ("https://" + b.subdomain + ".receptwise.com");
+    var link = '<a href="' + esc(url) + '">' + esc(url) + "</a>";
+    if (isAdmin()) {
+      return '<form class="subdomain-row" data-action="save-subdomain" data-id="' + esc(b.id) + '">' +
+        '<label for="panel-subdomain">Customer panel</label><span>https://</span>' +
+        '<input class="ctrl" id="panel-subdomain" name="subdomain" value="' + esc(b.subdomain) + '" maxlength="63" autocomplete="off" spellcheck="false">' +
+        "<span>.receptwise.com</span><button class='btn' type='submit'>Save</button></form>" +
+        '<p class="help">Customer panel: ' + link + "</p>";
+    }
+    return '<p class="help">Customer panel: ' + link + "</p>";
+  }
+
   function renderLogin() {
-    if (session()) {
-      location.replace("dashboard.html");
+    var signedIn = session();
+    if (signedIn) {
+      location.replace(landing(signedIn));
       return;
     }
-    document.getElementById("app").innerHTML = '<div class="login"><section class="login-brand"><div class="brand"><img class="brand-mark" src="assets/favicon.svg" alt=""><div><div class="brand-name">Recept<span>Wise</span></div><div class="brand-sub">Control panel</div></div></div>' +
-      "<h1>Set up a local business without leaving the panel.</h1><p>Phone, receptionist, calendar, reviews, social, and website. One monthly bill for the owner.</p><ul>" +
+    var portal = customerPortal();
+    var named = portal && portal.businessName ? portal.businessName : "";
+    if (named) document.title = "Sign in · " + named;
+    document.getElementById("app").innerHTML = '<div class="login"><section class="login-brand"><div class="brand"><img class="brand-mark" src="assets/favicon.svg" alt=""><div><div class="brand-name">Recept<span>Wise</span></div><div class="brand-sub">' + (named ? esc(named) : "Control panel") + "</div></div></div>" +
+      "<h1>" + (named ? "Sign in to " + esc(named) + "." : "Set up a local business without leaving the panel.") + "</h1><p>Phone, receptionist, calendar, reviews, social, and website. One monthly bill for the owner.</p><ul>" +
       "<li>Answer calls, book the open time, and hand off when someone asks for a person</li><li>Forward the number already on the door, or buy a new one</li>" +
       "<li>Track every connection: confirmed, pending, or needs action</li></ul>" +
       '<p class="legal">ReceptWise is a product of [Placeholder].' + (LIVE ? "" : " This is a clickable prototype with sample data.") + '</p></section>' +
-      '<section class="login-panel"><form class="login-card" data-action="login"><h2>Sign in</h2><p class="sub">Internal team only.</p>' +
+      '<section class="login-panel"><form class="login-card" data-action="login"><h2>Sign in</h2><p class="sub">' + (named ? "Sign in to " + esc(named) + "." : "Internal team only.") + "</p>" +
       '<div class="field" style="margin-top:16px"><label for="email">Email</label><input class="ctrl" id="email" name="email" type="email" autocomplete="username" placeholder="you@receptwise.example"></div>' +
       '<div class="field"><label for="password">Password</label><input class="ctrl" id="password" name="password" type="password" autocomplete="current-password" placeholder="' + (LIVE ? "Password" : "Any password") + '"></div>' +
       '<button class="btn btn-primary" type="submit" style="width:100%">Sign in</button><p class="help">' + (LIVE ? "Team accounts only. Ask an admin for access." : "This prototype accepts any email and password.") + '</p></form></section></div>' +
@@ -3707,13 +3747,26 @@
 
   function onSubmit(event) {
     var form = event.target;
-    if (!form || form.dataset.action !== "login") return;
+    if (!form || !form.dataset) return;
+    if (form.dataset.action === "save-subdomain") {
+      event.preventDefault();
+      var current = findBiz(form.dataset.id);
+      if (!current) return;
+      var next = (form.subdomain && form.subdomain.value || "").trim().toLowerCase();
+      api("PUT", "api/businesses/" + encodeURIComponent(current.id), { subdomain: next }).then(function (data) {
+        replaceBiz(data.business);
+        toast("Panel address saved.");
+        if (currentRender) currentRender();
+      }).catch(liveFail);
+      return;
+    }
+    if (form.dataset.action !== "login") return;
     event.preventDefault();
     var email = (form.email && form.email.value || "").trim();
     if (LIVE) {
       var password = form.password ? form.password.value : "";
-      api("POST", "api/auth/login", { email: email, password: password }).then(function () {
-        location.href = "dashboard.html";
+      api("POST", "api/auth/login", { email: email, password: password }).then(function (data) {
+        location.href = landing(data && data.user, data && data.home);
       }).catch(function (err) { toast(err.message); });
       return;
     }
@@ -3722,6 +3775,7 @@
   }
 
   function pageBizId() {
+    if (onCustomerHost()) return customerPortal().businessId;
     var params = new URLSearchParams(location.search);
     var id = params.get("id");
     if (id && findBiz(id)) return id;
@@ -3731,6 +3785,7 @@
   }
 
   function bizSelect() {
+    if (onCustomerHost()) return "";
     var id = pageBizId();
     var opts = ordered(allBusinesses()).map(function (b) {
       return '<option value="' + esc(b.id) + '"' + (b.id === id ? " selected" : "") + ">" + esc(b.name) + (b.pilot ? " · Pilot" : "") + "</option>";
@@ -3768,14 +3823,19 @@
       return "<div class='setting-row'><div><strong>" + esc(item.businessName || "ReceptWise") + "</strong><div class='help'>" + esc(item.text) + "</div></div><span class='help'>" + esc(item.time) + "</span></div>";
     }).join("");
     var list = ordered(allBusinesses());
-    var rows = list.map(function (b) {
+    var single = onCustomerHost();
+    var rows = single ? "" : list.map(function (b) {
       return "<tr><td><a href='client.html?id=" + encodeURIComponent(b.id) + "'>" + esc(b.name) + "</a>" + (b.pilot ? " <span class='pill pilot'>Pilot</span>" : "") +
         (b.status === "draft" ? " " + pill("draft") : "") +
         "</td><td>" + (b.callsToday || 0) + "</td><td>" + (b.bookingsToday || 0) + "</td><td>" + esc(phoneStatus(b)) + "</td><td>" +
         (b.status === "draft" ? draftActions(b) : "<a href='phone.html?id=" + encodeURIComponent(b.id) + "'>Phone</a> · <a href='settings.html?id=" + encodeURIComponent(b.id) + "'>Settings</a>") +
         "</td></tr>";
     }).join("");
-    view.innerHTML = '<div class="page-head"><div><h1>Overview</h1><p class="sub">' + esc(todayLabel()) + " · calls stored for the businesses you manage</p></div>" +
+    var businessCard = single ? "" : '<section class="card"><div class="card-h"><h2>Businesses</h2></div><div class="table-wrap"><table class="data"><thead><tr><th>Business</th><th>Calls today</th><th>Bookings today</th><th>Phone</th><th></th></tr></thead><tbody>' +
+      (rows || '<tr><td colspan="5"><div class="empty">No businesses yet.</div></td></tr>') +
+      "</tbody></table></div></section>";
+    view.innerHTML = '<div class="page-head"><div><h1>Overview</h1><p class="sub">' + esc(todayLabel()) + " · " +
+      (single ? esc(customerPortal().businessName) : "calls stored for the businesses you manage") + "</p></div>" +
       '<div class="head-actions"><button class="btn" type="button" data-action="sync-dashboard">Sync from Vapi</button><a class="btn btn-primary" href="settings.html">Receptionist settings</a></div></div>' +
       banner +
       '<section class="stats"><article class="stat"><em>Calls today</em><b>' + (calls.today || 0) + "</b><span>7 days " + (calls.d7 || 0) + " · 30 days " + (calls.d30 || 0) + "</span></article>" +
@@ -3785,9 +3845,7 @@
       '<section class="card"><div class="card-h"><h2>Recent calls</h2></div><div class="table-wrap"><table class="data"><thead><tr><th>When</th><th>Caller</th><th>Business</th><th>Outcome</th><th>Duration</th><th>Summary</th><th>Recording</th></tr></thead><tbody>' +
       (recent || '<tr><td colspan="7"><div class="empty">No calls yet. Point the Vapi server URL at this app, or use Sync from Vapi once the API key is set.</div></td></tr>') +
       "</tbody></table></div></section>" +
-      '<div class="grid-main" style="margin-top:14px"><section class="card"><div class="card-h"><h2>Businesses</h2></div><div class="table-wrap"><table class="data"><thead><tr><th>Business</th><th>Calls today</th><th>Bookings today</th><th>Phone</th><th></th></tr></thead><tbody>' +
-      (rows || '<tr><td colspan="5"><div class="empty">No businesses yet.</div></td></tr>') +
-      '</tbody></table></div></section><section class="card"><div class="card-h"><h2>Activity</h2></div><div class="card-b">' +
+      '<div class="grid-main" style="margin-top:14px">' + businessCard + '<section class="card"><div class="card-h"><h2>Activity</h2></div><div class="card-b">' +
       (activity || '<div class="empty">Calls, bookings, settings changes, and integration changes show up here.</div>') +
       "</div></section></div>" + legal();
     var focused = view.querySelector(".call-focus");
@@ -4190,12 +4248,13 @@
     var params = new URLSearchParams(location.search);
     var view = params.get("view");
     if (view !== "month" && view !== "list") view = "week";
+    var business = onCustomerHost() ? customerPortal().businessId : (params.get("business") || params.get("id") || "all");
     var date = params.get("date") || "";
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) date = todayYmd(appointmentZone(params.get("business") || params.get("id") || "all"));
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) date = todayYmd(appointmentZone(business));
     return {
       view: view,
       date: date,
-      business: params.get("business") || params.get("id") || "all",
+      business: business,
       hideCancelled: params.get("cancelled") !== "show"
     };
   }
@@ -4315,6 +4374,10 @@
   }
 
   function businessOptions(selected, includeAll) {
+    if (onCustomerHost()) {
+      var portal = customerPortal();
+      return '<option value="' + esc(portal.businessId) + '" selected>' + esc(portal.businessName || "This business") + "</option>";
+    }
     var opts = includeAll ? '<option value="all"' + (selected === "all" ? " selected" : "") + ">All businesses</option>" : "";
     ordered(allBusinesses()).forEach(function (b) {
       opts += '<option value="' + esc(b.id) + '"' + (b.id === selected ? " selected" : "") + ">" + esc(b.name) + (b.pilot ? " · Pilot" : "") + "</option>";
@@ -4343,8 +4406,8 @@
       '<button class="btn btn-sm" type="button" data-action="appt-prev" aria-label="Previous">Back</button>' +
       '<button class="btn btn-sm" type="button" data-action="appt-today">Today</button>' +
       '<button class="btn btn-sm" type="button" data-action="appt-next" aria-label="Next">Next</button></div>' +
-      '<div class="right"><label class="field" style="margin:0;min-width:200px"><span class="help">Business</span>' +
-      '<select class="ctrl" data-action="appt-business" aria-label="Business">' + businessOptions(q.business, true) + "</select></label>" +
+      '<div class="right">' + (onCustomerHost() ? "" : '<label class="field" style="margin:0;min-width:200px"><span class="help">Business</span>' +
+      '<select class="ctrl" data-action="appt-business" aria-label="Business">' + businessOptions(q.business, true) + "</select></label>") +
       '<button class="btn btn-sm" type="button" data-action="appt-cancelled">' + (q.hideCancelled ? "Show cancelled" : "Hide cancelled") + "</button></div></div>" +
       body + legal();
   }
@@ -4760,6 +4823,10 @@
     var page = document.body.dataset.page || "login";
     if (page === "login") {
       renderLogin();
+      return;
+    }
+    if (onCustomerHost() && (page === "clients" || page === "add")) {
+      location.replace("client.html?id=" + encodeURIComponent(customerPortal().businessId));
       return;
     }
     if (!session()) {

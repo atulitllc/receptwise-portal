@@ -533,6 +533,8 @@ a.tab:hover { background: white; text-decoration: none; }
 .client-head { padding: 16px; display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
 .client-ident { display: flex; gap: 12px; align-items: flex-start; }
 .client-ident .avatar { width: 44px; height: 44px; border-radius: 12px; font-size: 16px; }
+.subdomain-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.subdomain-row input { width: 12rem; }
 .pills { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 
 .checklist { display: flex; flex-direction: column; }
