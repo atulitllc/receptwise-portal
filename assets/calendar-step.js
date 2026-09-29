@@ -80,7 +80,7 @@
           "In Cal.com, create an event type for bookings (for example, 20-minute demo).",
           "In Cal.com, open Settings > Developer > API keys and create an API key.",
           "Paste the API key here. On the live control panel it is stored encrypted and is not shown again.",
-          "Enter the event type slug or ID. Event types are not loaded from Cal.com yet."
+          "On the Bookings tab, Show event types loads them from Cal.com so you can pick one, for example 20 min demo."
         ],
         keyField: true,
         eventTypeField: true,

@@ -15,7 +15,7 @@ process.env.VAPI_CALENDAR_TOOL_IDS = 'tool-check,tool-book';
 
 const vapi = require('../src/integrations/vapi');
 const twilio = require('../src/integrations/twilio');
-const { extractBookings, classifyCall, bookingFromStructured } = require('../src/calls');
+const { extractBookings, classifyCall, bookingFromStructured, zonedInstant } = require('../src/calls');
 const { slugify } = require('../src/businesses');
 const settings = require('../src/settings');
 const { presentNumbers } = require('../src/phoneView');
@@ -156,13 +156,127 @@ test('toE164', () => {
   assert.equal(vapi.toE164('12'), '');
 });
 
+test('own calendar tools replace the shared tool ids', () => {
+  const biz = {
+    id: 9, slug: 'harbor', name: 'Harbor Cafe', timezone: 'America/Los_Angeles',
+    profile: { capabilities: { book: true, transfer: false } }
+  };
+  const shared = vapi.assistantPayload(biz, { ownCalendar: true });
+  assert.deepEqual(shared.model.toolIds, ['tool-check', 'tool-book']);
+  assert.match(shared.model.messages[0].content, /results come back in UTC/);
+  const own = vapi.assistantPayload(biz, {
+    ownCalendar: true,
+    toolsUrl: 'https://panel.example.test/webhooks/vapi/tools'
+  });
+  assert.deepEqual(own.model.toolIds, []);
+  const names = own.model.tools.map((tool) => tool.function && tool.function.name).filter(Boolean);
+  assert.deepEqual(names, ['check_availability', 'book_appointment']);
+  assert.equal(own.model.tools[0].server.url, 'https://panel.example.test/webhooks/vapi/tools');
+  const prompt = own.model.messages[0].content;
+  assert.match(prompt, /check_availability and then book_appointment/);
+  assert.match(prompt, /startLocal, endLocal, startLabel, and endLabel/);
+  assert.match(prompt, /Harbor Cafe appointment – \{service\} – \{caller name\} – \{phone\}/);
+  assert.equal(prompt.includes('results come back in UTC'), false);
+  assert.equal(prompt.includes('the booking tool'), false);
+  const calcom = vapi.assistantPayload(biz, {
+    ownCalendar: true,
+    calendarProvider: 'calcom',
+    toolsUrl: 'https://panel.example.test/webhooks/vapi/tools'
+  });
+  const calPrompt = calcom.model.messages[0].content;
+  assert.match(calPrompt, /chosen Cal.com event type/);
+  assert.match(calPrompt, /stores the business name and phone in the booking notes/);
+  assert.match(calPrompt, /Speak the confirmed local time from the tool result/);
+  assert.equal(calPrompt.includes('Harbor Cafe appointment'), false);
+});
+
+test('calendar times, titles, and the Google consent URL', () => {
+  const { parseWhen, localStamp, overlaps, eventTitle } = require('../src/calendarTime');
+  const google = require('../src/integrations/googleCalendar');
+  const { missingConfig, redirectUri } = require('../src/businessCalendar');
+  const zoned = parseWhen('2026-10-06T10:00:00', 'America/New_York');
+  const absolute = parseWhen('2026-10-06T10:00:00-04:00', 'America/Los_Angeles');
+  assert.equal(zoned.toISOString(), '2026-10-06T14:00:00.000Z');
+  assert.equal(absolute.toISOString(), '2026-10-06T14:00:00.000Z');
+  const stamp = localStamp(absolute, 'America/New_York');
+  assert.equal(stamp.iso, '2026-10-06T10:00:00-04:00');
+  assert.match(stamp.label, /10:00/);
+  const start = parseWhen('2026-10-06T10:00:00-04:00', 'America/New_York');
+  const end = parseWhen('2026-10-06T10:30:00-04:00', 'America/New_York');
+  assert.equal(overlaps(start, end, parseWhen('2026-10-06T14:15:00Z', 'UTC'), parseWhen('2026-10-06T15:00:00Z', 'UTC')), true);
+  assert.equal(overlaps(start, end, end, parseWhen('2026-10-06T11:00:00-04:00', 'America/New_York')), false);
+  assert.equal(eventTitle('Harbor Cafe', 'Brunch', 'Ada Lovelace', '7815550100'),
+    'Harbor Cafe appointment – Brunch – Ada Lovelace – 7815550100');
+  const url = new URL(google.authUrl({
+    clientId: 'client',
+    redirectUri: 'https://panel.example.test/oauth/google/callback',
+    state: 'abc'
+  }));
+  assert.equal(url.searchParams.get('access_type'), 'offline');
+  assert.equal(url.searchParams.get('prompt'), 'consent');
+  assert.match(url.searchParams.get('scope'), /https:\/\/www\.googleapis\.com\/auth\/calendar\.events/);
+  assert.match(url.searchParams.get('scope'), /calendar\.readonly/);
+  assert.ok(missingConfig().includes('GOOGLE_OAUTH_CLIENT_ID'));
+  assert.equal(redirectUri(), '');
+});
+
 test('bookings are extracted from calendar tool calls only', () => {
   const b = extractBookings([
     { role: 'tool_calls', toolCalls: [{ function: { name: 'checkAvailability', arguments: '{}' } }] },
+    { role: 'tool_calls', toolCalls: [{ type: 'google.calendar.availability.check', function: { name: 'check_availability', arguments: '{}' } }] },
     { role: 'tool_calls', toolCalls: [{ function: { name: 'scheduleAppointment', arguments: '{"startDateTime":"2026-10-06T10:00:00-04:00","summary":"Intro demo"}' } }] }
   ]);
   assert.equal(b.length, 1);
   assert.equal(b[0].service, 'Intro demo');
+  assert.equal(b[0].startsAt, '2026-10-06T14:00:00.000Z');
+  assert.equal(b[0].customer, '');
+});
+
+test('book_demo summary yields start, customer, phone, and business', () => {
+  const bookings = extractBookings([
+    {
+      role: 'tool_calls',
+      toolCalls: [{
+        type: 'function',
+        function: {
+          name: 'book_demo',
+          arguments: JSON.stringify({
+            summary: 'Receptwise demo – Northline Clinic – Riley Cho – +1 617-555-0142',
+            startDateTime: '2026-10-06T15:00:00',
+            endDateTime: '2026-10-06T15:30:00',
+            timeZone: 'America/New_York',
+            attendees: ['riley@example.test']
+          })
+        }
+      }]
+    }
+  ]);
+  assert.equal(bookings.length, 1);
+  assert.equal(bookings[0].customer, 'Riley Cho');
+  assert.equal(bookings[0].phone, '+1 617-555-0142');
+  assert.equal(bookings[0].service, 'Northline Clinic');
+  assert.equal(bookings[0].email, 'riley@example.test');
+  assert.equal(bookings[0].startsAt, '2026-10-06T19:00:00.000Z');
+  assert.equal(bookings[0].endsAt, '2026-10-06T19:30:00.000Z');
+  assert.equal(bookings[0].timeZone, 'America/New_York');
+  const hyphen = extractBookings([{
+    toolCalls: [{
+      function: {
+        name: 'google.calendar.event.create',
+        arguments: {
+          summary: 'Receptwise demo - Harbor Cafe - Sam Ortiz - (617) 555-0199',
+          startDateTime: '2026-01-15T15:00:00',
+          timeZone: 'America/New_York',
+          attendees: [{ email: 'sam@example.test', displayName: 'Ignored Because Summary Has A Name' }]
+        }
+      }
+    }]
+  }]);
+  assert.equal(hyphen[0].customer, 'Sam Ortiz');
+  assert.equal(hyphen[0].phone, '(617) 555-0199');
+  assert.equal(hyphen[0].service, 'Harbor Cafe');
+  assert.equal(hyphen[0].startsAt, '2026-01-15T20:00:00.000Z');
+  assert.equal(zonedInstant('2026-10-06T10:00:00-04:00', 'America/Los_Angeles'), '2026-10-06T14:00:00.000Z');
 });
 
 test('slugify', () => {
@@ -280,7 +394,7 @@ test('feature status registry is the single badge source', () => {
     test_call: 'real',
     bookings: 'real',
     number_search: 'real',
-    calendar_connection: 'in_progress',
+    calendar_connection: 'real',
     social: 'mockup',
     reviews: 'mockup',
     website_generator: 'in_progress',
@@ -298,6 +412,153 @@ test('feature status registry is the single badge source', () => {
     assert.ok(allowed.has(registry[key].status), key);
     assert.equal(typeof registry[key].note, 'string', key);
   });
+});
+
+test('support access hides caller and booking details unless the grant matches', () => {
+  const privacy = require('../src/privacy');
+  const grants = new Set([7]);
+  const admin = { id: 1, role: 'admin', businessId: null };
+  const team = { id: 2, role: 'team', businessId: null };
+  const owner = { id: 3, role: 'owner', businessId: 4 };
+  const staff = { id: 5, role: 'staff', businessId: 4 };
+  assert.equal(privacy.allows(admin, 7, grants), true);
+  assert.equal(privacy.allows(admin, 4, grants), false);
+  assert.equal(privacy.allows(team, 4, grants), false);
+  assert.equal(privacy.allows(owner, 4, grants), true);
+  assert.equal(privacy.allows(owner, 7, grants), false);
+  assert.equal(privacy.allows(staff, 4, new Set()), true);
+  assert.equal(privacy.allows(staff, 9, grants), false);
+  assert.equal(privacy.hiddenLabel('Cancelled'), 'Cancelled – details hidden');
+  assert.equal(privacy.hiddenLabel('Completed'), 'Completed – details hidden');
+  assert.equal(privacy.hiddenLabel('Confirmed'), 'Booked – details hidden');
+  const appt = privacy.redactAppointment({
+    id: 3, businessId: 'harbor', businessName: 'Harbor', timezone: 'America/New_York',
+    startsAt: '2026-10-07T19:00:00.000Z', endsAt: null, customer: 'Riley Cho', phone: '(617) 555-0142',
+    email: 'riley@example.test', service: 'Visit', source: 'Phone', status: 'Confirmed',
+    callId: 'call-1', callHref: 'dashboard.html?call=call-1'
+  });
+  assert.equal(appt.customer, 'Booked – details hidden');
+  assert.equal(appt.phone, '');
+  assert.equal(appt.email, '');
+  assert.equal(appt.service, '');
+  assert.equal(appt.callId, null);
+  assert.equal(appt.callHref, null);
+  assert.equal(appt.startsAt, '2026-10-07T19:00:00.000Z');
+  assert.equal(appt.redacted, true);
+  assert.equal(privacy.redactActivity({ kind: 'call', text: 'Booked · Riley Cho' }).text, 'Call · details hidden');
+  assert.equal(privacy.redactActivity({ kind: 'booking', text: 'Booked Riley Cho' }).text, 'Booked – details hidden');
+  assert.equal(privacy.redactActivity({ kind: 'trello.card_created', text: 'Created a Trello card for a booking (Sam Ortiz).' }).text, 'Updated a card · details hidden');
+  assert.equal(privacy.redactActivity({ kind: 'settings.update', text: 'Saved receptionist settings.' }).text, 'Saved receptionist settings.');
+  const past = privacy.presentGrant({ enabled: true, expires_at: new Date(Date.now() - 1000).toISOString() });
+  assert.equal(past.active, false);
+  const live = privacy.presentGrant({ enabled: true, expires_at: new Date(Date.now() + 3600000).toISOString() });
+  assert.equal(live.active, true);
+});
+
+const forwarding = require('../../assets/forwarding');
+const { assertScope } = require('../src/phoneForwarding');
+
+test('ring count becomes seconds and carrier steps stay within published instructions', () => {
+  assert.equal(forwarding.ringsToSeconds(1), 5);
+  assert.equal(forwarding.ringsToSeconds(6), 30);
+  assert.throws(() => forwarding.ringsToSeconds(0), /1 to 6/);
+  assert.throws(() => forwarding.ringsToSeconds(7), /1 to 6/);
+
+  const verizon = forwarding.instructionsText({ carrier: 'verizon', rings: 4, forwardTo: '+15035550194' });
+  assert.match(verizon, /\*715035550194/);
+  assert.match(verizon, /\*73/);
+  assert.match(verizon, /\*925035550194#/);
+  assert.match(verizon, /Check with your carrier/);
+  assert.match(verizon, /do not include a code for 4 rings/);
+
+  const tmobile = forwarding.instructionsText({ carrier: 'tmobile', rings: 2, forwardTo: '(312) 555-0114' });
+  assert.match(tmobile, /\*\*61\*13125550114#/);
+  assert.match(tmobile, /##61#/);
+  assert.match(tmobile, /18056377243/);
+  assert.match(tmobile, /\*\*61\*13125550114\*\*10#/);
+  assert.match(tmobile, /Check with your carrier/);
+
+  const att = forwarding.instructions({ carrier: 'att', rings: 4, forwardTo: '+16175550160' });
+  const attText = forwarding.instructionsText({ carrier: 'att', rings: 4, forwardTo: '+16175550160' });
+  assert.match(attText, /When unanswered/);
+  assert.match(attText, /800\.288\.2020/);
+  assert.match(attText, /\*47 then 24/);
+  assert.equal(att.steps[0].codes.some((item) => item.value.includes('**61*')), false);
+
+  ['comcast', 'spectrum', 'ringcentral'].forEach((carrier) => {
+    const help = forwarding.instructions({ carrier, rings: 3, forwardTo: '+15035550194' });
+    assert.equal(help.steps.every((item) => item.codes.length === 0), true);
+    assert.match(forwarding.instructionsText({ carrier, rings: 3, forwardTo: '+15035550194' }), /Check with your carrier/);
+  });
+
+  const other = forwarding.instructionsText({ carrier: 'other', rings: 4, forwardTo: '+15035550194' });
+  assert.match(other, /\*\*61\*5035550194\*\*20#/);
+  assert.match(other, /not verified for your carrier/);
+});
+
+test('ported inbound TwiML rings first, then stubs the receptionist handoff', () => {
+  const open = forwarding.inboundTwiml({
+    mode: 'ported',
+    rings: 3,
+    aiEnabled: true,
+    afterHours: 'ai_immediate',
+    hours: {},
+    ringFirst: [{ e164: '+16175550111' }, { number: '(617) 555-0122' }]
+  }, {
+    now: new Date('2026-09-29T15:00:00Z'),
+    timeZone: 'America/New_York',
+    actionUrl: 'https://panel.example.test/webhooks/twilio/voice?step=dial'
+  });
+  assert.equal(open.dialed, true);
+  assert.match(open.twiml, /<Dial timeout="15" action="https:\/\/panel\.example\.test\/webhooks\/twilio\/voice\?step=dial"/);
+  assert.match(open.twiml, /\+16175550111/);
+  assert.match(open.twiml, /\+16175550122/);
+
+  const closedHours = { mon: { closed: true }, tue: { closed: true }, wed: { closed: true }, thu: { closed: true }, fri: { closed: true }, sat: { closed: true }, sun: { closed: true } };
+  const after = forwarding.inboundTwiml({
+    mode: 'ported', rings: 4, aiEnabled: true, afterHours: 'ai_immediate', hours: closedHours, ringFirst: [{ e164: '+16175550111' }]
+  }, { now: new Date('2026-09-29T15:00:00Z'), timeZone: 'America/New_York' });
+  assert.equal(after.reason, 'after_hours');
+  assert.doesNotMatch(after.twiml, /<Dial/);
+  assert.match(after.twiml, /TODO: connect this call/);
+  assert.doesNotMatch(after.twiml, /vapi\.ai/);
+
+  const missed = forwarding.inboundTwiml({
+    mode: 'ported', rings: 4, aiEnabled: true, hours: {}, ringFirst: [{ e164: '+16175550111' }]
+  }, { dialStatus: 'no-answer' });
+  assert.match(missed.twiml, /TODO: connect this call/);
+  assert.doesNotMatch(missed.twiml, /<Dial/);
+
+  const quiet = forwarding.inboundTwiml({
+    mode: 'ported', rings: 4, aiEnabled: false, hours: {}, ringFirst: [{ e164: '+16175550111' }]
+  }, { dialStatus: 'no-answer' });
+  assert.match(quiet.twiml, /No one is available/);
+  assert.doesNotMatch(quiet.twiml, /TODO/);
+
+  const answered = forwarding.inboundTwiml({ mode: 'ported', rings: 4, aiEnabled: true, ringFirst: [] }, { dialStatus: 'completed' });
+  assert.match(answered.twiml, /<Hangup\/>/);
+  assert.doesNotMatch(answered.twiml, /<Say>/);
+});
+
+test('Twilio webhook signatures use the published HMAC example', () => {
+  const params = {
+    CallSid: 'CA1234567890ABCDE',
+    Caller: '+14158675309',
+    Digits: '1234',
+    From: '+14158675309',
+    To: '+18005551212'
+  };
+  assert.equal(
+    forwarding.twilioSignature('https://mycompany.com/myapp.php?foo=1&bar=2', params, '12345'),
+    'RSOYDt4T1cUTdK1PDd93/VVr8B8='
+  );
+});
+
+test('a business scope only allows that business', () => {
+  assert.doesNotThrow(() => assertScope(null, { id: 4 }));
+  assert.doesNotThrow(() => assertScope({}, { id: 4 }));
+  assert.doesNotThrow(() => assertScope({ businessId: '4' }, { id: 4 }));
+  assert.throws(() => assertScope({ businessId: 2 }, { id: 4 }), /Business not found/);
 });
 
 test('meta dialog URL uses the business login config when set', () => {

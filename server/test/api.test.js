@@ -14,6 +14,9 @@ process.env.TWILIO_ACCOUNT_SID = 'AC11111111111111111111111111111111';
 process.env.TWILIO_AUTH_TOKEN = 'test-twilio-token';
 process.env.TOKEN_ENCRYPTION_KEY = 'test-token-key';
 process.env.APP_BASE_URL = 'https://panel.example.test';
+process.env.GOOGLE_OAUTH_CLIENT_ID = 'google-client-id';
+process.env.GOOGLE_OAUTH_CLIENT_SECRET = 'google-client-secret';
+process.env.CALCOM_WEBHOOK_SECRET = 'test-calcom-webhook';
 process.env.NODE_ENV = 'test';
 process.env.SMS_ENABLED = 'false';
 process.env.VAPI_ASSISTANT_ID = 'c3c8899c-e42d-494b-bf47-3af37f942341';
@@ -31,6 +34,10 @@ const PHONE_ID = process.env.VAPI_PHONE_NUMBER_ID;
 const httpCalls = [];
 const trelloCards = {};
 let trelloSeq = 0;
+let googleBusy = [];
+let googleEventPosts = 0;
+let calcomSlotTaken = false;
+let calcomBookingPosts = 0;
 
 function jsonRes(status, body) {
   return {
@@ -120,7 +127,40 @@ global.fetch = async (url, opts = {}) => {
   }
   if (target.includes('/call')) return jsonRes(200, []);
   if (target.includes('api.twilio.com')) {
+    if (target.includes('/Calls.json') && method === 'POST') return jsonRes(201, { sid: 'CA_TEST_FORWARD', status: 'queued' });
     return jsonRes(200, { incoming_phone_numbers: [{ sid: 'PN123', phone_number: '+17817057179', status: 'in-use' }] });
+  }
+  if (target.includes('oauth2.googleapis.com/token')) {
+    const form = new URLSearchParams(opts.body);
+    if (form.get('grant_type') === 'refresh_token') {
+      return jsonRes(200, { access_token: 'ya29.test', expires_in: 3600, token_type: 'Bearer' });
+    }
+    return jsonRes(200, {
+      access_token: 'ya29.test',
+      refresh_token: 'refresh-test',
+      expires_in: 3600,
+      token_type: 'Bearer'
+    });
+  }
+  if (target.includes('/calendar/v3/users/me/calendarList')) {
+    return jsonRes(200, {
+      items: [
+        { id: 'owner@example.test', summary: 'owner@example.test', primary: true, accessRole: 'owner' },
+        { id: 'team-cal', summary: 'Team calendar', accessRole: 'writer' }
+      ]
+    });
+  }
+  if (path.endsWith('/freeBusy') && method === 'POST') {
+    const body = JSON.parse(opts.body);
+    const id = body.items && body.items[0] && body.items[0].id;
+    const calendars = {};
+    calendars[id || 'team-cal'] = { busy: googleBusy.slice() };
+    return jsonRes(200, { calendars });
+  }
+  if (method === 'POST' && /\/calendars\/[^/]+\/events$/.test(path)) {
+    googleEventPosts += 1;
+    const body = JSON.parse(opts.body);
+    return jsonRes(200, { id: 'evt-' + googleEventPosts, summary: body.summary, attendees: body.attendees });
   }
   if (target.includes('api.trello.com')) {
     const u = new URL(target);
@@ -151,6 +191,32 @@ global.fetch = async (url, opts = {}) => {
       return jsonRes(200, { id: cardPath[1], name: card.name, desc: card.desc });
     }
     return jsonRes(404, { message: 'trello ' + method + ' ' + u.pathname });
+  }
+  if (target.includes('api.cal.com')) {
+    if (path === '/v2/event-types' && method === 'GET') {
+      return jsonRes(200, {
+        status: 'success',
+        data: [{ id: 12345, title: '20 min demo', slug: '20-min-demo', lengthInMinutes: 20 }]
+      });
+    }
+    if (path === '/v2/slots' && method === 'GET') {
+      return jsonRes(200, {
+        status: 'success',
+        data: {
+          '2026-10-06': [{ start: '2026-10-06T10:00:00-04:00', end: '2026-10-06T10:20:00-04:00' }]
+        }
+      });
+    }
+    if (path === '/v2/bookings' && method === 'POST') {
+      calcomBookingPosts += 1;
+      if (calcomSlotTaken) return jsonRes(409, { message: 'User already has booking at this time' });
+      const body = JSON.parse(opts.body);
+      return jsonRes(201, {
+        status: 'success',
+        data: { uid: 'bk-uid-1', start: body.start, end: '2026-10-06T14:20:00.000Z' }
+      });
+    }
+    return jsonRes(404, { message: 'cal.com ' + method + ' ' + path });
   }
   return jsonRes(404, { message: 'not mocked' });
 };
@@ -195,6 +261,32 @@ function request(method, path, { body, cookie: jar, headers } = {}) {
   });
 }
 
+function requestRaw(method, path, { body, cookie: jar, headers } = {}) {
+  const payload = body == null ? null : String(body);
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port,
+      path,
+      method,
+      headers: Object.assign({
+        ...(jar ? { Cookie: jar } : {}),
+        ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {})
+      }, headers || {})
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        resolve({ status: res.statusCode, text, headers: res.headers });
+      });
+    });
+    req.on('error', reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
 function cookieFrom(setCookie) {
   const raw = (setCookie || []).join(';');
   const match = raw.match(/rw_sid=([^;]+)/);
@@ -205,6 +297,7 @@ describe('control panel API', () => {
   before(async () => {
     await db.migrate();
     await db.query(`TRUNCATE TABLE
+      support_access, port_requests, ring_first_numbers, phone_forwarding,
       trello_cards, assistant_backups, oauth_states, bookings, calls, integrations, audit_log,
       phone_numbers, assistants, business_setup, businesses, sessions, users
       RESTART IDENTITY CASCADE`);
@@ -234,7 +327,7 @@ describe('control panel API', () => {
     assert.equal(res.json.phone_number.status, 'real');
     assert.equal(res.json.number_search.status, 'real');
     assert.equal(res.json.voice_dropdown.status, 'real');
-    assert.equal(res.json.calendar_connection.status, 'in_progress');
+    assert.equal(res.json.calendar_connection.status, 'real');
     assert.equal(res.json.receptionist.status, 'real');
     assert.equal(res.json.website_generator.status, 'in_progress');
     assert.equal(res.json.cloudflare_pages.status, 'in_progress');
@@ -412,15 +505,18 @@ describe('control panel API', () => {
     assert.equal(res.json.avgDurationSec.today, 95);
     const booked = res.json.recentCalls.find((c) => c.id === 'call-test-booked');
     assert.ok(booked);
-    assert.equal(booked.callerName, 'Sam Ortiz');
+    assert.equal(booked.callerName, '');
+    assert.equal(booked.from, '');
     assert.equal(booked.outcome, 'Booked');
-    assert.equal(booked.summary, 'Sam Ortiz booked a demo for Harbor Cafe.');
-    assert.equal(booked.recordingUrl, 'https://cdn.example.test/rec.wav');
+    assert.equal(booked.summary, '');
+    assert.equal(booked.recordingUrl, '');
+    assert.equal(booked.redacted, true);
     assert.equal(booked.bookingConfirmed, true);
     const missed = res.json.recentCalls.find((c) => c.id === 'call-test-missed');
     assert.equal(missed.outcome, 'Missed');
-    assert.ok(res.json.activity.some((item) => /Sam Ortiz/.test(item.text)));
-    assert.ok(res.json.activity.some((item) => item.kind === 'booking'));
+    assert.equal(JSON.stringify(res.json.activity).includes('Sam Ortiz'), false);
+    assert.ok(res.json.activity.some((item) => item.kind === 'booking' && item.text === 'Booked – details hidden'));
+    assert.ok(res.json.activity.some((item) => item.kind === 'call' && item.text === 'Call · details hidden'));
   });
 
   it('records a social handle without pretending it is connected', async () => {
@@ -589,8 +685,9 @@ describe('control panel API', () => {
     assert.match(updated.desc, /Sam Ortiz moved the Harbor Cafe demo\./);
     assert.match(updated.desc, /Oct/);
     const metrics = await request('GET', '/api/metrics?business=receptwise', { cookie });
-    assert.ok(metrics.json.activity.some((item) => item.text === 'Created a Trello card for a booking (Sam Ortiz).'));
-    assert.ok(metrics.json.activity.some((item) => item.text === 'Updated the Trello card for a booking (Sam Ortiz).'));
+    assert.equal(JSON.stringify(metrics.json.activity).includes('Sam Ortiz'), false);
+    assert.ok(metrics.json.activity.some((item) => item.kind === 'trello.card_created' && item.text === 'Updated a card · details hidden'));
+    assert.ok(metrics.json.activity.some((item) => item.kind === 'trello.card_updated' && item.text === 'Updated a card · details hidden'));
     const cards = await db.query("SELECT count(*)::int AS n FROM trello_cards WHERE event_kind = 'booking'");
     assert.equal(cards.rows[0].n, 1);
   });
@@ -731,9 +828,14 @@ describe('control panel API', () => {
     assert.ok(client);
     assert.equal(client.name, 'ReceptWise');
     assert.ok(json.json.settings.find((item) => item.slug === 'receptwise'));
-    assert.ok(json.json.calls.find((item) => item.caller_name === 'Sam Ortiz' && item.outcome === 'Booked'));
+    const bookedCall = json.json.calls.find((item) => item.outcome === 'Booked' && item.vapi_call_id === 'call-test-booked');
+    assert.ok(bookedCall);
+    assert.equal(bookedCall.caller_name, null);
+    assert.equal(bookedCall.summary, null);
+    assert.equal(bookedCall.recording_url, null);
     assert.ok(json.json.activity.length > 0);
     const packed = JSON.stringify(json.json);
+    assert.equal(packed.includes('Sam Ortiz'), false);
     assert.equal(packed.includes('password_hash'), false);
     assert.equal(packed.includes('token_enc'), false);
     assert.equal(packed.includes('test-vapi-key'), false);
@@ -744,7 +846,7 @@ describe('control panel API', () => {
     assert.match(sql.headers['content-disposition'], /receptwise-export-.*\.sql/);
     assert.match(sql.text, /INSERT INTO businesses/);
     assert.match(sql.text, /INSERT INTO calls/);
-    assert.match(sql.text, /Sam Ortiz/);
+    assert.equal(sql.text.includes('Sam Ortiz'), false);
     assert.equal(sql.text.includes('password_hash'), false);
     assert.equal(sql.text.includes('token_enc'), false);
   });
@@ -1139,6 +1241,12 @@ describe('control panel API', () => {
     assert.equal(renamed.status, 200, renamed.text);
     assert.equal(renamed.json.calendar.calcomEventTypeId, 'intro-call');
     assert.equal(renamed.json.calcomKeySaved, true);
+    const kept = await request('PUT', '/api/businesses/' + slug + '/calendar', {
+      cookie,
+      body: { provider: 'calcom' }
+    });
+    assert.equal(kept.status, 200, kept.text);
+    assert.equal(kept.json.calendar.calcomEventTypeId, 'intro-call');
     const still = await db.query(
       `SELECT i.token_enc FROM integrations i JOIN businesses b ON b.id = i.business_id
        WHERE b.slug = $1 AND i.provider = 'calcom'`,
@@ -1213,5 +1321,970 @@ describe('control panel API', () => {
     await db.query(sql);
     const twice = await db.query(`SELECT profile->>'voice' AS voice FROM businesses WHERE slug = $1`, [created.json.business.id]);
     assert.equal(twice.rows[0].voice, 'nora');
+  });
+
+  it('lists, filters, and edits appointments without leaving the portal', async () => {
+    const anon = await request('GET', '/api/appointments');
+    assert.equal(anon.status, 401);
+
+    const missing = await request('GET', '/api/appointments?business=no-such-business', { cookie });
+    assert.equal(missing.status, 404);
+
+    const demoCall = await request('POST', '/webhooks/vapi', {
+      headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+      body: {
+        message: {
+          type: 'end-of-call-report',
+          endedReason: 'customer-ended-call',
+          durationSeconds: 80,
+          startedAt: new Date().toISOString(),
+          endedAt: new Date().toISOString(),
+          call: {
+            id: 'call-test-book-demo',
+            assistantId: ASSISTANT,
+            phoneNumberId: PHONE_ID,
+            type: 'inboundPhoneCall',
+            status: 'ended',
+            customer: { number: '+16175550142' }
+          },
+          artifact: {
+            transcript: 'Booked a demo.',
+            messages: [{
+              role: 'tool_calls',
+              toolCalls: [{
+                type: 'function',
+                function: {
+                  name: 'book_demo',
+                  arguments: JSON.stringify({
+                    summary: 'Receptwise demo – Northline Clinic – Riley Cho – +16175550142',
+                    startDateTime: '2026-10-07T15:00:00',
+                    endDateTime: '2026-10-07T15:30:00',
+                    timeZone: 'America/New_York',
+                    attendees: ['riley@example.test']
+                  })
+                }
+              }]
+            }]
+          },
+          analysis: { summary: 'Riley Cho booked a demo.', structuredData: { name: 'Riley Cho', booking_confirmed: true } }
+        }
+      }
+    });
+    assert.equal(demoCall.status, 200, demoCall.text);
+
+    const hidden = await request('GET', '/api/appointments?business=receptwise&from=2026-10-01T00:00:00.000Z&to=2026-11-01T00:00:00.000Z', { cookie });
+    assert.equal(hidden.status, 200, hidden.text);
+    const veiled = hidden.json.appointments.find((item) => item.startsAt === '2026-10-07T19:00:00.000Z');
+    assert.ok(veiled);
+    assert.equal(veiled.customer, 'Booked – details hidden');
+    assert.equal(veiled.phone, '');
+    assert.equal(veiled.email, '');
+    assert.equal(veiled.callId, null);
+    assert.equal(JSON.stringify(hidden.json).includes('Riley'), false);
+    const deniedWrite = await request('POST', '/api/appointments', {
+      cookie,
+      body: {
+        businessId: 'receptwise',
+        customer: 'Should Fail',
+        startsAt: '2026-10-09T11:00:00',
+        timeZone: 'America/New_York'
+      }
+    });
+    assert.equal(deniedWrite.status, 403);
+
+    await db.query(
+      `INSERT INTO support_access (business_id, enabled, expires_at, granted_by)
+       SELECT id, true, now() + interval '72 hours', (SELECT id FROM users WHERE email = 'admin@receptwise.example')
+       FROM businesses WHERE slug = 'receptwise'
+       ON CONFLICT (business_id) DO UPDATE SET enabled = true, expires_at = now() + interval '72 hours'`
+    );
+
+    const listed = await request('GET', '/api/appointments?business=receptwise&from=2026-10-01T00:00:00.000Z&to=2026-11-01T00:00:00.000Z', { cookie });
+    assert.equal(listed.status, 200, listed.text);
+    assert.equal(listed.json.businessId, 'receptwise');
+    const riley = listed.json.appointments.find((item) => item.customer === 'Riley Cho');
+    assert.ok(riley);
+    assert.equal(riley.service, 'Northline Clinic');
+    assert.equal(riley.phone, '(617) 555-0142');
+    assert.equal(riley.startsAt, '2026-10-07T19:00:00.000Z');
+    assert.equal(riley.endsAt, '2026-10-07T19:30:00.000Z');
+    assert.equal(riley.status, 'Confirmed');
+    assert.equal(riley.source, 'Phone');
+    assert.equal(riley.callId, 'call-test-book-demo');
+    assert.equal(riley.callHref, 'dashboard.html?call=call-test-book-demo');
+    const sam = listed.json.appointments.find((item) => item.customer === 'Sam Ortiz');
+    assert.ok(sam);
+    assert.equal(sam.phone, '(617) 555-0199');
+
+    const other = await request('POST', '/api/businesses', {
+      cookie,
+      body: { name: 'Northline Family Clinic', timezone: 'Eastern Time', category: 'Clinic' }
+    });
+    assert.equal(other.status, 201, other.text);
+    const scoped = await request('GET', '/api/appointments?business=' + other.json.business.id, { cookie });
+    assert.equal(scoped.status, 200, scoped.text);
+    assert.equal(scoped.json.appointments.length, 0);
+
+    const created = await request('POST', '/api/appointments', {
+      cookie,
+      body: {
+        businessId: 'receptwise',
+        customer: 'Ada Lovelace',
+        phone: '7815550100',
+        service: 'Intro demo',
+        startsAt: '2026-10-09T11:00:00',
+        endsAt: '2026-10-09T11:20:00',
+        timeZone: 'America/New_York'
+      }
+    });
+    assert.equal(created.status, 201, created.text);
+    assert.equal(created.json.appointment.customer, 'Ada Lovelace');
+    assert.equal(created.json.appointment.phone, '(781) 555-0100');
+    assert.equal(created.json.appointment.source, 'Portal');
+    assert.equal(created.json.appointment.startsAt, '2026-10-09T15:00:00.000Z');
+    assert.equal(created.json.appointment.callHref, null);
+
+    const renamed = await request('PATCH', '/api/appointments/' + created.json.appointment.id, {
+      cookie,
+      body: { customer: 'Ada King', status: 'Cancelled' }
+    });
+    assert.equal(renamed.status, 200, renamed.text);
+    assert.equal(renamed.json.appointment.customer, 'Ada King');
+    assert.equal(renamed.json.appointment.status, 'Cancelled');
+    assert.equal(renamed.json.appointment.service, 'Intro demo');
+
+    const again = await request('POST', '/webhooks/vapi', {
+      headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+      body: {
+        message: {
+          type: 'end-of-call-report',
+          endedReason: 'customer-ended-call',
+          call: {
+            id: 'call-test-book-demo',
+            assistantId: ASSISTANT,
+            type: 'inboundPhoneCall',
+            status: 'ended',
+            customer: { number: '+16175550142' }
+          },
+          artifact: {
+            messages: [{
+              role: 'tool_calls',
+              toolCalls: [{
+                function: {
+                  name: 'book_demo',
+                  arguments: JSON.stringify({
+                    summary: 'Receptwise demo – Northline Clinic – Riley Cho – +16175550142',
+                    startDateTime: '2026-10-07T16:00:00',
+                    endDateTime: '2026-10-07T16:30:00',
+                    timeZone: 'America/New_York'
+                  })
+                }
+              }]
+            }]
+          }
+        }
+      }
+    });
+    assert.equal(again.status, 200, again.text);
+    const resynced = await request('GET', '/api/appointments?business=receptwise&from=2026-10-07T00:00:00.000Z&to=2026-10-08T00:00:00.000Z', { cookie });
+    const moved = resynced.json.appointments.filter((item) => item.callId === 'call-test-book-demo');
+    assert.equal(moved.length, 1);
+    assert.equal(moved[0].startsAt, '2026-10-07T20:00:00.000Z');
+    const kept = await request('GET', '/api/appointments?business=receptwise&from=2026-10-09T00:00:00.000Z&to=2026-10-10T00:00:00.000Z', { cookie });
+    const ada = kept.json.appointments.find((item) => item.customer === 'Ada King');
+    assert.ok(ada);
+    assert.equal(ada.status, 'Cancelled');
+
+    const bad = await request('POST', '/api/appointments', { cookie, body: { businessId: 'receptwise', service: 'Intro demo' } });
+    assert.equal(bad.status, 400);
+  });
+
+  it('keeps caller details inside one business until its owner allows Receptwise access', async () => {
+    await db.query('DELETE FROM support_access');
+    const adminBiz = await request('GET', '/api/businesses/receptwise', { cookie });
+    assert.equal(adminBiz.status, 200, adminBiz.text);
+    assert.equal(adminBiz.json.business.detailsVisible, false);
+    assert.ok(adminBiz.json.business.calls.length > 0);
+    assert.ok(adminBiz.json.business.calls.every((call) => call.from === 'Details hidden' && call.summary === '' && call.lines.length === 0 && call.recordingUrl === ''));
+    assert.ok(adminBiz.json.business.bookings.every((booking) => booking.phone === '' && booking.email === '' && /details hidden$/.test(booking.customer)));
+    assert.equal(JSON.stringify(adminBiz.json).includes('Sam Ortiz'), false);
+    assert.equal(JSON.stringify(adminBiz.json).includes('Riley'), false);
+    assert.ok(adminBiz.json.business.callsToday >= 0);
+
+    const blocked = await request('POST', '/api/appointments', {
+      cookie,
+      body: { businessId: 'receptwise', customer: 'Hidden', startsAt: '2026-11-02T15:00:00', timeZone: 'America/New_York' }
+    });
+    assert.equal(blocked.status, 403);
+    const blockedPatch = await request('PATCH', '/api/appointments/1', { cookie, body: { status: 'Completed' } });
+    assert.ok(blockedPatch.status === 403 || blockedPatch.status === 404);
+
+    const quiet = await request('GET', '/api/metrics?business=receptwise', { cookie });
+    assert.equal(quiet.status, 200, quiet.text);
+    assert.equal(JSON.stringify(quiet.json.recentCalls).includes('Sam Ortiz'), false);
+    assert.equal(JSON.stringify(quiet.json.activity).includes('Sam Ortiz'), false);
+    assert.ok(quiet.json.calls.today >= 1);
+
+    const recept = await db.query("SELECT id FROM businesses WHERE slug = 'receptwise'");
+    const owner = await auth.createUser({
+      email: 'owner-privacy@receptwise.example',
+      password: 'owner-password-10',
+      name: 'Pilot Owner',
+      role: 'owner',
+      businessId: recept.rows[0].id
+    });
+    assert.ok(owner);
+    const ownerLogin = await request('POST', '/api/auth/login', {
+      body: { email: 'owner-privacy@receptwise.example', password: 'owner-password-10' }
+    });
+    assert.equal(ownerLogin.status, 200, ownerLogin.text);
+    assert.equal(ownerLogin.json.user.role, 'owner');
+    assert.equal(ownerLogin.json.user.businessSlug, 'receptwise');
+    const ownerCookie = cookieFrom(ownerLogin.setCookie);
+
+    const ownList = await request('GET', '/api/businesses', { cookie: ownerCookie });
+    assert.equal(ownList.status, 200, ownList.text);
+    assert.equal(ownList.json.businesses.length, 1);
+    assert.equal(ownList.json.businesses[0].id, 'receptwise');
+    assert.equal(ownList.json.businesses[0].detailsVisible, true);
+    assert.ok(JSON.stringify(ownList.json).includes('Sam Ortiz') || JSON.stringify(ownList.json).includes('Riley Cho'));
+
+    const viewsBeforeOwn = await db.query("SELECT count(*)::int AS n FROM audit_log WHERE action = 'support.view' AND user_id = $1", [owner.id]);
+    const ownAppts = await request('GET', '/api/appointments?business=receptwise', { cookie: ownerCookie });
+    assert.equal(ownAppts.status, 200, ownAppts.text);
+    assert.ok(ownAppts.json.appointments.some((item) => item.customer === 'Riley Cho' || item.customer === 'Sam Ortiz'));
+    const viewsAfterOwn = await db.query("SELECT count(*)::int AS n FROM audit_log WHERE action = 'support.view' AND user_id = $1", [owner.id]);
+    assert.equal(viewsAfterOwn.rows[0].n, viewsBeforeOwn.rows[0].n);
+
+    const foreignBiz = await request('GET', '/api/businesses/northline-family-clinic', { cookie: ownerCookie });
+    assert.equal(foreignBiz.status, 404);
+    const foreignAppts = await request('GET', '/api/appointments?business=northline-family-clinic', { cookie: ownerCookie });
+    assert.equal(foreignAppts.status, 404);
+    const foreignMetrics = await request('GET', '/api/metrics?business=northline-family-clinic', { cookie: ownerCookie });
+    assert.equal(foreignMetrics.status, 404);
+    const noCreate = await request('POST', '/api/businesses', {
+      cookie: ownerCookie,
+      body: { name: 'Should Fail', timezone: 'Eastern Time', category: 'Cafe' }
+    });
+    assert.equal(noCreate.status, 403);
+
+    const adminGrant = await request('PUT', '/api/businesses/receptwise/support-access', {
+      cookie,
+      body: { enabled: true, hours: 72 }
+    });
+    assert.equal(adminGrant.status, 403);
+
+    const north = await db.query("SELECT id, slug FROM businesses WHERE slug = 'northline-family-clinic'");
+    assert.ok(north.rows[0]);
+    const staff = await auth.createUser({
+      email: 'staff-privacy@northline.example',
+      password: 'staff-password-10',
+      name: 'North Staff',
+      role: 'staff',
+      businessId: north.rows[0].id
+    });
+    assert.ok(staff);
+    const staffLogin = await request('POST', '/api/auth/login', {
+      body: { email: 'staff-privacy@northline.example', password: 'staff-password-10' }
+    });
+    const staffCookie = cookieFrom(staffLogin.setCookie);
+    assert.equal(staffLogin.json.user.businessSlug, 'northline-family-clinic');
+    const cross = await request('GET', '/api/businesses/receptwise', { cookie: staffCookie });
+    assert.equal(cross.status, 404);
+    const crossAppts = await request('GET', '/api/appointments?business=receptwise', { cookie: staffCookie });
+    assert.equal(crossAppts.status, 404);
+    const crossCalls = await request('GET', '/api/appointments', { cookie: staffCookie });
+    assert.equal(crossCalls.status, 200, crossCalls.text);
+    assert.equal(crossCalls.json.businessId, 'northline-family-clinic');
+    assert.equal(JSON.stringify(crossCalls.json).includes('Riley'), false);
+    assert.equal(JSON.stringify(crossCalls.json).includes('Sam Ortiz'), false);
+    const staffGrant = await request('PUT', '/api/businesses/' + north.rows[0].slug + '/support-access', {
+      cookie: staffCookie,
+      body: { enabled: true }
+    });
+    assert.equal(staffGrant.status, 403);
+
+    const badHours = await request('PUT', '/api/businesses/receptwise/support-access', {
+      cookie: ownerCookie,
+      body: { enabled: true, hours: 0 }
+    });
+    assert.equal(badHours.status, 400);
+    const granted = await request('PUT', '/api/businesses/receptwise/support-access', {
+      cookie: ownerCookie,
+      body: { enabled: true }
+    });
+    assert.equal(granted.status, 200, granted.text);
+    assert.equal(granted.json.supportAccess.active, true);
+    assert.ok(granted.json.supportAccess.expiresAt);
+    const hours = (new Date(granted.json.supportAccess.expiresAt).getTime() - Date.now()) / 3600000;
+    assert.ok(hours > 71 && hours <= 72);
+
+    const seen = await request('GET', '/api/appointments?business=receptwise&from=2026-10-01T00:00:00.000Z&to=2026-11-01T00:00:00.000Z', { cookie });
+    assert.ok(seen.json.appointments.some((item) => item.customer === 'Riley Cho'));
+    const opened = await request('GET', '/api/businesses/receptwise', { cookie });
+    assert.equal(opened.json.business.detailsVisible, true);
+    assert.ok(opened.json.business.calls.some((call) => /Sam Ortiz/.test(call.from) || /Riley/.test(call.summary) || call.summary));
+    const views = await db.query(
+      "SELECT user_id, detail FROM audit_log WHERE action = 'support.view' AND business_id = $1",
+      [recept.rows[0].id]
+    );
+    assert.ok(views.rows.length > 0);
+    assert.ok(views.rows.every((row) => Number(row.user_id) !== Number(owner.id)));
+    assert.equal(JSON.stringify(views.rows).includes('Riley'), false);
+    assert.equal(JSON.stringify(views.rows).includes('Sam'), false);
+    assert.ok(views.rows.some((row) => row.detail && (row.detail.what === 'appointments' || row.detail.what === 'business')));
+
+    const teamLogin = await request('POST', '/api/auth/login', {
+      body: { email: 'team@receptwise.example', password: 'team-password-10' }
+    });
+    const teamCookie = cookieFrom(teamLogin.setCookie);
+    const teamOpen = await request('GET', '/api/businesses/receptwise', { cookie: teamCookie });
+    assert.equal(teamOpen.json.business.detailsVisible, true);
+    assert.ok(JSON.stringify(teamOpen.json).includes('Sam Ortiz') || JSON.stringify(teamOpen.json).includes('Riley Cho'));
+
+    const off = await request('PUT', '/api/businesses/receptwise/support-access', {
+      cookie: ownerCookie,
+      body: { enabled: false }
+    });
+    assert.equal(off.status, 200, off.text);
+    assert.equal(off.json.supportAccess.active, false);
+    const closed = await request('GET', '/api/businesses/receptwise', { cookie });
+    assert.equal(closed.json.business.detailsVisible, false);
+    assert.equal(JSON.stringify(closed.json).includes('Sam Ortiz'), false);
+
+    await db.query(
+      "UPDATE support_access SET enabled = true, expires_at = now() - interval '1 hour' WHERE business_id = $1",
+      [recept.rows[0].id]
+    );
+    const expired = await request('GET', '/api/metrics?business=receptwise', { cookie });
+    assert.ok(expired.json.recentCalls.length > 0);
+    assert.ok(expired.json.recentCalls.every((call) => call.redacted === true && call.callerName === ''));
+    assert.equal(JSON.stringify(expired.json).includes('Sam Ortiz'), false);
+  });
+
+  it('saves forwarding, records a port request, and places an admin test call', async () => {
+    const forwarding = require('../../assets/forwarding');
+    const saved = await request('PUT', '/api/businesses/receptwise/forwarding', {
+      cookie,
+      body: {
+        mode: 'conditional',
+        carrier: 'verizon',
+        rings: 4,
+        businessNumber: '(617) 555-0142',
+        transferNumber: '(617) 555-0100',
+        status: 'not_set_up',
+        aiEnabled: true,
+        hours: {},
+        ringFirst: []
+      }
+    });
+    assert.equal(saved.status, 200, saved.text);
+    assert.equal(saved.json.forwarding.mode, 'conditional');
+    assert.equal(saved.json.forwarding.carrier, 'verizon');
+    assert.equal(saved.json.forwarding.rings, 4);
+    assert.equal(saved.json.forwarding.ringSeconds, 20);
+    assert.equal(saved.json.forwarding.forwardTo, '(781) 705-7179');
+    assert.equal(saved.json.forwarding.status, 'not_set_up');
+    assert.equal(saved.json.business.forwarding.transferNumber, '(617) 555-0100');
+
+    const beforeCalls = httpCalls.filter((c) => c.url.includes('/Calls.json')).length;
+    const unconfirmed = await request('POST', '/api/businesses/receptwise/forwarding/test', { cookie, body: {} });
+    assert.equal(unconfirmed.status, 400, unconfirmed.text);
+    assert.equal(httpCalls.filter((c) => c.url.includes('/Calls.json')).length, beforeCalls);
+
+    const placed = await request('POST', '/api/businesses/receptwise/forwarding/test', { cookie, body: { confirm: true } });
+    assert.equal(placed.status, 200, placed.text);
+    assert.equal(placed.json.placed, true);
+    assert.equal(placed.json.callSid, 'CA_TEST_FORWARD');
+    assert.equal(placed.json.forwarding.status, 'pending_test');
+    const outbound = httpCalls.filter((c) => c.method === 'POST' && c.url.includes('/Calls.json'));
+    const form = new URLSearchParams(outbound[outbound.length - 1].opts.body);
+    assert.equal(form.get('To'), '+16175550142');
+    assert.equal(form.get('From'), '+17817057179');
+    assert.match(form.get('Twiml'), /ReceptWise forwarding test/);
+
+    const created = await request('POST', '/api/users', {
+      cookie,
+      body: { email: 'desk@receptwise.example', name: 'Desk User', password: 'desk-password-10', role: 'team' }
+    });
+    assert.equal(created.status, 201, created.text);
+    const teamLogin = await request('POST', '/api/auth/login', {
+      body: { email: 'desk@receptwise.example', password: 'desk-password-10' }
+    });
+    const teamCookie = cookieFrom(teamLogin.setCookie);
+    const callsBeforeManual = httpCalls.filter((c) => c.url.includes('/Calls.json')).length;
+    const fetchesBefore = httpCalls.length;
+    const manual = await request('POST', '/api/businesses/receptwise/forwarding/test', { cookie: teamCookie, body: { confirm: true } });
+    assert.equal(manual.status, 200, manual.text);
+    assert.equal(manual.json.placed, false);
+    assert.equal(manual.json.manual, true);
+    assert.equal(manual.json.forwarding.status, 'pending_test');
+    assert.equal(httpCalls.filter((c) => c.url.includes('/Calls.json')).length, callsBeforeManual);
+
+    const portReq = await request('POST', '/api/businesses/receptwise/forwarding/port-request', {
+      cookie,
+      body: { businessNumber: '(617) 555-0142', contactName: 'Maya Chen', carrier: 'Verizon', notes: 'Bill is ready' }
+    });
+    assert.equal(portReq.status, 201, portReq.text);
+    assert.equal(portReq.json.request.status, 'requested');
+    assert.equal(httpCalls.length, fetchesBefore);
+    const stored = await db.query('SELECT status FROM port_requests WHERE business_id = (SELECT id FROM businesses WHERE slug = $1)', ['receptwise']);
+    assert.equal(stored.rows[0].status, 'requested');
+
+    const ported = await request('PUT', '/api/businesses/receptwise/forwarding', {
+      cookie,
+      body: {
+        mode: 'ported',
+        rings: 3,
+        aiEnabled: true,
+        hours: {},
+        ringFirst: [{ label: 'Desk', number: '(617) 555-0111' }, { label: 'Cell', number: '617-555-0122' }],
+        transferNumber: '(617) 555-0100',
+        status: 'pending_test'
+      }
+    });
+    assert.equal(ported.status, 200, ported.text);
+    assert.equal(ported.json.forwarding.mode, 'ported');
+    assert.deepEqual(ported.json.forwarding.ringFirst.map((row) => row.number), ['(617) 555-0111', '(617) 555-0122']);
+
+    const params = { To: '+17817057179', From: '+16175550199', CallSid: 'CA_INBOUND', CallStatus: 'ringing' };
+    const voicePath = '/webhooks/twilio/voice';
+    const voiceUrl = 'http://127.0.0.1:' + port + voicePath;
+    const signed = await requestRaw('POST', voicePath, {
+      body: new URLSearchParams(params).toString(),
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-Twilio-Signature': forwarding.twilioSignature(voiceUrl, params, 'test-twilio-token')
+      }
+    });
+    assert.equal(signed.status, 200, signed.text);
+    assert.match(signed.headers['content-type'], /xml/);
+    assert.match(signed.text, /<Dial timeout="15"/);
+    assert.match(signed.text, /\+16175550111/);
+    assert.match(signed.text, /panel\.example\.test\/webhooks\/twilio\/voice\?step=dial/);
+
+    const missedParams = Object.assign({ DialCallStatus: 'no-answer' }, params);
+    const missed = await requestRaw('POST', voicePath, {
+      body: new URLSearchParams(missedParams).toString(),
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-Twilio-Signature': forwarding.twilioSignature(voiceUrl, missedParams, 'test-twilio-token')
+      }
+    });
+    assert.equal(missed.status, 200, missed.text);
+    assert.match(missed.text, /TODO: connect this call/);
+    assert.doesNotMatch(missed.text, /<Dial/);
+    assert.doesNotMatch(missed.text, /vapi\.ai/);
+
+    const bad = await requestRaw('POST', voicePath, {
+      body: new URLSearchParams(params).toString(),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Twilio-Signature': 'nope' }
+    });
+    assert.equal(bad.status, 403);
+  });
+
+  it('connects a business calendar and books on that calendar only', async () => {
+    googleBusy = [];
+    googleEventPosts = 0;
+    const before = await request('GET', '/api/businesses/receptwise/google-calendar', { cookie });
+    assert.equal(before.status, 200, before.text);
+    assert.equal(before.json.configured, true);
+    assert.equal(before.json.connected, false);
+    assert.equal(before.json.warning, 'Using the shared demo calendar');
+    assert.equal(JSON.stringify(before.json).includes('refresh'), false);
+    assert.equal(JSON.stringify(before.json).includes('token'), false);
+
+    const start = await request('POST', '/api/businesses/receptwise/google-calendar/start', { cookie });
+    assert.equal(start.status, 200, start.text);
+    const authUrl = new URL(start.json.url);
+    assert.equal(authUrl.origin + authUrl.pathname, 'https://accounts.google.com/o/oauth2/v2/auth');
+    assert.equal(authUrl.searchParams.get('access_type'), 'offline');
+    assert.equal(authUrl.searchParams.get('prompt'), 'consent');
+    assert.equal(authUrl.searchParams.get('redirect_uri'), 'https://panel.example.test/oauth/google/callback');
+    assert.match(authUrl.searchParams.get('scope'), /calendar\.events/);
+    assert.match(authUrl.searchParams.get('scope'), /calendar\.readonly/);
+    const state = authUrl.searchParams.get('state');
+
+    const callback = await request('GET', '/oauth/google/callback?code=auth-code&state=' + encodeURIComponent(state), {
+      headers: { 'X-RW-Client': '' }
+    });
+    assert.equal(callback.status, 302, callback.text);
+    assert.match(callback.headers.location, /client\.html\?id=receptwise&calendar=connected#bookings/);
+
+    const saved = await db.query(
+      `SELECT token_enc, external_id, status FROM integrations WHERE provider = 'google_calendar'`
+    );
+    assert.equal(saved.rows.length, 1);
+    assert.equal(saved.rows[0].status, 'authorized');
+    assert.equal(saved.rows[0].token_enc.includes('refresh-test'), false);
+    const cryptoBox = require('../src/cryptoBox');
+    assert.equal(JSON.parse(cryptoBox.decrypt(saved.rows[0].token_enc)).refreshToken, 'refresh-test');
+
+    const listed = await request('GET', '/api/businesses/receptwise/google-calendar', { cookie });
+    assert.equal(listed.status, 200, listed.text);
+    assert.equal(listed.json.authorized, true);
+    assert.equal(listed.json.connected, false);
+    assert.equal(listed.json.warning, 'Using the shared demo calendar');
+    assert.equal(listed.json.email, 'owner@example.test');
+    assert.equal(listed.json.calendars.length, 2);
+    assert.equal(JSON.stringify(listed.json).includes('refresh-test'), false);
+    assert.equal(JSON.stringify(listed.json).includes('ya29'), false);
+
+    const rejected = await request('PUT', '/api/businesses/receptwise/google-calendar', {
+      cookie,
+      body: { calendarId: 'not-a-calendar' }
+    });
+    assert.equal(rejected.status, 400);
+
+    httpCalls.length = 0;
+    const chosen = await request('PUT', '/api/businesses/receptwise/google-calendar', {
+      cookie,
+      body: { calendarId: 'team-cal' }
+    });
+    assert.equal(chosen.status, 200, chosen.text);
+    assert.equal(chosen.json.connected, true);
+    assert.equal(chosen.json.calendarName, 'Team calendar');
+    assert.equal(chosen.json.warning, '');
+    assert.equal(chosen.json.assistantUpdated, true);
+    assert.equal(JSON.stringify(chosen.json).includes('refresh-test'), false);
+    const patch = httpCalls.find((call) => call.method === 'PATCH' && call.url.includes('/assistant/'));
+    assert.ok(patch, 'expected an assistant update');
+    const model = JSON.parse(patch.opts.body).model;
+    assert.deepEqual(model.toolIds, []);
+    const names = model.tools.map((tool) => tool.function && tool.function.name).filter(Boolean);
+    assert.deepEqual(names, ['check_availability', 'book_appointment']);
+    assert.equal(model.tools.find((tool) => tool.function && tool.function.name === 'book_appointment').server.url,
+      'https://panel.example.test/webhooks/vapi/tools');
+    const storedAssistant = await db.query(
+      `SELECT config FROM assistants a JOIN businesses b ON b.id = a.business_id WHERE b.slug = 'receptwise'`
+    );
+    const storedConfig = typeof storedAssistant.rows[0].config === 'string'
+      ? JSON.parse(storedAssistant.rows[0].config) : storedAssistant.rows[0].config;
+    assert.equal(JSON.stringify(storedConfig).includes('test-webhook-secret'), false);
+
+    const biz = await db.query(`SELECT id FROM businesses WHERE slug = 'receptwise'`);
+    const businessId = Number(biz.rows[0].id);
+    const toolBody = (toolCallId, name, args) => ({
+      message: {
+        type: 'tool-calls',
+        call: {
+          id: 'call-live-book',
+          assistant: { metadata: { receptwiseBusinessId: String(businessId) } }
+        },
+        toolCallList: [{ id: toolCallId, name, arguments: args }]
+      }
+    });
+    const denied = await request('POST', '/webhooks/vapi/tools', {
+      body: toolBody('t0', 'check_availability', { startDateTime: '2026-10-06T10:00:00-04:00' }),
+      headers: { 'X-Vapi-Secret': 'wrong' }
+    });
+    assert.equal(denied.status, 401);
+
+    const free = await request('POST', '/webhooks/vapi/tools', {
+      headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+      body: toolBody('t1', 'check_availability', { startDateTime: '2026-11-02T09:30:00' })
+    });
+    assert.equal(free.status, 200, free.text);
+    const freeResult = JSON.parse(free.json.results[0].result);
+    assert.equal(freeResult.free, true);
+    assert.equal(freeResult.timeZone, 'America/New_York');
+    assert.equal(freeResult.startLocal, '2026-11-02T09:30:00-05:00');
+    assert.match(freeResult.startLabel, /9:30/);
+
+    const booked = await request('POST', '/webhooks/vapi/tools', {
+      headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+      body: toolBody('t2', 'book_appointment', {
+        startDateTime: '2026-10-06T10:00:00-04:00',
+        name: 'Ada Lovelace',
+        phone: '7815550100',
+        email: 'ada@example.test',
+        service: 'intro'
+      })
+    });
+    assert.equal(booked.status, 200, booked.text);
+    const bookedResult = JSON.parse(booked.json.results[0].result);
+    assert.equal(bookedResult.booked, true);
+    assert.equal(bookedResult.eventId, 'evt-1');
+    assert.equal(bookedResult.startLocal, '2026-10-06T10:00:00-04:00');
+    assert.equal(bookedResult.endLocal, '2026-10-06T10:30:00-04:00');
+    assert.match(bookedResult.startLabel, /10:00/);
+    const eventCall = httpCalls.filter((call) => call.method === 'POST' && /\/events$/.test(new URL(call.url).pathname)).pop();
+    const event = JSON.parse(eventCall.opts.body);
+    assert.equal(event.summary, 'ReceptWise appointment – intro – Ada Lovelace – 7815550100');
+    assert.deepEqual(event.attendees, [{ email: 'ada@example.test' }]);
+    assert.equal(event.start.timeZone, 'America/New_York');
+    assert.equal(new URL(eventCall.url).searchParams.get('sendUpdates'), 'none');
+    const row = await db.query(`SELECT customer, email, google_event_id, source FROM bookings WHERE id = $1`, [bookedResult.bookingId]);
+    assert.equal(row.rows[0].customer, 'Ada Lovelace');
+    assert.equal(row.rows[0].google_event_id, 'evt-1');
+    const auditRow = await db.query(
+      `SELECT detail FROM audit_log WHERE action = 'calendar.book' ORDER BY id DESC LIMIT 1`
+    );
+    const detail = typeof auditRow.rows[0].detail === 'string' ? JSON.parse(auditRow.rows[0].detail) : auditRow.rows[0].detail;
+    assert.equal(detail.bookingId, bookedResult.bookingId);
+    assert.equal(detail.eventId, 'evt-1');
+    assert.equal(JSON.stringify(detail).includes('Ada'), false);
+    assert.equal(JSON.stringify(detail).includes('ada@'), false);
+
+    const again = await request('POST', '/webhooks/vapi/tools', {
+      headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+      body: toolBody('t3', 'book_appointment', {
+        startDateTime: '2026-10-06T10:00:00-04:00',
+        name: 'Ada Lovelace',
+        phone: '7815550100',
+        email: 'ada@example.test',
+        service: 'intro'
+      })
+    });
+    const againResult = JSON.parse(again.json.results[0].result);
+    assert.equal(againResult.alreadyBooked, true);
+    assert.equal(googleEventPosts, 1);
+
+    googleBusy = [{ start: '2026-10-06T15:00:00Z', end: '2026-10-06T16:00:00Z' }];
+    const conflict = await request('POST', '/webhooks/vapi/tools', {
+      headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+      body: toolBody('t4', 'book_appointment', {
+        startDateTime: '2026-10-06T11:00:00-04:00',
+        name: 'Grace Hopper',
+        phone: '7815550199',
+        email: 'grace@example.test',
+        service: 'intro'
+      })
+    });
+    const conflictResult = JSON.parse(conflict.json.results[0].result);
+    assert.equal(conflictResult.conflict, true);
+    assert.equal(conflictResult.booked, false);
+    assert.equal(googleEventPosts, 1);
+    assert.ok(conflictResult.busy[0].startLocal);
+
+    const echoed = await request('POST', '/webhooks/vapi', {
+      headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+      body: {
+        message: {
+          type: 'end-of-call-report',
+          endedReason: 'customer-ended-call',
+          call: {
+            id: 'call-echo-book',
+            assistantId: ASSISTANT,
+            status: 'ended',
+            customer: { number: '+17815550100' }
+          },
+          artifact: {
+            messages: [{
+              toolCalls: [{
+                function: {
+                  name: 'book_appointment',
+                  arguments: JSON.stringify({
+                    startDateTime: '2026-10-06T10:00:00-04:00',
+                    name: 'Ada Lovelace',
+                    service: 'intro'
+                  })
+                }
+              }]
+            }]
+          }
+        }
+      }
+    });
+    assert.equal(echoed.status, 200, echoed.text);
+    const copies = await db.query(
+      `SELECT count(*)::int AS n FROM bookings
+       WHERE business_id = $1 AND lower(customer) = 'ada lovelace' AND google_event_id = 'evt-1'`,
+      [businessId]
+    );
+    assert.equal(copies.rows[0].n, 1);
+
+    httpCalls.length = 0;
+    const gone = await request('DELETE', '/api/businesses/receptwise/google-calendar', { cookie });
+    assert.equal(gone.status, 200, gone.text);
+    assert.equal(gone.json.connected, false);
+    assert.equal(gone.json.warning, 'Using the shared demo calendar');
+    const restored = JSON.parse(httpCalls.find((call) => call.method === 'PATCH' && call.url.includes('/assistant/')).opts.body);
+    assert.deepEqual(restored.model.toolIds, ['tool-check', 'tool-book']);
+    assert.equal(restored.model.tools.some((tool) => tool.function && tool.function.name === 'book_appointment'), false);
+  });
+
+  it('books a Cal.com event type and follows webhook changes', async () => {
+    const crypto = require('crypto');
+    calcomSlotTaken = false;
+    calcomBookingPosts = 0;
+    const secret = 'cal_live_harbor_key';
+    const created = await request('POST', '/api/businesses', {
+      cookie,
+      body: { name: 'Harbor Cal', category: 'Professional services', timezone: 'America/New_York' }
+    });
+    assert.equal(created.status, 201, created.text);
+    const slug = created.json.business.id;
+    const biz = await db.query('SELECT id FROM businesses WHERE slug = $1', [slug]);
+    const businessId = Number(biz.rows[0].id);
+
+    const beforeSave = httpCalls.length;
+    const saved = await request('PUT', '/api/businesses/' + slug + '/calendar', {
+      cookie,
+      body: {
+        provider: 'calcom',
+        apiKey: secret,
+        calcomEventTypeId: '12345',
+        eventTypeTitle: '20 min demo',
+        lengthInMinutes: 20
+      }
+    });
+    assert.equal(saved.status, 200, saved.text);
+    assert.equal(saved.json.calcomKeySaved, true);
+    assert.equal(saved.json.calendar.calcomEventTypeId, '12345');
+    assert.equal(JSON.stringify(saved.json).includes(secret), false);
+    assert.equal(httpCalls.slice(beforeSave).some((call) => /cal\.com|vapi\.ai/i.test(call.url)), false);
+
+    const types = await request('GET', '/api/businesses/' + slug + '/calcom/event-types', { cookie });
+    assert.equal(types.status, 200, types.text);
+    assert.equal(types.json.eventTypes[0].title, '20 min demo');
+    assert.equal(types.json.eventTypes[0].lengthInMinutes, 20);
+    const typeCall = httpCalls.filter((call) => call.url.includes('/v2/event-types')).pop();
+    assert.equal(typeCall.method, 'GET');
+    assert.equal(typeCall.opts.headers.Authorization, 'Bearer ' + secret);
+    assert.equal(typeCall.opts.headers['cal-api-version'], '2026-06-12');
+
+    httpCalls.length = 0;
+    const published = await request('POST', '/api/businesses/' + slug + '/assistant/publish', { cookie });
+    assert.equal(published.status, 200, published.text);
+    assert.equal(published.json.ownCalendar, true);
+    const assistantCall = httpCalls.find((call) => call.method === 'POST' && new URL(call.url).pathname === '/assistant');
+    const assistant = JSON.parse(assistantCall.opts.body);
+    assert.deepEqual(assistant.model.toolIds, []);
+    const names = assistant.model.tools.map((tool) => tool.function && tool.function.name).filter(Boolean);
+    assert.deepEqual(names, ['check_availability', 'book_appointment']);
+    assert.match(assistant.model.messages[0].content, /chosen Cal.com event type/);
+    assert.match(assistant.model.messages[0].content, /Speak the confirmed local time/);
+    assert.equal(assistant.model.messages[0].content.includes('sets the event title'), false);
+
+    const status = await request('GET', '/api/businesses/' + slug + '/google-calendar', { cookie });
+    assert.equal(status.json.provider, 'calcom');
+    assert.equal(status.json.active, 'calcom');
+    assert.equal(status.json.warning, '');
+    assert.equal(status.json.calcom.connected, true);
+    assert.equal(status.json.calcom.eventTypeTitle, '20 min demo');
+    assert.equal(status.json.calcom.keySaved, true);
+    assert.equal(JSON.stringify(status.json).includes(secret), false);
+    assert.equal(httpCalls.some((call) => call.url.includes('api.cal.com') && call.url.includes('/v2/')), false);
+
+    const tested = await request('POST', '/api/businesses/' + slug + '/calcom/test', { cookie });
+    assert.equal(tested.status, 200, tested.text);
+    assert.equal(tested.json.ok, true);
+    assert.equal(tested.json.eventTypeId, '12345');
+    assert.equal(tested.json.slotCount, 1);
+    const testSlot = httpCalls.filter((call) => call.url.includes('/v2/slots')).pop();
+    assert.equal(testSlot.opts.headers['cal-api-version'], '2024-09-04');
+    assert.equal(new URL(testSlot.url).searchParams.get('timeZone'), 'America/New_York');
+
+    const toolBody = (toolCallId, name, args) => ({
+      message: {
+        type: 'tool-calls',
+        call: {
+          id: 'call-cal-book',
+          assistant: { metadata: { receptwiseBusinessId: String(businessId) } }
+        },
+        toolCallList: [{ id: toolCallId, name, arguments: args }]
+      }
+    });
+    const free = await request('POST', '/webhooks/vapi/tools', {
+      headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+      body: toolBody('c1', 'check_availability', {
+        startDateTime: '2026-10-06T10:00:00-04:00',
+        endDateTime: '2026-10-06T12:00:00-04:00'
+      })
+    });
+    assert.equal(free.status, 200, free.text);
+    const freeResult = JSON.parse(free.json.results[0].result);
+    assert.equal(freeResult.free, true);
+    assert.equal(freeResult.timeZone, 'America/New_York');
+    assert.equal(freeResult.startLocal, '2026-10-06T10:00:00-04:00');
+    const slotCall = httpCalls.filter((call) => new URL(call.url).pathname === '/v2/slots').pop();
+    const slotUrl = new URL(slotCall.url);
+    assert.equal(slotCall.opts.headers['cal-api-version'], '2024-09-04');
+    assert.equal(slotCall.opts.headers.Authorization, 'Bearer ' + secret);
+    assert.equal(slotUrl.searchParams.get('eventTypeId'), '12345');
+    assert.equal(slotUrl.searchParams.get('timeZone'), 'America/New_York');
+    assert.equal(slotUrl.searchParams.get('format'), 'range');
+    assert.equal(slotUrl.searchParams.get('start'), '2026-10-06T14:00:00.000Z');
+    assert.equal(slotUrl.searchParams.get('end'), '2026-10-06T16:00:00.000Z');
+
+    const booked = await request('POST', '/webhooks/vapi/tools', {
+      headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+      body: toolBody('c2', 'book_appointment', {
+        startDateTime: '2026-10-06T10:00:00-04:00',
+        name: 'Ada Lovelace',
+        phone: '7815550100',
+        email: 'ada@example.test',
+        service: 'demo'
+      })
+    });
+    assert.equal(booked.status, 200, booked.text);
+    const bookedResult = JSON.parse(booked.json.results[0].result);
+    assert.equal(bookedResult.booked, true);
+    assert.equal(bookedResult.uid, 'bk-uid-1');
+    assert.equal(bookedResult.startLocal, '2026-10-06T10:00:00-04:00');
+    assert.equal(bookedResult.endLocal, '2026-10-06T10:20:00-04:00');
+    assert.match(bookedResult.startLabel, /10:00/);
+    const bookCall = httpCalls.filter((call) => call.method === 'POST' && new URL(call.url).pathname === '/v2/bookings').pop();
+    assert.equal(bookCall.opts.headers['cal-api-version'], '2026-02-25');
+    assert.equal(bookCall.opts.headers.Authorization, 'Bearer ' + secret);
+    const bookBody = JSON.parse(bookCall.opts.body);
+    assert.equal(bookBody.eventTypeId, 12345);
+    assert.equal(bookBody.start, '2026-10-06T14:00:00.000Z');
+    assert.deepEqual(bookBody.attendee, {
+      name: 'Ada Lovelace',
+      email: 'ada@example.test',
+      timeZone: 'America/New_York',
+      language: 'en',
+      phoneNumber: '+17815550100'
+    });
+    assert.equal(bookBody.metadata.business, 'Harbor Cal');
+    assert.equal(bookBody.metadata.phone, '7815550100');
+    assert.equal(bookBody.metadata.businessId, String(businessId));
+    const row = await db.query(
+      'SELECT source, calcom_uid, customer, email, status FROM bookings WHERE id = $1',
+      [bookedResult.bookingId]
+    );
+    assert.equal(row.rows[0].source, 'calcom');
+    assert.equal(row.rows[0].calcom_uid, 'bk-uid-1');
+    assert.equal(row.rows[0].customer, 'Ada Lovelace');
+    assert.equal(row.rows[0].status, 'Confirmed');
+    const bookAudit = await db.query(
+      `SELECT detail FROM audit_log WHERE action = 'calendar.book' AND business_id = $1 ORDER BY id DESC LIMIT 1`,
+      [businessId]
+    );
+    const bookDetail = typeof bookAudit.rows[0].detail === 'string'
+      ? JSON.parse(bookAudit.rows[0].detail) : bookAudit.rows[0].detail;
+    assert.equal(bookDetail.uid, 'bk-uid-1');
+    assert.equal(bookDetail.provider, 'calcom');
+    assert.equal(JSON.stringify(bookDetail).includes('Ada'), false);
+    assert.equal(JSON.stringify(bookDetail).includes('ada@'), false);
+    assert.equal(httpCalls.some((call) => call.url.includes('googleapis.com')), false);
+
+    const postsBefore = calcomBookingPosts;
+    const slotsBefore = httpCalls.filter((call) => new URL(call.url).pathname === '/v2/slots').length;
+    calcomSlotTaken = true;
+    const taken = await request('POST', '/webhooks/vapi/tools', {
+      headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+      body: toolBody('c3', 'book_appointment', {
+        startDateTime: '2026-10-06T10:00:00-04:00',
+        name: 'Grace Hopper',
+        phone: '7815550199',
+        email: 'grace@example.test',
+        service: 'demo'
+      })
+    });
+    const takenResult = JSON.parse(taken.json.results[0].result);
+    assert.equal(takenResult.slotTaken, true);
+    assert.equal(takenResult.booked, false);
+    assert.equal(takenResult.conflict, true);
+    assert.equal(calcomBookingPosts, postsBefore + 1);
+    assert.ok(httpCalls.filter((call) => new URL(call.url).pathname === '/v2/slots').length > slotsBefore);
+    const stillOne = await db.query(
+      `SELECT count(*)::int AS n FROM bookings WHERE business_id = $1 AND calcom_uid = 'bk-uid-1'`,
+      [businessId]
+    );
+    assert.equal(stillOne.rows[0].n, 1);
+
+    const unsigned = await request('POST', '/webhooks/calcom', {
+      body: { triggerEvent: 'BOOKING_CANCELLED', payload: { uid: 'bk-uid-1' } }
+    });
+    assert.equal(unsigned.status, 401);
+
+    function signed(body) {
+      const raw = JSON.stringify(body);
+      const signature = crypto.createHmac('sha256', 'test-calcom-webhook').update(raw).digest('hex');
+      return request('POST', '/webhooks/calcom', {
+        body,
+        headers: { 'X-Cal-Signature-256': signature }
+      });
+    }
+    const cancelled = await signed({
+      triggerEvent: 'BOOKING_CANCELLED',
+      createdAt: '2026-10-06T14:05:00.000Z',
+      payload: {
+        uid: 'bk-uid-1',
+        eventTypeId: 12345,
+        attendees: [{ name: 'Ada Lovelace', email: 'ada@example.test', timeZone: 'America/New_York' }],
+        metadata: { businessId: String(businessId), phone: '7815550100', business: 'Harbor Cal' }
+      }
+    });
+    assert.equal(cancelled.status, 200, cancelled.text);
+    assert.equal(cancelled.json.ok, true);
+    const cancelledRow = await db.query('SELECT status FROM bookings WHERE id = $1', [bookedResult.bookingId]);
+    assert.equal(cancelledRow.rows[0].status, 'Cancelled');
+    const hookAudit = await db.query(
+      `SELECT detail FROM audit_log WHERE action = 'calendar.calcom_webhook' AND business_id = $1 ORDER BY id DESC LIMIT 1`,
+      [businessId]
+    );
+    const hookDetail = typeof hookAudit.rows[0].detail === 'string'
+      ? JSON.parse(hookAudit.rows[0].detail) : hookAudit.rows[0].detail;
+    assert.equal(hookDetail.trigger, 'BOOKING_CANCELLED');
+    assert.equal(hookDetail.uid, 'bk-uid-1');
+    assert.equal(JSON.stringify(hookDetail).includes('Ada'), false);
+
+    const createdHook = await signed({
+      triggerEvent: 'BOOKING_CREATED',
+      createdAt: '2026-10-07T15:00:00.000Z',
+      payload: {
+        uid: 'bk-uid-2',
+        title: '20 min demo',
+        startTime: '2026-10-07T15:00:00.000Z',
+        endTime: '2026-10-07T15:20:00.000Z',
+        eventTypeId: 12345,
+        attendees: [{ name: 'Grace Hopper', email: 'grace@example.test', timeZone: 'America/New_York' }],
+        metadata: { businessId: String(businessId), phone: '7815550199', business: 'Harbor Cal' }
+      }
+    });
+    assert.equal(createdHook.status, 200, createdHook.text);
+    const createdRow = await db.query(
+      `SELECT source, customer, status FROM bookings WHERE business_id = $1 AND calcom_uid = 'bk-uid-2'`,
+      [businessId]
+    );
+    assert.equal(createdRow.rows[0].source, 'calcom');
+    assert.equal(createdRow.rows[0].customer, 'Grace Hopper');
+    assert.equal(createdRow.rows[0].status, 'Confirmed');
+
+    const moved = await signed({
+      triggerEvent: 'BOOKING_RESCHEDULED',
+      createdAt: '2026-10-07T16:00:00.000Z',
+      payload: {
+        uid: 'bk-uid-3',
+        rescheduleUid: 'bk-uid-2',
+        title: '20 min demo',
+        startTime: '2026-10-08T15:00:00.000Z',
+        endTime: '2026-10-08T15:20:00.000Z',
+        eventTypeId: 12345,
+        attendees: [{ name: 'Grace Hopper', email: 'grace@example.test' }],
+        metadata: { businessId: String(businessId) }
+      }
+    });
+    assert.equal(moved.status, 200, moved.text);
+    const movedRow = await db.query(
+      `SELECT calcom_uid, status FROM bookings WHERE business_id = $1 AND customer = 'Grace Hopper'`,
+      [businessId]
+    );
+    assert.equal(movedRow.rows.length, 1);
+    assert.equal(movedRow.rows[0].calcom_uid, 'bk-uid-3');
+    assert.equal(movedRow.rows[0].status, 'Confirmed');
+
+    const ignored = await signed({ triggerEvent: 'MEETING_ENDED', payload: { uid: 'nope' } });
+    assert.equal(ignored.status, 200, ignored.text);
+    assert.equal(ignored.json.ignored, true);
+    const unknown = await signed({
+      triggerEvent: 'BOOKING_CREATED',
+      payload: { uid: 'bk-other', metadata: { businessId: '999999' }, attendees: [{ name: 'Nobody' }] }
+    });
+    assert.equal(unknown.status, 200, unknown.text);
+    assert.equal(unknown.json.ignored, true);
+
+    const removed = await request('DELETE', '/api/businesses/' + slug + '/calcom', { cookie });
+    assert.equal(removed.status, 200, removed.text);
+    assert.equal(removed.json.calcom.keySaved, false);
+    assert.equal(removed.json.calcom.connected, false);
+    assert.equal(removed.json.active, '');
+    assert.equal(removed.json.warning, 'Using the shared demo calendar');
+    const restored = httpCalls.filter((call) => call.method === 'PATCH' && call.url.includes('/assistant/')).pop();
+    assert.deepEqual(JSON.parse(restored.opts.body).model.toolIds, ['tool-check', 'tool-book']);
   });
 });

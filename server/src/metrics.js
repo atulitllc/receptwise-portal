@@ -1,6 +1,7 @@
 'use strict';
 const db = require('./db');
 const businesses = require('./businesses');
+const privacy = require('./privacy');
 
 function roundAvg(value) {
   if (value == null || value === '') return null;
@@ -50,6 +51,9 @@ function auditText(action, detail) {
   if (action === 'integration.removed') return 'Removed the ' + providerLabel(d.provider) + ' record.';
   if (action === 'call.sync') return 'Synced calls from Vapi (' + (d.synced || 0) + ').';
   if (action === 'data.export') return 'Exported a backup (' + (d.format || 'json') + ').';
+  if (action === 'appointment.create') return 'Added an appointment' + (d.customer ? ' for ' + d.customer : '') + '.';
+  if (action === 'appointment.update') return 'Updated an appointment' + (d.customer ? ' for ' + d.customer : '') + '.';
+  if (action === 'appointment.cancel') return 'Cancelled an appointment' + (d.customer ? ' for ' + d.customer : '') + '.';
   if (action === 'trello.credentials_saved') return 'Saved a Trello key for this business.';
   if (action === 'trello.credentials_removed') return 'Removed the saved Trello key.';
   if (action === 'trello.tested') return 'Tested the Trello connection' + (d.memberName ? ' (' + d.memberName + ')' : '') + '.';
@@ -83,53 +87,69 @@ function callToMetric(row) {
   };
 }
 
-async function activityList(businessId) {
+async function activityList(businessId, user, grants) {
   const params = [];
   const callWhere = businessId ? (params.push(businessId), 'WHERE c.business_id = $1') : '';
   const bookWhere = businessId ? 'WHERE k.business_id = $1' : '';
   const auditWhere = businessId ? 'WHERE a.business_id = $1' : '';
   const calls = await db.query(
     `SELECT c.started_at, c.created_at, c.outcome, c.summary, c.caller_name, c.from_number, c.to_number, c.direction,
-            b.slug, b.name, b.timezone
+            b.id AS business_db_id, b.slug, b.name, b.timezone
      FROM calls c JOIN businesses b ON b.id = c.business_id
      ${callWhere}
      ORDER BY coalesce(c.started_at, c.created_at) DESC LIMIT 20`, params);
   const bookings = await db.query(
-    `SELECT k.created_at, k.customer, k.service, k.starts_at, b.slug, b.name, b.timezone
+    `SELECT k.created_at, k.customer, k.service, k.starts_at, b.id AS business_db_id, b.slug, b.name, b.timezone
      FROM bookings k JOIN businesses b ON b.id = k.business_id
      ${bookWhere}
      ORDER BY k.created_at DESC LIMIT 20`, params);
   const audits = await db.query(
-    `SELECT a.created_at, a.action, a.detail, b.slug, b.name, b.timezone
+    `SELECT a.created_at, a.action, a.detail, b.id AS business_db_id, b.slug, b.name, b.timezone
      FROM audit_log a LEFT JOIN businesses b ON b.id = a.business_id
      ${auditWhere ? auditWhere + ' AND' : 'WHERE'} a.action IN (
        'settings.update', 'integration.recorded', 'integration.connected', 'integration.removed', 'call.sync',
        'trello.credentials_saved', 'trello.credentials_removed', 'trello.tested', 'trello.rules',
-       'trello.card_created', 'trello.card_updated', 'data.export')
+       'trello.card_created', 'trello.card_updated', 'data.export',
+       'appointment.create', 'appointment.update', 'appointment.cancel')
      ORDER BY a.created_at DESC LIMIT 20`, params);
 
   const items = [];
+  const revealed = new Set();
+  function open(row) {
+    return row.business_db_id != null && privacy.allows(user, row.business_db_id, grants);
+  }
   calls.rows.forEach((row) => {
     const who = row.caller_name || businesses.prettyPhone(row.direction === 'outbound' ? row.to_number : row.from_number) || 'unknown caller';
     const text = [row.outcome || 'Call', who, row.summary].filter(Boolean).join(' · ');
-    items.push({ at: new Date(row.started_at || row.created_at), kind: 'call', businessId: row.slug, businessName: row.name, text, time: fmtWhen(row.started_at || row.created_at, row.timezone) });
+    const item = { at: new Date(row.started_at || row.created_at), kind: 'call', businessId: row.slug, businessName: row.name, text, time: fmtWhen(row.started_at || row.created_at, row.timezone), businessDbId: row.business_db_id };
+    items.push(open(row) ? item : privacy.redactActivity(item));
+    if (open(row)) revealed.add(Number(row.business_db_id));
   });
   bookings.rows.forEach((row) => {
     const text = 'Booked ' + (row.customer || 'a caller') + (row.service ? ' · ' + row.service : '');
-    items.push({ at: new Date(row.created_at), kind: 'booking', businessId: row.slug, businessName: row.name, text, time: fmtWhen(row.created_at, row.timezone) });
+    const item = { at: new Date(row.created_at), kind: 'booking', businessId: row.slug, businessName: row.name, text, time: fmtWhen(row.created_at, row.timezone), businessDbId: row.business_db_id };
+    items.push(open(row) ? item : privacy.redactActivity(item));
+    if (open(row)) revealed.add(Number(row.business_db_id));
   });
   audits.rows.forEach((row) => {
     const text = auditText(row.action, row.detail);
     if (!text) return;
-    items.push({ at: new Date(row.created_at), kind: row.action, businessId: row.slug || '', businessName: row.name || '', text, time: fmtWhen(row.created_at, row.timezone || 'America/New_York') });
+    const item = { at: new Date(row.created_at), kind: row.action, businessId: row.slug || '', businessName: row.name || '', text, time: fmtWhen(row.created_at, row.timezone || 'America/New_York'), businessDbId: row.business_db_id };
+    const sensitive = row.action === 'trello.card_created' || row.action === 'trello.card_updated' || String(row.action).indexOf('appointment.') === 0;
+    if (sensitive && !open(row)) items.push(privacy.redactActivity(item));
+    else items.push(item);
+    if (sensitive && open(row)) revealed.add(Number(row.business_db_id));
   });
   items.sort((a, b) => b.at - a.at);
+  if (privacy.isReceptwise(user)) {
+    for (const id of revealed) await privacy.noteView(user, id, 'activity');
+  }
   return items.slice(0, 20).map((item) => ({
-    time: item.time, kind: item.kind, businessId: item.businessId, businessName: item.businessName, text: item.text
+    time: item.time, kind: item.kind, businessId: item.businessId, businessName: item.businessName, text: item.text, redacted: !!item.redacted
   }));
 }
 
-async function collect(businessId) {
+async function collect(businessId, user) {
   let tz = 'America/New_York';
   if (businessId) {
     const { rows } = await db.query('SELECT timezone FROM businesses WHERE id = $1', [businessId]);
@@ -195,6 +215,19 @@ async function collect(businessId) {
 
   const row = counts.rows[0] || {};
   const bk = books.rows[0] || {};
+  const grants = await privacy.activeGrantSet();
+  const revealed = new Set();
+  const recentCalls = recent.rows.map((call) => {
+    const metric = callToMetric(call);
+    if (privacy.allows(user, call.business_id, grants)) {
+      revealed.add(Number(call.business_id));
+      return metric;
+    }
+    return privacy.redactMetricCall(metric);
+  });
+  if (privacy.isReceptwise(user)) {
+    for (const id of revealed) await privacy.noteView(user, id, 'calls');
+  }
   return {
     timezone: tz,
     calls: { today: row.calls_today || 0, d7: row.calls_d7 || 0, d30: row.calls_d30 || 0 },
@@ -202,8 +235,8 @@ async function collect(businessId) {
     missed: { today: row.miss_today || 0, d7: row.miss_d7 || 0, d30: row.miss_d30 || 0 },
     avgDurationSec: { today: roundAvg(row.avg_today), d7: roundAvg(row.avg_d7), d30: roundAvg(row.avg_d30) },
     bookings: { today: bk.today || 0, d7: bk.d7 || 0, d30: bk.d30 || 0 },
-    recentCalls: recent.rows.map(callToMetric),
-    activity: await activityList(businessId)
+    recentCalls,
+    activity: await activityList(businessId, user, grants)
   };
 }
 

@@ -39,18 +39,32 @@ async function tx(fn) {
 }
 
 async function migrate() {
-  await query('CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())');
-  const dir = path.join(__dirname, '..', 'migrations');
-  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
-  const done = new Set((await query('SELECT name FROM schema_migrations')).rows.map((r) => r.name));
-  for (const file of files) {
-    if (done.has(file)) continue;
-    const sql = fs.readFileSync(path.join(dir, file), 'utf8');
-    await tx(async (c) => {
-      await c.query(sql);
-      await c.query('INSERT INTO schema_migrations (name) VALUES ($1)', [file]);
-    });
-    console.log('migrated', file);
+  const client = await getPool().connect();
+  try {
+    // Test files and a second web process can boot together. The lock keeps one
+    // of them from inserting the same migration name while the other is applying it.
+    await client.query('SELECT pg_advisory_lock(804271)');
+    await client.query('CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())');
+    const dir = path.join(__dirname, '..', 'migrations');
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
+    const done = new Set((await client.query('SELECT name FROM schema_migrations')).rows.map((r) => r.name));
+    for (const file of files) {
+      if (done.has(file)) continue;
+      const sql = fs.readFileSync(path.join(dir, file), 'utf8');
+      await client.query('BEGIN');
+      try {
+        await client.query(sql);
+        await client.query('INSERT INTO schema_migrations (name) VALUES ($1) ON CONFLICT (name) DO NOTHING', [file]);
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+      }
+      console.log('migrated', file);
+    }
+  } finally {
+    await client.query('SELECT pg_advisory_unlock(804271)').catch(() => {});
+    client.release();
   }
 }
 

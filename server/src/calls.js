@@ -59,24 +59,271 @@ function parseArgs(a) {
   try { return JSON.parse(a); } catch (e) { return {}; }
 }
 
+function ianaZone(value) {
+  const text = String(value || '').trim();
+  const labels = {
+    'Eastern Time': 'America/New_York',
+    'Central Time': 'America/Chicago',
+    'Mountain Time': 'America/Denver',
+    'Pacific Time': 'America/Los_Angeles',
+    'Arizona Time': 'America/Phoenix',
+    'Alaska Time': 'America/Anchorage',
+    'Hawaii Time': 'Pacific/Honolulu'
+  };
+  if (labels[text]) return labels[text];
+  if (/^[A-Za-z]+\/[A-Za-z0-9_+-]+$/.test(text)) return text;
+  return '';
+}
+
+function hasOffset(value) {
+  return /(?:Z|[+-]\d{2}:?\d{2})$/i.test(String(value || '').trim());
+}
+
+function zoneParts(timeZone, utcMs) {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
+  const map = {};
+  dtf.formatToParts(new Date(utcMs)).forEach((part) => {
+    if (part.type !== 'literal') map[part.type] = part.value;
+  });
+  let year = Number(map.year);
+  let month = Number(map.month);
+  let day = Number(map.day);
+  let hour = Number(map.hour);
+  if (hour === 24) {
+    hour = 0;
+    const next = new Date(Date.UTC(year, month - 1, day));
+    next.setUTCDate(next.getUTCDate() + 1);
+    year = next.getUTCFullYear();
+    month = next.getUTCMonth() + 1;
+    day = next.getUTCDate();
+  }
+  return { year, month, day, hour, minute: Number(map.minute), second: Number(map.second) };
+}
+
+function zoneOffset(timeZone, utcMs) {
+  try {
+    const part = zoneParts(timeZone, utcMs);
+    return Date.UTC(part.year, part.month - 1, part.day, part.hour, part.minute, part.second) - utcMs;
+  } catch (e) {
+    return null;
+  }
+}
+
+// A clock time with no offset is read in `timeZone`. Values that already include Z or an offset are absolute.
+function zonedInstant(value, timeZone) {
+  if (value == null || value === '') return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  const zone = ianaZone(timeZone);
+  if (hasOffset(raw) || !zone) return cleanStart(raw);
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!match) return cleanStart(raw);
+  const utcGuess = Date.UTC(+match[1], +match[2] - 1, +match[3], +match[4], +match[5], +(match[6] || 0));
+  let offset = zoneOffset(zone, utcGuess);
+  if (offset == null) return cleanStart(raw);
+  let instant = utcGuess - offset;
+  const again = zoneOffset(zone, instant);
+  if (again != null) instant = utcGuess - again;
+  const date = new Date(instant);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+// book_demo writes "Receptwise demo – {business} – {name} – {phone}". The dashes are en dashes; a spaced hyphen is accepted too.
+function splitDemoSummary(summary) {
+  const text = String(summary || '').replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  const patterns = [
+    /^receptwise\s+demo\s*[\u2013\u2014\u2212]\s*(.*?)\s*[\u2013\u2014\u2212]\s*(.*?)\s*[\u2013\u2014\u2212]\s*(.+)$/i,
+    /^receptwise\s+demo\s+-\s+(.*?)\s+-\s+(.*?)\s+-\s+(.+)$/i
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match) continue;
+    return {
+      business: match[1].trim(),
+      customer: match[2].trim(),
+      phone: match[3].trim().replace(/[.,;]+$/, '')
+    };
+  }
+  return null;
+}
+
+function textField(args, keys) {
+  for (const key of keys) {
+    if (args[key] != null && String(args[key]).trim()) return String(args[key]).trim();
+  }
+  return '';
+}
+
+function peopleFromAttendees(attendees) {
+  const names = [];
+  const emails = [];
+  (Array.isArray(attendees) ? attendees : []).forEach((item) => {
+    if (item && typeof item === 'object') {
+      const name = String(item.name || item.displayName || '').trim();
+      const email = String(item.email || '').trim();
+      if (name && !name.includes('@')) names.push(name);
+      if (email.includes('@')) emails.push(email);
+      return;
+    }
+    const text = String(item || '').trim();
+    if (!text) return;
+    if (text.includes('@')) emails.push(text);
+    else names.push(text);
+  });
+  return { name: names.join(', '), email: emails[0] || '' };
+}
+
+function isBookingTool(tc) {
+  const fn = (tc && tc.function) || {};
+  const name = String(fn.name || (tc && tc.name) || '');
+  const type = String((tc && tc.type) || fn.type || '');
+  if (/availability/i.test(name) || /availability/i.test(type)) return false;
+  if (/^check/i.test(name)) return false;
+  return BOOKING_TOOL.test(name) || BOOKING_TOOL.test(type);
+}
+
+function bookingFromTool(tc) {
+  const fn = (tc && tc.function) || {};
+  const args = parseArgs(fn.arguments != null ? fn.arguments : tc.arguments);
+  const zone = ianaZone(textField(args, ['timeZone', 'timezone', 'time_zone']));
+  const summary = textField(args, ['summary', 'title']);
+  const description = textField(args, ['description']);
+  const parsed = splitDemoSummary(summary) || splitDemoSummary(description);
+  const people = peopleFromAttendees(args.attendees);
+  const customer = (parsed && parsed.customer) || textField(args, ['name', 'customerName', 'customer_name', 'attendeeName']) || people.name;
+  const phone = (parsed && parsed.phone) || textField(args, ['phone', 'customerPhone', 'customer_phone', 'attendeePhone']);
+  let service = '';
+  if (parsed && parsed.business) service = parsed.business;
+  else if (textField(args, ['service'])) service = textField(args, ['service']);
+  else if (summary && !parsed) service = summary;
+  return {
+    startsAt: zonedInstant(textField(args, ['startDateTime', 'start_time', 'start', 'startTime']), zone),
+    endsAt: zonedInstant(textField(args, ['endDateTime', 'end_time', 'end', 'endTime']), zone),
+    timeZone: zone,
+    customer,
+    phone,
+    email: textField(args, ['email']) || people.email,
+    service
+  };
+}
+
 function extractBookings(messages) {
   const out = [];
   (messages || []).forEach((m) => {
     const calls = m && (m.toolCalls || m.tool_calls);
     if (!Array.isArray(calls)) return;
     calls.forEach((tc) => {
-      const fn = tc.function || {};
-      if (!BOOKING_TOOL.test(fn.name || '')) return;
-      if (/availability|check/i.test(fn.name || '')) return;
-      const args = parseArgs(fn.arguments);
-      out.push({
-        startsAt: args.startDateTime || args.start_time || args.start || null,
-        service: args.summary || args.service || '',
-        customer: args.name || args.customerName || (Array.isArray(args.attendees) ? args.attendees.join(', ') : '')
-      });
+      if (!tc || !isBookingTool(tc)) return;
+      out.push(bookingFromTool(tc));
     });
   });
   return out;
+}
+
+function dedupeBookings(list) {
+  const seen = new Set();
+  return list.filter((item) => {
+    const key = [item.startsAt || '', item.endsAt || '', item.customer || '', item.phone || '', item.service || ''].join('|');
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function recordFromStructured(structured) {
+  if (!structured) return null;
+  return {
+    startsAt: cleanStart(structured.startsAt),
+    endsAt: null,
+    timeZone: '',
+    customer: structured.customer || '',
+    phone: structured.phone || '',
+    email: structured.email || '',
+    service: structured.service || structured.business || ''
+  };
+}
+
+function combineBookings(toolBookings, structuredBooking) {
+  const list = (toolBookings || []).map((item) => Object.assign({}, item));
+  const structured = recordFromStructured(structuredBooking);
+  if (!structured) return dedupeBookings(list);
+  if (!list.length) return [structured];
+  const target = list.find((item) => item.startsAt && structured.startsAt && item.startsAt === structured.startsAt) || list[0];
+  ['customer', 'phone', 'email', 'service', 'startsAt', 'endsAt', 'timeZone'].forEach((key) => {
+    if (!target[key] && structured[key]) target[key] = structured[key];
+  });
+  return dedupeBookings(list);
+}
+
+function sameInstant(left, right) {
+  if (!left && !right) return true;
+  if (!left || !right) return false;
+  const a = new Date(left).getTime();
+  const b = new Date(right).getTime();
+  return Number.isFinite(a) && a === b;
+}
+
+async function saveExtractedBookings(businessId, callId, list) {
+  if (!businessId || !callId || !list.length) return;
+  const { rows: existing } = await db.query(
+    `SELECT id, starts_at, portal_edited FROM bookings WHERE call_id = $1 AND source = 'Phone' ORDER BY id`,
+    [callId]
+  );
+  const editable = existing.filter((row) => !row.portal_edited);
+  const positional = editable.length > 0 && editable.length === list.length;
+  const used = new Set();
+  let pos = 0;
+  for (const item of list) {
+    let row = editable.find((candidate) => !used.has(candidate.id) && sameInstant(candidate.starts_at, item.startsAt));
+    if (!row && positional) {
+      while (pos < editable.length && used.has(editable[pos].id)) pos += 1;
+      row = editable[pos] || null;
+      if (row) pos += 1;
+    }
+    if (row) {
+      used.add(row.id);
+      await db.query(
+        `UPDATE bookings
+         SET business_id = $2, starts_at = $3, ends_at = $4, customer = $5, phone = $6, email = $7,
+             service = $8, timezone = $9, updated_at = now()
+         WHERE id = $1 AND portal_edited = false`,
+        [row.id, businessId, item.startsAt || null, item.endsAt || null, item.customer || '',
+          item.phone || null, item.email || null, item.service || '', item.timeZone || null]
+      );
+      continue;
+    }
+    const humanOwnsOnlyRow = existing.length === 1 && existing[0].portal_edited && list.length === 1;
+    if (humanOwnsOnlyRow) continue;
+    if (item.startsAt) {
+      const linked = await db.query(
+        `UPDATE bookings
+         SET call_id = coalesce(call_id, $2), updated_at = now()
+         WHERE business_id = $1
+           AND source <> 'Phone'
+           AND starts_at IS NOT DISTINCT FROM $3::timestamptz
+           AND lower(coalesce(customer, '')) = lower(coalesce($4, ''))
+         RETURNING id`,
+        [businessId, callId, item.startsAt, item.customer || '']
+      );
+      if (linked.rows.length) continue;
+    }
+    await db.query(
+      `INSERT INTO bookings (business_id, call_id, starts_at, ends_at, customer, phone, email, service, timezone, source, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'Phone','Confirmed')`,
+      [businessId, callId, item.startsAt || null, item.endsAt || null, item.customer || '',
+        item.phone || null, item.email || null, item.service || '', item.timeZone || null]
+    );
+  }
 }
 
 // `call` is a Vapi Call object; `report` is the optional end-of-call-report message (artifact/analysis at top level).
@@ -95,7 +342,8 @@ async function upsertCall(call, report) {
   const own = (call.phoneNumber && call.phoneNumber.number) || null;
   const recording = artifact.recordingUrl || (artifact.recording && (artifact.recording.stereoUrl || artifact.recording.url ||
     (artifact.recording.mono && artifact.recording.mono.combinedUrl))) || call.recordingUrl || null;
-  const toolBookings = extractBookings(messages);
+  let toolBookings = extractBookings(messages);
+  if (!toolBookings.length && artifact.messagesOpenAIFormatted) toolBookings = extractBookings(artifact.messagesOpenAIFormatted);
   const structuredBooking = bookingFromStructured(analysis);
   const sd = (analysis && analysis.structuredData && typeof analysis.structuredData === 'object') ? analysis.structuredData : null;
   const classified = classifyCall({ status: call.status, endedReason });
@@ -148,24 +396,8 @@ async function upsertCall(call, report) {
       sd ? cleanStart(sd.booked_start || sd.bookedStart) : null, answered, sd ? JSON.stringify(sd) : null]
   );
   const row = rows[0];
-  const bookings = toolBookings.slice();
-  if (structuredBooking) {
-    bookings.push({
-      startsAt: cleanStart(structuredBooking.startsAt),
-      customer: structuredBooking.customer,
-      service: structuredBooking.service || structuredBooking.business || ''
-    });
-  }
-  if (businessId && bookings.length) {
-    for (const b of bookings) {
-      await db.query(
-        `INSERT INTO bookings (business_id, call_id, starts_at, customer, service, source, status)
-         SELECT $1, $2, $3, $4, $5, 'Phone', 'Confirmed'
-         WHERE NOT EXISTS (SELECT 1 FROM bookings WHERE call_id = $2 AND starts_at IS NOT DISTINCT FROM $3::timestamptz)`,
-        [businessId, row.id, b.startsAt, b.customer, b.service]
-      );
-    }
-  }
+  const bookings = combineBookings(toolBookings, structuredBooking);
+  if (businessId && bookings.length) await saveExtractedBookings(businessId, row.id, bookings);
   // A completed outbound call from the business's own number counts as the receptionist test.
   if (businessId && outbound && call.status === 'ended' && (duration || 0) >= 5) {
     await businesses.setStep(businessId, 'test', 'connected', 'Test call completed ' + new Date(endedAt || Date.now()).toISOString().slice(0, 10) + '.', {});
@@ -173,4 +405,4 @@ async function upsertCall(call, report) {
   return row;
 }
 
-module.exports = { upsertCall, extractBookings, findBusinessId, classifyCall, bookingFromStructured };
+module.exports = { upsertCall, extractBookings, findBusinessId, classifyCall, bookingFromStructured, zonedInstant, splitDemoSummary };

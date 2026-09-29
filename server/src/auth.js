@@ -36,14 +36,21 @@ function cookieOptions() {
   };
 }
 
-async function createUser({ email, password, name, role }) {
+async function createUser({ email, password, name, role, businessId }) {
   if (!email || !password) throw new Error('email and password are required');
   if (password.length < 10) throw new Error('password must be at least 10 characters');
+  const storedRole = role === 'team' || role === 'owner' || role === 'staff' ? role : 'admin';
+  const scoped = storedRole === 'owner' || storedRole === 'staff';
+  if (scoped && !businessId) {
+    const err = new Error('Owner and staff accounts belong to one business.');
+    err.status = 400;
+    throw err;
+  }
   const hash = await bcrypt.hash(password, 12);
   const { rows } = await db.query(
-    `INSERT INTO users (email, name, role, password_hash) VALUES ($1, $2, $3, $4)
-     ON CONFLICT (lower(email)) DO NOTHING RETURNING id, email, name, role`,
-    [email.trim(), name || '', role === 'team' ? 'team' : 'admin', hash]
+    `INSERT INTO users (email, name, role, password_hash, business_id) VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (lower(email)) DO NOTHING RETURNING id, email, name, role, business_id`,
+    [email.trim(), name || '', storedRole, hash, scoped ? businessId : null]
   );
   return rows[0] || null;
 }
@@ -96,7 +103,7 @@ async function login(req, res) {
   await db.query('UPDATE users SET last_login_at = now() WHERE id = $1', [user.id]);
   await db.query('DELETE FROM sessions WHERE expires_at < now()');
   res.cookie(COOKIE, token, cookieOptions());
-  res.json({ user: publicUser(user) });
+  res.json({ user: await publicUser(user) });
 }
 
 async function logout(req, res) {
@@ -106,8 +113,20 @@ async function logout(req, res) {
   res.json({ ok: true });
 }
 
-function publicUser(u) {
-  return { id: Number(u.id), email: u.email, name: u.name || nameFromEmail(u.email), role: u.role };
+async function publicUser(u) {
+  let slug = u.business_slug || null;
+  if (!slug && u.business_id) {
+    const { rows } = await db.query('SELECT slug FROM businesses WHERE id = $1', [u.business_id]);
+    slug = rows[0] ? rows[0].slug : null;
+  }
+  return {
+    id: Number(u.id),
+    email: u.email,
+    name: u.name || nameFromEmail(u.email),
+    role: u.role,
+    businessId: u.business_id == null ? null : Number(u.business_id),
+    businessSlug: slug
+  };
 }
 
 function nameFromEmail(email) {
@@ -121,9 +140,11 @@ async function loadUser(req, _res, next) {
     const token = parseCookies(req.headers.cookie)[COOKIE];
     if (token) {
       const { rows } = await db.query(
-        `SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id
+        `SELECT u.*, b.slug AS business_slug
+         FROM sessions s JOIN users u ON u.id = s.user_id
+         LEFT JOIN businesses b ON b.id = u.business_id
          WHERE s.id = $1 AND s.expires_at > now() AND NOT u.disabled`, [hashToken(token)]);
-      if (rows[0]) req.user = publicUser(rows[0]);
+      if (rows[0]) req.user = await publicUser(rows[0]);
     }
     next();
   } catch (err) {

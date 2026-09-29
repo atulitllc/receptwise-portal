@@ -3,6 +3,7 @@
 // Passwords, session tokens, and third-party tokens are never included.
 const db = require('./db');
 const audit = require('./audit');
+const privacy = require('./privacy');
 
 const SECRET_KEY = /^(api[-_]?key|token|token_enc|access_token|refresh_token|password|password_hash|secret|authorization)$/i;
 
@@ -38,8 +39,8 @@ function insert(table, columns, row) {
   return 'INSERT INTO ' + table + ' (' + columns.join(', ') + ') VALUES (' + values.join(', ') + ');\n';
 }
 
-async function snapshot() {
-  const [businesses, setup, phones, assistants, integrations, calls, bookings, activity] = await Promise.all([
+async function snapshot(user) {
+  const [businesses, setup, phones, assistants, integrations, calls, bookings, activity, forwarding, ringFirst, portRequests] = await Promise.all([
     db.query(
       `SELECT id, slug, name, category, city, timezone, status, pilot, profile, receptionist, created_at, updated_at
        FROM businesses ORDER BY id`
@@ -67,7 +68,7 @@ async function snapshot() {
        FROM calls ORDER BY id`
     ),
     db.query(
-      `SELECT id, business_id, call_id, starts_at, customer, service, source, status, google_event_id, created_at
+      `SELECT id, business_id, call_id, starts_at, ends_at, customer, phone, email, service, source, status, google_event_id, calcom_uid, timezone, created_at, updated_at
        FROM bookings ORDER BY id`
     ),
     db.query(
@@ -76,6 +77,12 @@ async function snapshot() {
        LEFT JOIN businesses b ON b.id = a.business_id
        LEFT JOIN users u ON u.id = a.user_id
        ORDER BY a.id`
+    ),
+    db.query('SELECT * FROM phone_forwarding ORDER BY business_id'),
+    db.query('SELECT id, business_id, label, e164, position FROM ring_first_numbers ORDER BY id'),
+    db.query(
+      `SELECT id, business_id, business_number, contact_name, contact_phone, carrier, notes, status, created_by, created_at
+       FROM port_requests ORDER BY id`
     )
   ]);
 
@@ -91,8 +98,28 @@ async function snapshot() {
   const setupBy = byBusiness(setup.rows, 'business_id');
   const phonesBy = byBusiness(phones.rows, 'business_id');
   const integrationsBy = byBusiness(integrations.rows, 'business_id');
+  const forwardingBy = {};
+  forwarding.rows.forEach((row) => { forwardingBy[row.business_id] = scrub(row); });
+  const ringBy = byBusiness(ringFirst.rows, 'business_id');
+  const portBy = byBusiness(portRequests.rows, 'business_id');
   const assistantsBy = {};
   assistants.rows.forEach((row) => { assistantsBy[row.business_id] = scrub(row); });
+
+  const grants = await privacy.activeGrantSet();
+  const revealed = new Set();
+  function keep(businessId) {
+    if (!privacy.allows(user, businessId, grants)) return false;
+    if (privacy.isReceptwise(user)) revealed.add(Number(businessId));
+    return true;
+  }
+  const callsOut = calls.rows.map((row) => scrub(keep(row.business_id) ? row : privacy.scrubCustomerFields(row, 'call')));
+  const bookingsOut = bookings.rows.map((row) => scrub(keep(row.business_id) ? row : privacy.scrubCustomerFields(row, 'booking')));
+  const activityOut = activity.rows.map((row) => scrub(
+    row.business_id && !keep(row.business_id) ? privacy.scrubCustomerFields(row, 'audit') : row
+  ));
+  if (privacy.isReceptwise(user)) {
+    for (const id of revealed) await privacy.noteView(user, id, 'export');
+  }
 
   const clients = businesses.rows.map((row) => {
     const client = scrub(row);
@@ -100,6 +127,9 @@ async function snapshot() {
     client.phoneNumbers = phonesBy[row.id] || [];
     client.assistant = assistantsBy[row.id] || null;
     client.integrations = integrationsBy[row.id] || [];
+    client.forwarding = forwardingBy[row.id] || null;
+    client.ringFirst = ringBy[row.id] || [];
+    client.portRequests = portBy[row.id] || [];
     return client;
   });
   const settings = businesses.rows.map((row) => ({
@@ -113,12 +143,12 @@ async function snapshot() {
   return {
     exportedAt: new Date().toISOString(),
     product: 'ReceptWise',
-    note: 'Clients, receptionist settings, calls, bookings, and activity. Passwords, session tokens, and third-party tokens are omitted. Use pg_dump for a full database backup.',
+    note: 'Clients, receptionist settings, calls, bookings, and activity. Passwords, session tokens, and third-party tokens are omitted. Caller and customer details are omitted unless that business has turned on Receptwise support access. Use pg_dump for a full database backup.',
     clients,
     settings,
-    calls: calls.rows.map(scrub),
-    bookings: bookings.rows.map(scrub),
-    activity: activity.rows.map(scrub)
+    calls: callsOut,
+    bookings: bookingsOut,
+    activity: activityOut
   };
 }
 
@@ -139,12 +169,21 @@ function toSql(data) {
     (client.integrations || []).forEach((item) => {
       sql += insert('integrations', ['id', 'business_id', 'provider', 'account_label', 'handle', 'profile_url', 'external_id', 'status', 'meta', 'created_at', 'updated_at'], item);
     });
+    if (client.forwarding) {
+      sql += insert('phone_forwarding', ['business_id', 'mode', 'carrier', 'rings', 'business_number', 'forward_to', 'status', 'transfer_number', 'hours', 'after_hours', 'ai_enabled', 'updated_at'], client.forwarding);
+    }
+    (client.ringFirst || []).forEach((item) => {
+      sql += insert('ring_first_numbers', ['id', 'business_id', 'label', 'e164', 'position'], item);
+    });
+    (client.portRequests || []).forEach((item) => {
+      sql += insert('port_requests', ['id', 'business_id', 'business_number', 'contact_name', 'contact_phone', 'carrier', 'notes', 'status', 'created_by', 'created_at'], item);
+    });
   });
   data.calls.forEach((call) => {
     sql += insert('calls', ['id', 'business_id', 'vapi_call_id', 'direction', 'from_number', 'to_number', 'status', 'started_at', 'ended_at', 'duration_sec', 'ended_reason', 'outcome', 'summary', 'caller_name', 'caller_email', 'caller_business', 'call_type', 'booking_confirmed', 'booked_start', 'answered', 'structured', 'recording_url', 'created_at'], call);
   });
   data.bookings.forEach((booking) => {
-    sql += insert('bookings', ['id', 'business_id', 'call_id', 'starts_at', 'customer', 'service', 'source', 'status', 'google_event_id', 'created_at'], booking);
+    sql += insert('bookings', ['id', 'business_id', 'call_id', 'starts_at', 'ends_at', 'customer', 'phone', 'email', 'service', 'source', 'status', 'google_event_id', 'calcom_uid', 'timezone', 'created_at', 'updated_at'], booking);
   });
   data.activity.forEach((item) => {
     sql += insert('audit_log', ['id', 'created_at', 'action', 'detail', 'business_id'], {
@@ -155,7 +194,7 @@ function toSql(data) {
       business_id: item.business_id
     });
   });
-  ['businesses', 'phone_numbers', 'calls', 'bookings', 'integrations', 'audit_log'].forEach((table) => {
+  ['businesses', 'phone_numbers', 'calls', 'bookings', 'integrations', 'audit_log', 'ring_first_numbers', 'port_requests'].forEach((table) => {
     sql += "SELECT setval('" + table + "_id_seq', GREATEST((SELECT COALESCE(MAX(id), 1) FROM " + table + '), 1));\n';
   });
   sql += 'COMMIT;\n';
@@ -169,7 +208,7 @@ async function send(req, res) {
     err.status = 400;
     throw err;
   }
-  const data = await snapshot();
+  const data = await snapshot(req.user);
   await audit.record(req.user.id, null, 'data.export', { format });
   const day = data.exportedAt.slice(0, 10);
   res.set('Cache-Control', 'no-store');

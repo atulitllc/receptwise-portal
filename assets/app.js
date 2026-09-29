@@ -105,8 +105,15 @@
     not_verified: "Not connected",
     attached: "Attached",
     unassigned: "Not attached",
-    missing_on_vapi: "Not connected"
+    missing_on_vapi: "Not connected",
+    not_set_up: "Not set up",
+    pending_test: "Pending test",
+    verified: "Verified"
   };
+
+  var FWD_DAYS = [
+    ["sun", "Sun"], ["mon", "Mon"], ["tue", "Tue"], ["wed", "Wed"], ["thu", "Thu"], ["fri", "Fri"], ["sat", "Sat"]
+  ];
 
   var wizard = defaultWizard();
   var openCheck = "";
@@ -115,6 +122,9 @@
   var extraCache = null;
   var currentRender = function () {};
   var integrationByBiz = {};
+  var apptCache = null;
+  var apptShown = [];
+  var calendarByBiz = {};
 
   function defaultWizard() {
     return {
@@ -323,6 +333,132 @@
     catch (e) { return null; }
   }
 
+  function isBusinessViewer() {
+    var role = (session() || {}).role;
+    return role === "owner" || role === "staff";
+  }
+
+  function scopeSlug() {
+    var user = session() || {};
+    return user.businessSlug || user.businessId || "";
+  }
+
+  function roleLabel() {
+    var role = (session() || {}).role || "admin";
+    if (role === "owner") return "Owner";
+    if (role === "staff") return "Staff";
+    if (role === "team") return "Team";
+    return "Admin";
+  }
+
+  function demoIdentity(email) {
+    var list = (window.RW_DATA && window.RW_DATA.businesses) || [];
+    var lower = String(email || "").toLowerCase();
+    for (var i = 0; i < list.length; i++) {
+      var owner = list[i].owner || {};
+      if (owner.email && String(owner.email).toLowerCase() === lower) {
+        return {
+          email: email,
+          name: owner.name || nameFromEmail(email),
+          role: "owner",
+          businessId: list[i].id,
+          businessSlug: list[i].id
+        };
+      }
+    }
+    return { email: email, name: nameFromEmail(email), role: "admin", businessId: null, businessSlug: null };
+  }
+
+  function supportStore() {
+    try { return JSON.parse(storageGet("rw_support") || "{}"); }
+    catch (e) { return {}; }
+  }
+
+  function currentSupport(b) {
+    if (b && b.supportAccess && b.supportAccess.expiresAt !== undefined) return b.supportAccess;
+    var row = supportStore()[b && b.id];
+    if (!row || !row.expiresAt) return { enabled: false, active: false, expiresAt: null };
+    var active = new Date(row.expiresAt).getTime() > Date.now();
+    return { enabled: active, active: active, expiresAt: active ? row.expiresAt : null };
+  }
+
+  function detailsOpen(b) {
+    if (!b) return false;
+    if (b.detailsVisible === true) return true;
+    if (b.detailsVisible === false) return false;
+    if (isBusinessViewer()) return String(b.id) === String(scopeSlug());
+    return currentSupport(b).active;
+  }
+
+  function hiddenLabel(status) {
+    var text = String(status || "").toLowerCase();
+    if (text === "cancelled") return "Cancelled – details hidden";
+    if (text === "completed") return "Completed – details hidden";
+    return "Booked – details hidden";
+  }
+
+  function veilCall(call) {
+    return {
+      time: call.time || "",
+      from: "Details hidden",
+      duration: call.duration || "",
+      outcome: call.outcome || "",
+      flag: "",
+      summary: "",
+      lines: [],
+      recordingUrl: "",
+      redacted: true
+    };
+  }
+
+  function veilBooking(booking) {
+    return Object.assign({}, booking, {
+      customer: hiddenLabel(booking.status),
+      phone: "",
+      email: "",
+      service: "",
+      redacted: true
+    });
+  }
+
+  function veilAppointment(appt) {
+    if (!appt || appt.redacted) return appt;
+    var biz = findBiz(appt.businessId);
+    if (detailsOpen(biz || { id: appt.businessId })) return appt;
+    return {
+      id: appt.id,
+      businessId: appt.businessId,
+      businessName: appt.businessName,
+      timezone: appt.timezone,
+      startsAt: appt.startsAt,
+      endsAt: appt.endsAt,
+      customer: hiddenLabel(appt.status),
+      phone: "",
+      email: "",
+      service: "",
+      source: appt.source || "",
+      status: appt.status,
+      callId: null,
+      callHref: null,
+      redacted: true
+    };
+  }
+
+  function veilFeedItem(item) {
+    if (!item || LIVE) return item;
+    var biz = findBiz(item.businessId);
+    if (detailsOpen(biz || { id: item.businessId })) return item;
+    var text = String(item.text || "");
+    if (/^booked/i.test(text) || /\bbooked\b/i.test(text)) return Object.assign({}, item, { text: "Booked – details hidden" });
+    if (/^answered/i.test(text) || /^call\b/i.test(text)) return Object.assign({}, item, { text: "Call · details hidden" });
+    return item;
+  }
+
+  function canEditBusiness(businessId) {
+    if (!businessId || businessId === "all") return isBusinessViewer() && !!scopeSlug();
+    return detailsOpen(findBiz(businessId) || { id: businessId });
+  }
+
   function createdList() {
     if (LIVE) return [];
     if (extraCache) return extraCache;
@@ -365,6 +501,10 @@
       draftRecords().forEach(function (draft) {
         if (!list.some(function (item) { return item.id === draft.id; })) list.push(draft);
       });
+    }
+    if (isBusinessViewer()) {
+      var slug = String(scopeSlug());
+      list = list.filter(function (item) { return item.id === slug; });
     }
     return list;
   }
@@ -431,12 +571,23 @@
   }
 
   function phoneStatus(b) {
+    var fwd = b.forwarding;
+    if (fwd && fwd.status) {
+      if (fwd.mode === "ported") return fwd.status === "verified" ? "Number on ReceptWise" : "Ring-first " + (STATUS_LABEL[fwd.status] || fwd.status);
+      if (fwd.status === "verified") return "Forwarding verified";
+      if (fwd.status === "pending_test") return "Forwarding pending test";
+      return "Forwarding not set up";
+    }
     var forwarding = checklistItem(b, "forwarding");
     if (!b.phone || b.phone.mode === "new") return "New number active";
     if (b.phone.mode === "port") return "Port in progress";
     if (forwarding.status === "connected") return "Forwarding confirmed";
     if (forwarding.status === "action") return "Forwarding needs action";
     return "Forwarding pending";
+  }
+
+  function isAdminUser() {
+    return !!(LIVE && window.RW_LIVE && window.RW_LIVE.user && window.RW_LIVE.user.role === "admin");
   }
 
   function heat(used, cap) {
@@ -727,6 +878,7 @@
     var active = page === "client" ? "clients" : page;
     var titles = {
       dashboard: "Overview",
+      appointments: "Appointments",
       clients: "Businesses",
       add: "Add business",
       client: "Business",
@@ -736,15 +888,17 @@
       settings: "Receptionist",
       integrations: "Integrations"
     };
+    var mainNav = [
+      ["dashboard.html", "Overview", "dashboard"],
+      ["appointments.html", "Appointments", "appointments"],
+      ["phone.html", "Phone", "phone"],
+      ["settings.html", "Receptionist", "settings"],
+      ["integrations.html", "Integrations", "integrations"],
+      ["clients.html", "Businesses", "clients"]
+    ];
+    if (!isBusinessViewer()) mainNav.push(["add.html", "Add business", "add"]);
     var groups = [
-      ["Main", [
-        ["dashboard.html", "Overview", "dashboard"],
-        ["phone.html", "Phone", "phone"],
-        ["settings.html", "Receptionist", "settings"],
-        ["integrations.html", "Integrations", "integrations"],
-        ["clients.html", "Businesses", "clients"],
-        ["add.html", "Add business", "add"]
-      ]],
+      ["Main", mainNav],
       ["Account", [
         ["billing.html", "Billing and plans", "billing"],
         ["team.html", "Team and settings", "team"]
@@ -764,7 +918,7 @@
       nav +
       '<div class="side-spacer"></div>' +
       '<div class="side-user"><div class="avatar me">' + esc(initials(user.name)) + "</div><div><strong>" + esc(user.name) +
-      '</strong><span>Admin</span></div><button type="button" data-action="sign-out">Sign out</button></div></aside>' +
+      '</strong><span>' + esc(roleLabel()) + '</span></div><button type="button" data-action="sign-out">Sign out</button></div></aside>' +
       '<div class="main"><header class="topbar"><h1 id="top-title">' + esc(titles[page] || "ReceptWise") + "</h1>" +
       '<form class="search" action="clients.html" method="get">' + iconSearch() +
       '<input name="q" value="' + esc(q) + '" placeholder="Search businesses" aria-label="Search businesses"></form>' +
@@ -844,13 +998,14 @@
       d.setDate(d.getDate() - (6 - i));
       return '<div class="bar-col' + (i === 6 ? " today" : "") + '"><i style="height:' + Math.max(8, Math.round((n / max) * 100)) + '%"></i><em>' + days[d.getDay()] + "</em></div>";
     }).join("");
-    var feed = (window.RW_DATA.feed || []).map(function (item) {
+    var feed = (window.RW_DATA.feed || []).map(veilFeedItem).map(function (item) {
       var biz = findBiz(item.businessId);
       var name = biz ? biz.name : "Business";
       return "<div class='setting-row'><div><strong>" + esc(name) + "</strong><div class='help'>" + esc(item.text) + "</div></div><span class='help'>" + esc(item.time) + "</span></div>";
     }).join("");
     view.innerHTML = '<div class="page-head"><div><h1>Overview</h1><p class="sub">' + esc(todayLabel()) + " · " + live + " live · " + (list.length - live) + ' still moving through setup</p></div>' +
-      '<div class="head-actions"><a class="btn" href="clients.html">All businesses</a><a class="btn btn-primary" href="add.html">Add business</a></div></div>' +
+      '<div class="head-actions"><a class="btn" href="clients.html">All businesses</a>' +
+      (isBusinessViewer() ? "" : '<a class="btn btn-primary" href="add.html">Add business</a>') + "</div></div>" +
       '<section class="stats"><article class="stat"><em>Businesses</em><b>' + list.length + '</b><span>ReceptWise is pilot client 1</span></article>' +
       '<article class="stat"><em>Calls today</em><b>' + calls + '</b><span>Answered across the book</span></article>' +
       '<article class="stat"><em>Bookings today</em><b>' + bookings + '</b><span>From calls and the websites</span></article>' +
@@ -914,7 +1069,7 @@
         (b.status === "draft" ? draftActions(b) : esc(next.text) + "<div class='help'>" + esc(next.owner) + "</div>") + "</td></tr>";
     }).join("");
     view.innerHTML = '<div class="page-head"><div><h1>Businesses</h1><p class="sub">' + list.length + " shown · pinned pilot stays at the top</p></div>" +
-      '<a class="btn btn-primary" href="add.html">Add business</a></div>' +
+      (isBusinessViewer() ? "" : '<a class="btn btn-primary" href="add.html">Add business</a>') + "</div>" +
       '<div class="filters"><div class="chips">' + chip("All", "") + chip("Needs attention", "attention") + chip("Waiting on client", "waiting") +
       chip("Setup incomplete", "draft") + chip("In setup", "setup") + chip("Live", "live") + "</div>" +
       '<select class="ctrl" style="width:auto" data-action="go-filter" data-key="type" aria-label="Business type">' + options(types, filters.type, "All types") + "</select>" +
@@ -1564,7 +1719,8 @@
         checkAction(b, item) + "</div>" : "") + "</div>";
     }).join("");
     var activity = (b.activity || []).map(function (item) {
-      return "<div class='setting-row'><div>" + esc(item.text) + "</div><span class='help'>" + esc(item.time) + "</span></div>";
+      var text = detailsOpen(b) ? item.text : (/book/i.test(item.text || "") ? "Booked – details hidden" : item.text);
+      return "<div class='setting-row'><div>" + esc(text) + "</div><span class='help'>" + esc(item.time) + "</span></div>";
     }).join("") || '<div class="empty">No activity yet.</div>';
     var facts = [
       ["Owner", (b.owner && b.owner.name) || "—"],
@@ -1580,13 +1736,31 @@
       '</div></section><section class="card"><div class="card-h"><h2>Activity</h2></div><div class="card-b">' + activity +
       '</div></section><section class="card"><div class="card-h"><h2>Business</h2></div><div class="card-b"><dl class="kvs">' + facts.map(function (row) {
         return "<dt>" + esc(row[0]) + "</dt><dd>" + esc(row[1]) + "</dd>";
-      }).join("") + "</dl></div></section></div></div>" + phonePanel(b);
+      }).join("") + "</dl></div></section>" + supportCard(b) + "</div></div>" + phonePanel(b);
+  }
+
+  function supportCard(b) {
+    var access = currentSupport(b);
+    var mine = (session() || {}).role === "owner" && String(b.id) === String(scopeSlug());
+    var until = access.expiresAt ? new Date(access.expiresAt).toLocaleString() : "";
+    if (mine) {
+      return '<section class="card"><div class="card-h"><h2>Allow Receptwise support access</h2></div><div class="card-b">' +
+        "<p class='help'>Off by default. While this is on, Receptwise staff can see this business's call and booking details. It turns off after the time you choose. The default is 72 hours.</p>" +
+        '<div class="field"><label for="support-hours">Hours</label><input class="ctrl" id="support-hours" type="number" min="1" max="168" value="72"></div>' +
+        (access.active ? "<p>On until " + esc(until) + ".</p>" : "<p>Off. Receptwise sees counts and line health only.</p>") +
+        '<button class="btn' + (access.active ? "" : " btn-primary") + '" type="button" data-action="support-access" data-id="' + esc(b.id) + '" data-enabled="' + (access.active ? "0" : "1") + '">' +
+        (access.active ? "Turn off" : "Allow access") + "</button></div></section>";
+    }
+    if (isBusinessViewer()) return "";
+    return '<section class="card"><div class="card-h"><h2>Receptwise support access</h2></div><div class="card-b"><p>' +
+      (access.active ? "On until " + esc(until) + ". Call and booking details are visible, and each view is recorded." : "Off. Call transcripts, recordings, and customer details stay hidden.") +
+      "</p></div></section>";
   }
 
   function checkAction(b, item) {
     var id = esc(b.id);
     if (item.key === "test") return '<button class="btn btn-sm" type="button" data-action="run-greeting-test" data-id="' + id + '">Run test call</button>';
-    if (item.key === "forwarding") return '<button class="btn btn-sm" type="button" data-action="forward-test" data-id="' + id + '">Run forwarding test</button>';
+    if (item.key === "forwarding") return '<button class="btn btn-sm" type="button" data-action="fwd-test" data-id="' + id + '">Test forwarding</button>';
     if (item.key === "calendar") {
       if (!calendarSignIn(b)) return '<p class="help">' + esc(calendarDescribe(window.RWCalendarStep ? window.RWCalendarStep.choiceValue((b.calendar && b.calendar.provider) || "none") : "none").checklist) + "</p>";
       return '<button class="btn btn-sm" type="button" data-action="send-link" data-id="' + id + '" data-kind="calendar">Send sign-in link</button> <button class="btn btn-sm" type="button" data-action="booking-test" data-id="' + id + '">Run booking test</button>';
@@ -1604,26 +1778,220 @@
     return "";
   }
 
-  function phonePanel(b) {
+  function legacyForwarding(b) {
     var phone = b.phone || {};
-    var tests = (phone.tests || []).map(function (test) {
-      return "<tr><td>" + esc(test.when) + "</td><td>" + esc(test.result) + "</td><td>" + esc(test.note) + "</td></tr>";
-    }).join("");
-    var codes = "";
-    if (phone.mode === "forward") {
-      codes = codePair(phone.carrier || "verizon", phone.forwardType || "missed", phone.aiNumber) +
-        '<button class="btn btn-sm" type="button" data-action="send-forward-live" data-id="' + esc(b.id) + '">Send instructions to the client</button> ';
-    } else if (phone.mode === "port") {
-      codes = '<div class="note">Porting is in progress. Keep forwarding until the number moves, so the business does not miss calls.</div>';
+    var mode = phone.mode === "port" || phone.mode === "new" ? "ported" : "conditional";
+    var carrierMap = {
+      verizon: "verizon", "att-mobile": "att", "att-landline": "att", att: "att", tmobile: "tmobile",
+      comcast: "comcast", spectrum: "spectrum", ringcentral: "ringcentral", other: "other"
+    };
+    var tests = phone.tests || [];
+    var status = "not_set_up";
+    if (tests.some(function (test) { return /confirm/i.test(test.result || ""); })) status = "verified";
+    else if (tests.length) status = "pending_test";
+    return {
+      mode: mode,
+      carrier: carrierMap[phone.carrier] || "",
+      rings: 4,
+      businessNumber: phone.businessNumber || "",
+      forwardTo: phone.aiNumber || "",
+      status: status,
+      transferNumber: b.transfer || (b.owner && b.owner.mobile) || "",
+      ringFirst: mode === "ported" && b.transfer ? [{ label: "Desk", number: b.transfer }] : [],
+      hours: {},
+      afterHours: "ai_immediate",
+      aiEnabled: true,
+      portRequests: []
+    };
+  }
+
+  function forwardingStore() {
+    try { return JSON.parse(storageGet("rw_forwarding") || "{}"); }
+    catch (e) { return {}; }
+  }
+
+  function forwardingFor(b) {
+    if (b.forwarding && b.forwarding._ready) return b.forwarding;
+    var saved = null;
+    if (!LIVE) saved = forwardingStore()[b.id] || null;
+    var base = saved || b.forwarding || legacyForwarding(b);
+    if (!base.forwardTo) base.forwardTo = (b.phone && b.phone.aiNumber) || "";
+    base._ready = true;
+    b.forwarding = base;
+    return base;
+  }
+
+  function applyForwardingLocal(b, fwd) {
+    fwd._ready = true;
+    b.forwarding = fwd;
+    b.transfer = fwd.transferNumber || b.transfer || "";
+    if (!b.phone) b.phone = {};
+    b.phone.mode = fwd.mode === "ported" ? "port" : "forward";
+    b.phone.carrier = fwd.carrier || "";
+    b.phone.businessNumber = fwd.businessNumber || "";
+    b.phone.forwardType = "missed";
+    if (!b.phone.aiNumber) b.phone.aiNumber = fwd.forwardTo || "";
+    var item = checklistItem(b, "forwarding");
+    if (fwd.status === "verified") {
+      item.status = "connected";
+      item.detail = "Forwarding is verified.";
+    } else if (fwd.status === "pending_test") {
+      item.status = "action";
+      item.detail = "Forwarding is waiting on a test.";
     } else {
-      codes = '<div class="note calm">This business publishes the new number ' + esc(phone.aiNumber || "") + ". No forwarding code is required.</div>";
+      item.status = "pending";
+      item.detail = "Forwarding is not turned on yet.";
     }
-    return '<section class="card" style="margin-top:14px"><div class="card-h"><h2>Phone and forwarding</h2><span class="feat-row">' + badge("phone_number") + badge("number_search") + '<span class="help">' + esc(phoneStatus(b)) + "</span></span></div><div class='card-b'>" +
-      '<dl class="kvs"><dt>AI number</dt><dd>' + esc(phone.aiNumber || "—") + "</dd><dt>Business number</dt><dd>" + esc(phone.businessNumber || "—") + "</dd><dt>Mode</dt><dd>" +
-      esc(phone.mode === "forward" ? "Forward existing number" : phone.mode === "port" ? "Port the number" : "New number") + "</dd></dl>" + codes +
-      '<button class="btn btn-sm btn-primary" type="button" data-action="forward-test" data-id="' + esc(b.id) + '">Run forwarding test</button>' +
-      '<div class="table-wrap" style="margin-top:10px"><table class="data"><thead><tr><th>When</th><th>Result</th><th>Note</th></tr></thead><tbody>' +
-      (tests || '<tr><td colspan="3"><div class="empty">No test calls yet.</div></td></tr>') + "</tbody></table></div></div></section>";
+    if (!LIVE) {
+      var all = forwardingStore();
+      var copy = Object.assign({}, fwd);
+      delete copy._ready;
+      all[b.id] = copy;
+      storageSet("rw_forwarding", JSON.stringify(all));
+    }
+  }
+
+  function readForwardingForm() {
+    var root = document.getElementById("phone-forwarding");
+    if (!root) return null;
+    var modeBtn = root.querySelector("[data-fwd-mode].on");
+    var hours = {};
+    FWD_DAYS.forEach(function (day) {
+      var closed = root.querySelector("[data-day='" + day[0] + "'][data-fwd='closed']");
+      var open = root.querySelector("[data-day='" + day[0] + "'][data-fwd='open']");
+      var close = root.querySelector("[data-day='" + day[0] + "'][data-fwd='close']");
+      if (!open) return;
+      if (closed && closed.checked) hours[day[0]] = { closed: true, open: "", close: "" };
+      else if (open.value && close && close.value) hours[day[0]] = { closed: false, open: open.value, close: close.value };
+    });
+    var aiBtn = root.querySelector("[data-fwd='ai']");
+    var carrierSel = root.querySelector("[data-fwd='carrier']");
+    var businessInput = root.querySelector("[data-fwd='businessNumber']");
+    var transferInput = root.querySelector("[data-fwd='transfer']");
+    var ringsSel = root.querySelector("[data-fwd='rings']");
+    var draft = {
+      businessId: root.getAttribute("data-business"),
+      mode: modeBtn ? modeBtn.getAttribute("data-fwd-mode") : "conditional",
+      afterHours: "ai_immediate",
+      status: root.getAttribute("data-status") || "not_set_up"
+    };
+    // Fields that belong to the other mode are left off the draft so a save
+    // does not wipe the business number, carrier, hours, or ring-first list.
+    if (carrierSel) draft.carrier = carrierSel.value || "";
+    if (ringsSel) draft.rings = Number(ringsSel.value) || 4;
+    if (businessInput) draft.businessNumber = businessInput.value || "";
+    if (transferInput) draft.transferNumber = transferInput.value || "";
+    if (root.querySelector("[data-fwd='open']")) draft.hours = hours;
+    if (root.querySelector("[data-action='fwd-add-ring']")) {
+      draft.ringFirst = Array.prototype.slice.call(root.querySelectorAll("[data-ring-row]")).map(function (row) {
+        var label = row.querySelector("[data-fwd='label']");
+        var number = row.querySelector("[data-fwd='number']");
+        return { label: label ? label.value : "", number: number ? number.value : "" };
+      });
+    }
+    if (aiBtn) draft.aiEnabled = aiBtn.getAttribute("aria-pressed") === "true";
+    return draft;
+  }
+
+  function forwardingPayload(b, draft, status) {
+    var prev = forwardingFor(b);
+    var next = Object.assign({}, prev, draft || {});
+    next.forwardTo = prev.forwardTo || (b.phone && b.phone.aiNumber) || "";
+    next.portRequests = prev.portRequests || [];
+    next.status = status || next.status || "not_set_up";
+    next.afterHours = "ai_immediate";
+    delete next._ready;
+    return next;
+  }
+
+  function fwdInstructionsHtml(fwd) {
+    var lib = window.RW_FORWARDING;
+    if (!lib) return '<div class="note">Forwarding instructions did not load.</div>';
+    if (!fwd.carrier) return '<div class="note calm">Choose a phone company to see the steps for no-answer forwarding.</div>';
+    var help = lib.instructions({ carrier: fwd.carrier || "other", rings: fwd.rings || 4, forwardTo: fwd.forwardTo });
+    var html = '<div class="note">' + esc(help.caveat) + "</div>";
+    if (help.missingNumber) html += '<div class="note calm">A ReceptWise number is not assigned yet. The steps below leave a blank where that number will go.</div>';
+    help.steps.forEach(function (item) {
+      html += '<div class="code-card"><strong>' + esc(item.heading) + "</strong><p class='help'>" + esc(item.text) + "</p>";
+      item.codes.forEach(function (itemCode) { html += codeRow(itemCode.label, itemCode.value); });
+      if (item.check) html += '<p class="fwd-check">Check with your carrier.</p>';
+      html += "</div>";
+    });
+    return html;
+  }
+
+  function phonePanel(b) {
+    var fwd = forwardingFor(b);
+    var carriers = (window.RW_FORWARDING && window.RW_FORWARDING.CARRIERS) || [
+      { id: "att", label: "AT&T" }, { id: "verizon", label: "Verizon" }, { id: "tmobile", label: "T-Mobile" },
+      { id: "comcast", label: "Comcast/Xfinity" }, { id: "spectrum", label: "Spectrum" },
+      { id: "ringcentral", label: "RingCentral/other VoIP" }, { id: "other", label: "Other" }
+    ];
+    var rings = Number(fwd.rings) || 4;
+    var seconds = rings * 5;
+    var mode = fwd.mode === "ported" ? "ported" : "conditional";
+    var target = fwd.forwardTo || (b.phone && b.phone.aiNumber) || "";
+    var html = '<section class="card" id="phone-forwarding" style="margin-top:14px" data-business="' + esc(b.id) + '" data-status="' + esc(fwd.status || "not_set_up") + '">' +
+      '<div class="card-h"><h2>Phone &amp; forwarding</h2>' + pill(fwd.status || "not_set_up") + "</div><div class='card-b'>" +
+      "<p class='help'>Most businesses keep their number and turn on no-answer forwarding to the ReceptWise number. If the number moves onto the ReceptWise line, this page controls who rings first.</p>" +
+      '<div class="seg" role="group" aria-label="Setup mode">' +
+      '<button type="button" data-action="fwd-mode" data-id="' + esc(b.id) + '" data-fwd-mode="conditional"' + (mode === "conditional" ? ' class="on"' : "") + ">Conditional forwarding</button>" +
+      '<button type="button" data-action="fwd-mode" data-id="' + esc(b.id) + '" data-fwd-mode="ported"' + (mode === "ported" ? ' class="on"' : "") + ">Ported number</button></div>" +
+      '<dl class="kvs" style="margin-top:12px"><dt>ReceptWise number</dt><dd>' + esc(target || "Not assigned yet") + "</dd>" +
+      "<dt>Status</dt><dd>" + esc(STATUS_LABEL[fwd.status] || "Not set up") + "</dd></dl>" +
+      '<div class="grid-2"><div class="field"><label for="fwd-transfer">Transfer to a person</label>' +
+      '<input class="ctrl" id="fwd-transfer" data-fwd="transfer" value="' + esc(fwd.transferNumber || "") + '" placeholder="(555) 555-0100"></div>';
+    if (mode === "conditional") {
+      html += '<div class="field"><label for="fwd-business">Business number</label>' +
+        '<input class="ctrl" id="fwd-business" data-fwd="businessNumber" value="' + esc(fwd.businessNumber || "") + '" placeholder="(555) 555-0199"></div></div>' +
+        '<div class="grid-2"><div class="field"><label for="fwd-carrier">Phone company</label><select class="ctrl" id="fwd-carrier" data-fwd="carrier" data-action="fwd-refresh">' +
+        '<option value="">Choose a carrier</option>' + carriers.map(function (carrier) {
+          return '<option value="' + esc(carrier.id) + '"' + (fwd.carrier === carrier.id ? " selected" : "") + ">" + esc(carrier.label) + "</option>";
+        }).join("") + '</select></div><div class="field"><label for="fwd-rings">Rings before forwarding</label><select class="ctrl" id="fwd-rings" data-fwd="rings" data-action="fwd-refresh">' +
+        [1, 2, 3, 4, 5, 6].map(function (n) {
+          return '<option value="' + n + '"' + (rings === n ? " selected" : "") + ">" + n + " ring" + (n === 1 ? "" : "s") + " · about " + (n * 5) + " seconds</option>";
+        }).join("") + "</select><p class='help'>The carrier controls this timer. ReceptWise only saves what you want and shows their steps.</p></div></div>" +
+        '<div id="fwd-instructions">' + fwdInstructionsHtml(fwd) + "</div>";
+    } else {
+      var rows = (fwd.ringFirst && fwd.ringFirst.length ? fwd.ringFirst : [{ label: "", number: "" }]).map(function (row, index) {
+        return '<div class="fwd-ring" data-ring-row><input class="ctrl" data-fwd="label" value="' + esc(row.label || "") + '" placeholder="Cell or desk" aria-label="Ring-first label">' +
+          '<input class="ctrl" data-fwd="number" value="' + esc(row.number || "") + '" placeholder="(555) 555-0100" aria-label="Ring-first number">' +
+          '<button class="btn btn-sm" type="button" data-action="fwd-remove-ring" data-id="' + esc(b.id) + '" data-index="' + index + '">Remove</button></div>';
+      }).join("");
+      var hoursHtml = FWD_DAYS.map(function (day) {
+        var row = (fwd.hours && fwd.hours[day[0]]) || {};
+        var closed = !!row.closed;
+        return '<div class="fwd-day"><span>' + day[1] + '</span><label><input type="checkbox" data-day="' + day[0] + '" data-fwd="closed"' + (closed ? " checked" : "") + "> Closed</label>" +
+          '<input class="ctrl" type="time" data-day="' + day[0] + '" data-fwd="open" value="' + esc(row.open || "") + '" aria-label="' + day[1] + ' open">' +
+          '<input class="ctrl" type="time" data-day="' + day[0] + '" data-fwd="close" value="' + esc(row.close || "") + '" aria-label="' + day[1] + ' close"></div>';
+      }).join("");
+      var requests = (fwd.portRequests || []).map(function (item) {
+        return "<li>" + esc(item.businessNumber || "") + " · " + esc(item.contactName || "Request") + " · " + esc(item.status || "requested") + "</li>";
+      }).join("");
+      html += '<div class="field"><label>Ring duration</label><select class="ctrl" data-fwd="rings" data-action="fwd-refresh">' +
+        [1, 2, 3, 4, 5, 6].map(function (n) {
+          return '<option value="' + n + '"' + (rings === n ? " selected" : "") + ">" + n + " ring" + (n === 1 ? "" : "s") + " · " + (n * 5) + " seconds</option>";
+        }).join("") + "</select><p class='help'>Ring-first uses this as the dial timeout (" + seconds + " seconds).</p></div></div>" +
+        "<h3>Ring these phones first</h3><p class='help'>Cell and desk numbers ring together during business hours.</p>" + rows +
+        '<button class="btn btn-sm" type="button" data-action="fwd-add-ring" data-id="' + esc(b.id) + '">Add a number</button>' +
+        "<h3>Business hours</h3><p class='help'>Outside these hours the receptionist answers immediately. With no hours saved, ring-first applies all day. " + esc(b.hours ? "Hours on file: " + b.hours + "." : "") + "</p>" +
+        '<div class="fwd-hours">' + hoursHtml + "</div>" +
+        '<label class="setting-row"><span><strong>Receptionist answers</strong><div class="help">Turn this off to ring the phones above and stop there. After hours, with this on, the receptionist answers without ringing the desk.</div></span>' +
+        '<button class="switch' + (fwd.aiEnabled !== false ? " on" : "") + '" type="button" data-action="fwd-ai" data-id="' + esc(b.id) + '" data-fwd="ai" aria-pressed="' + (fwd.aiEnabled !== false ? "true" : "false") + '"><i></i></button></label>' +
+        '<div class="note calm">Ring-first is saved here. Pointing the live number at it is not automatic yet, and an unanswered ring does not yet connect the receptionist. Conditional forwarding still uses the carrier.</div>' +
+        "<h3>Request a number port</h3><p class='help'>This only records the request. It does not send anything to a carrier.</p>" +
+        '<div class="grid-2"><div class="field"><label>Number to port</label><input class="ctrl" data-fwd="portNumber" placeholder="(555) 555-0199"></div>' +
+        '<div class="field"><label>Name on the account</label><input class="ctrl" data-fwd="portName" placeholder="As the carrier has it"></div></div>' +
+        '<div class="grid-2"><div class="field"><label>Current carrier</label><input class="ctrl" data-fwd="portCarrier" placeholder="Carrier name"></div>' +
+        '<div class="field"><label>Note</label><input class="ctrl" data-fwd="portNotes" placeholder="Optional"></div></div>' +
+        '<button class="btn btn-sm" type="button" data-action="fwd-port" data-id="' + esc(b.id) + '">Request number port</button>' +
+        (requests ? "<ul>" + requests + "</ul>" : "");
+    }
+    html += '<div class="head-actions"><button class="btn btn-primary" type="button" data-action="fwd-save" data-id="' + esc(b.id) + '">Save</button>';
+    if (mode === "conditional") html += '<button class="btn" type="button" data-action="fwd-test" data-id="' + esc(b.id) + '">Test forwarding</button>';
+    if (fwd.status === "pending_test") html += '<button class="btn" type="button" data-action="fwd-verify" data-id="' + esc(b.id) + '">Mark verified</button>';
+    html += "</div></div></section>";
+    return html;
   }
 
   function minuteBanner(b) {
@@ -1640,7 +2008,9 @@
       var labels = { book: "Book", reschedule: "Reschedule", cancel: "Cancel", transfer: "Transfer", textLink: "Text a booking link" };
       return '<label class="setting-row"><span>' + labels[key] + '</span><input type="checkbox" data-action="cap-toggle" data-id="' + esc(b.id) + '" data-cap="' + key + '"' + (caps[key] ? " checked" : "") + (key === "textLink" ? " disabled" : "") + "></label>";
     }).join("");
-    var calls = (b.calls || []).map(function (call, index) {
+    var calls = (b.calls || []).map(function (call) {
+      return detailsOpen(b) ? call : veilCall(call);
+    }).map(function (call, index) {
       var open = openCall === String(index);
       return '<div class="call"><button class="call-top" type="button" data-action="toggle-call" data-key="' + index + '"><span><strong>' + esc(call.time) + "</strong> · " + esc(call.from) +
         "<div class='help'>" + esc(call.summary) + "</div></span><span>" + pill(call.outcome === "Booked" ? "connected" : call.flag ? "action" : "neutral") + "</span></button>" +
@@ -1670,18 +2040,113 @@
       "</span></div><div class='card-b'>" + calls + "</div></section></div>";
   }
 
+  function ensureCalendar(b) {
+    if (!LIVE || !b || !b.id || calendarByBiz[b.id]) return;
+    calendarByBiz[b.id] = { pending: true };
+    api("GET", "api/businesses/" + encodeURIComponent(b.id) + "/google-calendar").then(function (data) {
+      calendarByBiz[b.id] = data || { failed: true };
+      if ((document.body.dataset.page || "") === "client" && currentTab() === "bookings") currentRender();
+    }).catch(function () {
+      calendarByBiz[b.id] = { failed: true };
+      if ((document.body.dataset.page || "") === "client" && currentTab() === "bookings") currentRender();
+    });
+  }
+
+  function calendarProviderButtons(selected, enabled, businessId) {
+    function one(id, title, detail) {
+      var on = selected === id ? " on" : "";
+      var action = enabled
+        ? ' data-action="calendar-provider" data-provider="' + id + '" data-id="' + esc(businessId || "") + '"'
+        : " disabled";
+      return '<button class="choice' + on + '" type="button"' + action + '><b>' + esc(title) + "</b><span>" + esc(detail) + "</span></button>";
+    }
+    return '<div class="choice-grid">' +
+      one("google", "Google Calendar", "Owner approves with one sign-in link.") +
+      one("calcom", "Cal.com", "Paste an API key and pick an event type.") +
+      "</div>";
+  }
+
+  function googleCalendarBody(b, cal) {
+    if (!cal.configured) {
+      var missing = (cal.missing || []).join(", ");
+      return '<p class="help">Google Calendar is not configured' + (missing ? " (" + esc(missing) + ")" : "") + ".</p>" +
+        '<button class="btn" type="button" disabled>Connect Google Calendar</button>';
+    }
+    if (cal.connected) {
+      var name = cal.calendarName || cal.calendarId || "calendar";
+      return '<p class="banner ok">Connected · ' + esc(name) + (cal.email ? " · " + esc(cal.email) : "") + "</p>" +
+        '<button class="btn" type="button" data-action="calendar-disconnect" data-id="' + esc(b.id) + '">Disconnect</button>';
+    }
+    var options = (cal.calendars || []).map(function (item) {
+      return '<option value="' + esc(item.id) + '">' + esc(item.summary || item.id) + (item.primary ? " (primary)" : "") + "</option>";
+    }).join("");
+    var pick = cal.authorized
+      ? (options
+        ? '<div class="field"><label for="calendar-choice">Calendar</label><select class="ctrl" id="calendar-choice">' + options + "</select></div>" +
+          '<button class="btn btn-primary" type="button" data-action="calendar-save" data-id="' + esc(b.id) + '">Use this calendar</button>'
+        : '<p class="help">' + esc(cal.calendarsError || "No calendars were returned. Reconnect Google Calendar.") + "</p>")
+      : "";
+    return '<button class="btn btn-primary" type="button" data-action="calendar-connect" data-id="' + esc(b.id) + '">' +
+      (cal.authorized ? "Reconnect Google Calendar" : "Connect Google Calendar") + "</button>" + pick;
+  }
+
+  function calcomCalendarBody(b, cal) {
+    var info = cal.calcom || {};
+    var saved = info.keySaved ? '<p class="help">A Cal.com API key is stored encrypted. Paste a new key only to replace it. The key is not shown again.</p>' : "";
+    var types = info.eventTypes || [];
+    var typeOptions = types.map(function (item) {
+      var id = String(item.id);
+      var label = (item.title || item.slug || ("Event type " + id)) + (item.lengthInMinutes ? " · " + item.lengthInMinutes + " min" : "");
+      return '<option value="' + esc(id) + '" data-title="' + esc(item.title || "") + '" data-length="' + esc(item.lengthInMinutes || "") + '"' +
+        (id === String(info.eventTypeId || "") ? " selected" : "") + ">" + esc(label) + "</option>";
+    }).join("");
+    var picker = info.keySaved
+      ? (typeOptions
+        ? '<div class="field"><label for="calcom-event-type">Event type</label><select class="ctrl" id="calcom-event-type">' + typeOptions + "</select></div>" +
+          '<button class="btn btn-primary" type="button" data-action="calcom-pick" data-id="' + esc(b.id) + '">Use this event type</button>'
+        : '<p class="help">' + esc(info.eventTypesError || "Save the API key, then load event types.") + "</p>" +
+          '<button class="btn" type="button" data-action="calcom-load" data-id="' + esc(b.id) + '">Show event types</button>')
+      : "";
+    var connected = info.connected
+      ? '<p class="banner ok">Connected · ' + esc(info.eventTypeTitle || ("Event type " + info.eventTypeId)) + "</p>"
+      : "";
+    return connected + saved +
+      '<div class="field"><label for="calcom-key">Cal.com API key</label><input class="ctrl" id="calcom-key" type="password" autocomplete="off" placeholder="cal_live_…"></div>' +
+      '<div class="head-actions"><button class="btn" type="button" data-action="calcom-save" data-id="' + esc(b.id) + '">Save API key</button>' +
+      (info.keySaved ? '<button class="btn" type="button" data-action="calcom-test" data-id="' + esc(b.id) + '">Test connection</button>' +
+        '<button class="btn" type="button" data-action="calcom-disconnect" data-id="' + esc(b.id) + '">Remove key</button>' : "") +
+      "</div>" + picker +
+      (info.testNote ? '<p class="help">' + esc(info.testNote) + "</p>" : "");
+  }
+
+  function calendarSection(b) {
+    var head = '<section class="card" id="google-calendar" style="margin-bottom:12px"><div class="card-h"><h2>Calendar</h2>' + badge("calendar_connection") + '</div><div class="card-b">';
+    if (!LIVE) {
+      return head +
+        '<p class="banner warn">Using the shared demo calendar</p>' +
+        '<p class="help">This demo does not connect Google Calendar or Cal.com.</p>' +
+        calendarProviderButtons("google", false) +
+        '<button class="btn" type="button" disabled>Connect Google Calendar</button></div></section>';
+    }
+    ensureCalendar(b);
+    var cal = calendarByBiz[b.id];
+    if (!cal || cal.pending) return head + '<p class="help">Loading calendar…</p></div></section>';
+    if (cal.failed) return head + '<p class="banner bad">Could not load calendar status.</p></div></section>';
+    var selected = cal.provider === "calcom" ? "calcom" : "google";
+    var warn = cal.warning ? '<p class="banner warn">' + esc(cal.warning) + "</p>" : "";
+    var body = selected === "calcom" ? calcomCalendarBody(b, cal) : googleCalendarBody(b, cal);
+    return head + warn + calendarProviderButtons(selected, true, b.id) + body + "</div></section>";
+  }
+
   function tabBookings(b) {
     var rows = (b.bookings || []).map(function (booking) {
-      return "<tr><td>" + esc(booking.when) + "</td><td>" + esc(booking.customer) + "</td><td>" + esc(booking.service) + "</td><td>" + esc(booking.source) + "</td><td>" + esc(booking.status) + "</td></tr>";
+      var item = detailsOpen(b) ? booking : veilBooking(booking);
+      return "<tr><td>" + esc(item.when) + "</td><td>" + esc(item.customer) + "</td><td>" + esc(item.phone || "—") + "</td><td>" + esc(item.service || "—") + "</td><td>" + esc(item.source) + "</td><td>" + esc(item.status) + "</td></tr>";
     }).join("");
-    var calendarActions = calendarSignIn(b)
-      ? '<div class="head-actions" style="margin-bottom:12px">' + badge("calendar_connection") +
-        '<button class="btn btn-primary" type="button" data-action="booking-test" data-id="' + esc(b.id) + '">Run booking test</button>' +
-        '<button class="btn" type="button" data-action="send-link" data-id="' + esc(b.id) + '" data-kind="calendar">Send calendar link</button></div>'
-      : '<p class="help" style="margin-bottom:12px">' + badge("calendar_connection") + esc(calendarDescribe(window.RWCalendarStep ? window.RWCalendarStep.choiceValue((b.calendar && b.calendar.provider) || "none") : "none").checklist) + "</p>";
-    return calendarActions +
-      '<section class="card"><div class="card-h"><h2>Upcoming</h2>' + badge("bookings") + '</div><div class="table-wrap"><table class="data"><thead><tr><th>When</th><th>Customer</th><th>Service</th><th>Source</th><th>Status</th></tr></thead><tbody>' +
-      (rows || '<tr><td colspan="5"><div class="empty">No upcoming bookings.</div></td></tr>') + "</tbody></table></div></section>";
+    return calendarSection(b) +
+      '<div class="head-actions" style="margin-bottom:12px"><a class="btn" href="appointments.html?business=' + encodeURIComponent(b.id) + '">Open calendar</a></div>' +
+      '<section class="card"><div class="card-h"><h2>Upcoming</h2>' + badge("bookings") + '</div><div class="table-wrap"><table class="data"><thead><tr><th>When</th><th>Customer</th><th>Phone</th><th>Service</th><th>Source</th><th>Status</th></tr></thead><tbody>' +
+      (rows || '<tr><td colspan="6"><div class="empty">No upcoming bookings.</div></td></tr>') + "</tbody></table></div></section>";
   }
 
   function tabReviews(b) {
@@ -1910,6 +2375,7 @@
     }
     if (title) title.textContent = b.name;
     document.title = b.name + " · ReceptWise";
+    noteCalendarReturn();
     var tab = currentTab();
     var tabs = TABS.map(function (item) {
       return '<a class="tab' + (item[0] === tab ? " on" : "") + '" href="#' + item[0] + '">' + esc(item[1]) + statusMarks(TAB_FEATURES[item[0]]) + "</a>";
@@ -1931,6 +2397,20 @@
       '<button class="btn btn-primary" type="button" data-action="send-steps" data-id="' + esc(b.id) + '">Send owner their steps</button></div></section>' +
       '<nav class="tabs">' + tabs + "</nav>" + featureBar(TAB_FEATURES[tab]) + body + legal();
     if (tab === "website") loadSitePreview(b);
+  }
+
+  function noteCalendarReturn() {
+    if (!LIVE) return;
+    var params = new URLSearchParams(location.search);
+    var flag = params.get("calendar");
+    if (!flag) return;
+    if (flag === "connected") toast("Google account connected. Choose which calendar to use.");
+    else if (flag === "error") toast(params.get("message") || "Google Calendar connection failed.");
+    params.delete("calendar");
+    params.delete("message");
+    var id = params.get("id");
+    if (id) delete calendarByBiz[id];
+    history.replaceState(null, "", location.pathname + (params.toString() ? "?" + params.toString() : "") + location.hash);
   }
 
   function renderBilling(view) {
@@ -2285,43 +2765,149 @@
       closeModal();
       toast("Owner steps marked as sent.");
     },
-    "forward-test": function (el) {
+    "fwd-mode": function (el) {
       var b = findBiz(el.dataset.id);
       if (!b) return;
-      var target = (b.phone && (b.phone.mode === "forward" ? b.phone.businessNumber : b.phone.aiNumber)) || "the number";
-      openModal("Forwarding test", "<p>Calling " + esc(target) + " from the ReceptWise test number…</p>");
-      later(1100, function () {
-        var item = checklistItem(b, "forwarding");
-        if (b.phone && b.phone.mode === "new") {
-          openModal("Forwarding test", "<p class='banner ok'>This business uses a new number, so there is nothing to forward. A test call to " + esc(b.phone.aiNumber) + " would check the greeting instead.</p>",
-            '<button class="btn btn-primary" type="button" data-action="close-refresh">Done</button>');
-          return;
-        }
-        if (item.status === "action") {
-          openModal("Forwarding test", "<p><strong>Not working.</strong> The receptionist did not pick up within 45 seconds.</p><ul><li>The code was typed wrong.</li><li>It was dialed from a different line.</li><li>This phone company needs its website instead of a code.</li></ul>",
-            '<button class="btn" type="button" data-action="close-modal">Close</button><button class="btn btn-primary" type="button" data-action="confirm-forward" data-id="' + esc(b.id) + '">Client redialed — confirm</button>');
-        } else {
-          item.status = "connected";
-          item.detail = "Forwarding test confirmed just now.";
-          b.phone.tests = b.phone.tests || [];
-          b.phone.tests.unshift({ when: "Just now", result: "Confirmed", note: "The receptionist answered the test call." });
-          openModal("Forwarding test", "<p class='banner ok'>Confirmed. The receptionist answered, and the call record matches the test number.</p>",
-            '<button class="btn btn-primary" type="button" data-action="close-refresh">Done</button>');
-        }
-      });
-    },
-    "confirm-forward": function (el) {
-      var b = findBiz(el.dataset.id);
-      if (!b) return;
-      var item = checklistItem(b, "forwarding");
-      item.status = "connected";
-      item.detail = "Forwarding confirmed after the client redialed.";
-      b.phone.tests = b.phone.tests || [];
-      b.phone.tests.unshift({ when: "Just now", result: "Confirmed", note: "Retry succeeded." });
-      closeModal();
-      toast("Forwarding marked confirmed.");
+      var draft = readForwardingForm() || {};
+      draft.mode = el.getAttribute("data-fwd-mode") || "conditional";
+      applyForwardingLocal(b, forwardingPayload(b, draft));
       currentRender();
     },
+    "fwd-refresh": function () {
+      var draft = readForwardingForm();
+      if (!draft) return;
+      var b = findBiz(draft.businessId);
+      if (!b) return;
+      applyForwardingLocal(b, forwardingPayload(b, draft));
+      currentRender();
+    },
+    "fwd-ai": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      var draft = readForwardingForm() || {};
+      draft.aiEnabled = el.getAttribute("aria-pressed") !== "true";
+      applyForwardingLocal(b, forwardingPayload(b, draft));
+      currentRender();
+    },
+    "fwd-add-ring": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      var draft = readForwardingForm() || {};
+      draft.ringFirst = (draft.ringFirst || []).concat([{ label: "", number: "" }]);
+      applyForwardingLocal(b, forwardingPayload(b, draft));
+      currentRender();
+    },
+    "fwd-remove-ring": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      var draft = readForwardingForm() || {};
+      var index = Number(el.dataset.index);
+      draft.ringFirst = (draft.ringFirst || []).filter(function (_row, i) { return i !== index; });
+      applyForwardingLocal(b, forwardingPayload(b, draft));
+      currentRender();
+    },
+    "fwd-save": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      var payload = forwardingPayload(b, readForwardingForm());
+      if (LIVE) {
+        api("PUT", "api/businesses/" + encodeURIComponent(b.id) + "/forwarding", payload).then(function (data) {
+          replaceBiz(data.business);
+          toast("Phone settings saved.");
+          currentRender();
+        }).catch(liveFail);
+        return;
+      }
+      applyForwardingLocal(b, payload);
+      toast("Saved in this browser session.");
+      currentRender();
+    },
+    "fwd-verify": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      var payload = forwardingPayload(b, readForwardingForm(), "verified");
+      if (LIVE) {
+        api("PUT", "api/businesses/" + encodeURIComponent(b.id) + "/forwarding", payload).then(function (data) {
+          replaceBiz(data.business);
+          toast("Marked verified.");
+          currentRender();
+        }).catch(liveFail);
+        return;
+      }
+      applyForwardingLocal(b, payload);
+      toast("Marked verified in this browser session.");
+      currentRender();
+    },
+    "fwd-test": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      var draft = readForwardingForm() || forwardingFor(b);
+      var place = isAdminUser() && draft.mode !== "ported";
+      if (place) {
+        openModal("Test forwarding", "<p>This places a real call from the ReceptWise number to <strong>" + esc(draft.businessNumber || "the business number") + "</strong>. Only an admin can send it.</p>",
+          '<button class="btn" type="button" data-action="close-modal">Cancel</button><button class="btn btn-primary" type="button" data-action="fwd-test-go" data-id="' + esc(b.id) + '" data-confirm="yes">Place test call</button>');
+      } else {
+        openModal("Test forwarding", "<p>This marks forwarding as pending a manual test. No call is placed.</p>",
+          '<button class="btn" type="button" data-action="close-modal">Cancel</button><button class="btn btn-primary" type="button" data-action="fwd-test-go" data-id="' + esc(b.id) + '">Mark pending test</button>');
+      }
+    },
+    "fwd-test-go": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      var confirm = el.dataset.confirm === "yes";
+      var payload = forwardingPayload(b, readForwardingForm(), "pending_test");
+      closeModal();
+      if (!LIVE) {
+        applyForwardingLocal(b, payload);
+        toast("Marked pending a manual test. No call was placed.");
+        currentRender();
+        return;
+      }
+      api("PUT", "api/businesses/" + encodeURIComponent(b.id) + "/forwarding", payload).then(function () {
+        return api("POST", "api/businesses/" + encodeURIComponent(b.id) + "/forwarding/test", { confirm: confirm });
+      }).then(function (data) {
+        if (data.business) replaceBiz(data.business);
+        toast(data.placed ? "Test call placed to the business number." : "Marked pending a manual test. No call was placed.");
+        currentRender();
+      }).catch(liveFail);
+    },
+    "fwd-port": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      var root = document.getElementById("phone-forwarding");
+      var body = {
+        businessNumber: root ? (root.querySelector("[data-fwd='portNumber']") || {}).value || "" : "",
+        contactName: root ? (root.querySelector("[data-fwd='portName']") || {}).value || "" : "",
+        carrier: root ? (root.querySelector("[data-fwd='portCarrier']") || {}).value || "" : "",
+        notes: root ? (root.querySelector("[data-fwd='portNotes']") || {}).value || "" : ""
+      };
+      if (digits(body.businessNumber).length < 10) {
+        toast("Enter the 10-digit number to port.");
+        return;
+      }
+      if (LIVE) {
+        api("POST", "api/businesses/" + encodeURIComponent(b.id) + "/forwarding/port-request", body).then(function () {
+          return api("GET", "api/businesses/" + encodeURIComponent(b.id));
+        }).then(function (data) {
+          replaceBiz(data.business);
+          toast("Port request recorded. Nothing was sent to a carrier.");
+          currentRender();
+        }).catch(liveFail);
+        return;
+      }
+      var payload = forwardingPayload(b, readForwardingForm());
+      payload.portRequests = (payload.portRequests || []).concat([{
+        businessNumber: body.businessNumber,
+        contactName: body.contactName,
+        carrier: body.carrier,
+        notes: body.notes,
+        status: "requested"
+      }]);
+      applyForwardingLocal(b, payload);
+      toast("Port request recorded in this browser. Nothing was sent to a carrier.");
+      currentRender();
+    },
+    "forward-test": function (el) { actions["fwd-test"](el); },
     "run-greeting-test": function (el) {
       var b = findBiz(el.dataset.id);
       if (!b) return;
@@ -2538,6 +3124,44 @@
       closeModal();
       toast("Invite saved in this browser session.");
       currentRender();
+    },
+    "appt-view": function (el) { apptGo({ view: el.dataset.view }); },
+    "appt-prev": function () { apptShift(-1); },
+    "appt-next": function () { apptShift(1); },
+    "appt-today": function () {
+      apptGo({ date: todayYmd(appointmentZone(apptQuery().business)) });
+    },
+    "appt-cancelled": function () {
+      var q = apptQuery();
+      apptGo({ hideCancelled: !q.hideCancelled });
+    },
+    "appt-open": function (el) { openAppointment(el.dataset.id); },
+    "appt-add": function () { openAppointmentForm(""); },
+    "appt-edit": function (el) { openAppointmentForm(el.dataset.id); },
+    "appt-save": function (el) { saveAppointment(el.dataset.id || ""); },
+    "appt-cancel": function (el) { cancelAppointment(el.dataset.id); },
+    "appt-day": function (el) { apptGo({ view: "week", date: el.dataset.date }); },
+    "support-access": function (el) {
+      var id = el.dataset.id;
+      var enabled = el.dataset.enabled === "1";
+      var hoursEl = document.getElementById("support-hours");
+      var hours = hoursEl ? Number(hoursEl.value) : 72;
+      if (LIVE) {
+        api("PUT", "api/businesses/" + encodeURIComponent(id) + "/support-access", { enabled: enabled, hours: hours }).then(function (data) {
+          var business = findBiz(id);
+          if (business) business.supportAccess = data.supportAccess;
+          apptCache = null;
+          toast(enabled ? "Receptwise support access is on." : "Receptwise support access is off.");
+          if (currentRender) currentRender();
+        }).catch(liveFail);
+        return;
+      }
+      var map = supportStore();
+      if (!enabled) delete map[id];
+      else map[id] = { expiresAt: new Date(Date.now() + (hours || 72) * 3600000).toISOString() };
+      storageSet("rw_support", JSON.stringify(map));
+      toast(enabled ? "Receptwise support access is on for this browser session." : "Receptwise support access is off.");
+      if (currentRender) currentRender();
     }
   };
 
@@ -2588,6 +3212,123 @@
   }
 
   var liveActions = {
+    "calendar-connect": function (el) {
+      api("POST", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/google-calendar/start").then(function (data) {
+        if (data && data.url) location.href = data.url;
+        else toast("Google Calendar did not return a sign-in link.");
+      }).catch(liveFail);
+    },
+    "calendar-save": function (el) {
+      var choice = document.getElementById("calendar-choice");
+      if (!choice || !choice.value) { toast("Choose a calendar."); return; }
+      api("PUT", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/google-calendar", { calendarId: choice.value }).then(function (data) {
+        calendarByBiz[el.dataset.id] = data;
+        toast(data.calendarName ? "Using " + data.calendarName + "." : "Calendar saved.");
+        if (currentRender) currentRender();
+      }).catch(liveFail);
+    },
+    "calendar-disconnect": function (el) {
+      api("DELETE", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/google-calendar").then(function (data) {
+        calendarByBiz[el.dataset.id] = data;
+        toast("Google Calendar disconnected.");
+        if (currentRender) currentRender();
+      }).catch(liveFail);
+    },
+    "calendar-provider": function (el) {
+      var provider = el.dataset.provider === "calcom" ? "calcom" : "google";
+      api("PUT", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/calendar", { provider: provider }).then(function (data) {
+        return api("GET", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/google-calendar").then(function (status) {
+          if (data.business) replaceBiz(data.business);
+          calendarByBiz[el.dataset.id] = status;
+          if (currentRender) currentRender();
+        });
+      }).catch(liveFail);
+    },
+    "calcom-save": function (el) {
+      var key = document.getElementById("calcom-key");
+      var value = key ? key.value.trim() : "";
+      if (value.length < 8) { toast("Paste the Cal.com API key."); return; }
+      var body = { provider: "calcom", apiKey: value };
+      var current = calendarByBiz[el.dataset.id] && calendarByBiz[el.dataset.id].calcom;
+      if (current && current.eventTypeId) body.calcomEventTypeId = current.eventTypeId;
+      api("PUT", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/calendar", body).then(function () {
+        if (key) key.value = "";
+        toast("Cal.com API key saved.");
+        return api("GET", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/calcom/event-types").then(function (listed) {
+          return { eventTypes: listed.eventTypes || [], eventTypesError: "" };
+        }).catch(function (err) {
+          return { eventTypes: [], eventTypesError: err.message || "Could not load event types." };
+        }).then(function (listed) {
+          return api("GET", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/google-calendar").then(function (status) {
+            status.calcom = status.calcom || {};
+            status.calcom.eventTypes = listed.eventTypes;
+            status.calcom.eventTypesError = listed.eventTypesError;
+            var previousNote = calendarByBiz[el.dataset.id] && calendarByBiz[el.dataset.id].calcom;
+            if (previousNote && previousNote.testNote) status.calcom.testNote = previousNote.testNote;
+            calendarByBiz[el.dataset.id] = status;
+            if (currentRender) currentRender();
+          });
+        });
+      }).catch(liveFail);
+    },
+    "calcom-load": function (el) {
+      api("GET", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/calcom/event-types").then(function (listed) {
+        var status = calendarByBiz[el.dataset.id] || {};
+        status.calcom = status.calcom || {};
+        status.calcom.eventTypes = listed.eventTypes || [];
+        status.calcom.eventTypesError = "";
+        calendarByBiz[el.dataset.id] = status;
+        if (currentRender) currentRender();
+      }).catch(function (err) {
+        var status = calendarByBiz[el.dataset.id] || {};
+        status.calcom = status.calcom || {};
+        status.calcom.eventTypesError = err.message || "Could not load event types.";
+        calendarByBiz[el.dataset.id] = status;
+        if (currentRender) currentRender();
+      });
+    },
+    "calcom-pick": function (el) {
+      var select = document.getElementById("calcom-event-type");
+      if (!select || !select.value) { toast("Choose an event type."); return; }
+      var option = select.options[select.selectedIndex];
+      api("PUT", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/calendar", {
+        provider: "calcom",
+        calcomEventTypeId: select.value,
+        eventTypeTitle: option ? option.getAttribute("data-title") || "" : "",
+        lengthInMinutes: option ? option.getAttribute("data-length") || "" : ""
+      }).then(function () {
+        toast("Event type saved.");
+        return api("GET", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/google-calendar").then(function (status) {
+          var previous = calendarByBiz[el.dataset.id] && calendarByBiz[el.dataset.id].calcom;
+          status.calcom = status.calcom || {};
+          if (previous && previous.eventTypes) status.calcom.eventTypes = previous.eventTypes;
+          if (previous && previous.testNote) status.calcom.testNote = previous.testNote;
+          calendarByBiz[el.dataset.id] = status;
+          if (currentRender) currentRender();
+        });
+      }).catch(liveFail);
+    },
+    "calcom-test": function (el) {
+      api("POST", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/calcom/test").then(function (data) {
+        var status = calendarByBiz[el.dataset.id] || {};
+        status.calcom = status.calcom || {};
+        status.calcom.eventTypes = data.eventTypes || [];
+        var count = data.eventTypes ? data.eventTypes.length : 0;
+        function plural(n, word) { return n + " " + word + (n === 1 ? "" : "s"); }
+        var slots = data.slotCount == null ? "" : " " + plural(data.slotCount, "open slot") + " in the next day.";
+        status.calcom.testNote = "Connection works. " + plural(count, "event type") + "." + slots;
+        calendarByBiz[el.dataset.id] = status;
+        toast("Cal.com connection works.");
+        if (currentRender) currentRender();
+      }).catch(liveFail);
+    },
+    "calcom-disconnect": function (el) {
+      api("DELETE", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/calcom").then(function (data) {
+        calendarByBiz[el.dataset.id] = data;
+        toast("Cal.com key removed.");
+        if (currentRender) currentRender();
+      }).catch(liveFail);
+    },
     "sign-out": function () {
       api("POST", "api/auth/logout").catch(function () {}).then(function () { location.href = "index.html"; });
     },
@@ -2913,7 +3654,9 @@
   function onChange(event) {
     var el = event.target;
     if (!el || !el.dataset) return;
-    if (el.dataset.action === "go-filter") {
+    if (el.dataset.action === "appt-business") {
+      apptGo({ business: el.value || "all" });
+    } else if (el.dataset.action === "go-filter") {
       var overrides = {};
       overrides[el.dataset.key] = el.value;
       location.href = clientsHref(overrides);
@@ -2934,6 +3677,8 @@
       var listBox = document.getElementById("trello-list");
       if (listBox) listBox.innerHTML = '<option value="">Loading lists…</option>';
       loadTrelloLists(el.dataset.id || pageBizId(), el.value, "");
+    } else if (el.dataset.action === "fwd-refresh") {
+      actions["fwd-refresh"](el);
     } else if (el.dataset.action === "go-business") {
       var pageName = document.body.dataset.page || "phone";
       var file = pageName === "settings" ? "settings.html" : pageName === "integrations" ? "integrations.html" : "phone.html";
@@ -2960,7 +3705,7 @@
       }).catch(function (err) { toast(err.message); });
       return;
     }
-    storageSet("rw_session", JSON.stringify({ email: email, name: nameFromEmail(email) }));
+    storageSet("rw_session", JSON.stringify(demoIdentity(email)));
     location.href = "dashboard.html";
   }
 
@@ -2999,7 +3744,7 @@
     var focusCall = "";
     try { focusCall = new URLSearchParams(location.search).get("call") || ""; } catch (e) { focusCall = ""; }
     var recent = (m.recentCalls || []).map(function (call) {
-      var who = call.callerName ? esc(call.callerName) + "<div class='help'>" + esc(call.from) + "</div>" : esc(call.from);
+      var who = call.redacted ? "Details hidden" : (call.callerName ? esc(call.callerName) + "<div class='help'>" + esc(call.from) + "</div>" : esc(call.from));
       var rec = /^https?:\/\//.test(call.recordingUrl || "") ? '<a href="' + esc(call.recordingUrl) + '" target="_blank" rel="noopener">Play</a>' : "—";
       var tone = call.outcome === "Booked" ? "connected" : call.outcome === "Missed" ? "action" : "neutral";
       var focus = focusCall && focusCall === call.id ? ' class="call-focus"' : "";
@@ -3307,6 +4052,639 @@
     });
   }
 
+  function zoneOf(value) {
+    var labels = {
+      "Eastern Time": "America/New_York",
+      "Central Time": "America/Chicago",
+      "Mountain Time": "America/Denver",
+      "Pacific Time": "America/Los_Angeles",
+      "Arizona Time": "America/Phoenix",
+      "Alaska Time": "America/Anchorage",
+      "Hawaii Time": "Pacific/Honolulu"
+    };
+    if (!value) return "America/New_York";
+    if (labels[value]) return labels[value];
+    if (String(value).indexOf("/") > 0) return value;
+    return "America/New_York";
+  }
+
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+
+  function zoneParts(date, timeZone) {
+    var dtf = new Intl.DateTimeFormat("en-US", {
+      timeZone: timeZone || "America/New_York",
+      hourCycle: "h23",
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+      weekday: "short"
+    });
+    var map = { hour: "00", minute: "00", second: "00", year: "1970", month: "01", day: "01" };
+    dtf.formatToParts(date).forEach(function (part) {
+      if (part.type !== "literal") map[part.type] = part.value;
+    });
+    return map;
+  }
+
+  function ymdInZone(date, timeZone) {
+    var p = zoneParts(date, timeZone);
+    var hour = Number(p.hour);
+    if (hour === 24) {
+      return addDays(p.year + "-" + p.month + "-" + p.day, 1);
+    }
+    return p.year + "-" + p.month + "-" + p.day;
+  }
+
+  function minutesInZone(date, timeZone) {
+    var p = zoneParts(date, timeZone);
+    var hour = Number(p.hour);
+    if (hour === 24) hour = 0;
+    return hour * 60 + Number(p.minute);
+  }
+
+  function addDays(ymd, n) {
+    var p = String(ymd).split("-");
+    var utc = new Date(Date.UTC(+p[0], +p[1] - 1, +p[2] + n));
+    return utc.getUTCFullYear() + "-" + pad2(utc.getUTCMonth() + 1) + "-" + pad2(utc.getUTCDate());
+  }
+
+  function startOfWeek(ymd) {
+    var p = String(ymd).split("-");
+    var utc = new Date(Date.UTC(+p[0], +p[1] - 1, +p[2]));
+    var day = utc.getUTCDay();
+    return addDays(ymd, day === 0 ? -6 : 1 - day);
+  }
+
+  function addMonths(ymd, n) {
+    var p = String(ymd).split("-");
+    var utc = new Date(Date.UTC(+p[0], +p[1] - 1 + n, 1));
+    return utc.getUTCFullYear() + "-" + pad2(utc.getUTCMonth() + 1) + "-01";
+  }
+
+  function zoneOffsetMs(timeZone, utcMs) {
+    var p = zoneParts(new Date(utcMs), timeZone);
+    var year = +p.year, month = +p.month, day = +p.day, hour = +p.hour;
+    if (hour === 24) {
+      hour = 0;
+      var next = new Date(Date.UTC(year, month - 1, day));
+      next.setUTCDate(next.getUTCDate() + 1);
+      year = next.getUTCFullYear();
+      month = next.getUTCMonth() + 1;
+      day = next.getUTCDate();
+    }
+    return Date.UTC(year, month - 1, day, hour, +p.minute, +p.second) - utcMs;
+  }
+
+  function wallToUtc(ymd, hm, timeZone) {
+    var bits = String(hm || "00:00").split(":");
+    var match = String(ymd || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!match) return null;
+    var utcGuess = Date.UTC(+match[1], +match[2] - 1, +match[3], +bits[0] || 0, +bits[1] || 0, +(bits[2] || 0));
+    var offset = zoneOffsetMs(timeZone, utcGuess);
+    var instant = utcGuess - offset;
+    var again = zoneOffsetMs(timeZone, instant);
+    return new Date(utcGuess - again).toISOString();
+  }
+
+  function clockIn(date, timeZone) {
+    return new Intl.DateTimeFormat("en-US", { timeZone: timeZone, hour: "numeric", minute: "2-digit" }).format(date);
+  }
+
+  function dayTitle(ymd, timeZone) {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone: timeZone, weekday: "short", month: "short", day: "numeric"
+    }).format(new Date(wallToUtc(ymd, "12:00", timeZone)));
+  }
+
+  function todayYmd(zone) {
+    return ymdInZone(new Date(), zone || "America/New_York");
+  }
+
+  function inputStamp(iso, zone) {
+    if (!iso) return "";
+    var p = zoneParts(new Date(iso), zone);
+    var hour = p.hour === "24" ? "00" : p.hour;
+    return p.year + "-" + p.month + "-" + p.day + "T" + hour + ":" + p.minute;
+  }
+
+  function appointmentZone(businessId) {
+    if (businessId && businessId !== "all") {
+      var biz = findBiz(businessId);
+      if (biz) return zoneOf(biz.timezone);
+    }
+    return "America/New_York";
+  }
+
+  function apptQuery() {
+    var params = new URLSearchParams(location.search);
+    var view = params.get("view");
+    if (view !== "month" && view !== "list") view = "week";
+    var date = params.get("date") || "";
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) date = todayYmd(appointmentZone(params.get("business") || params.get("id") || "all"));
+    return {
+      view: view,
+      date: date,
+      business: params.get("business") || params.get("id") || "all",
+      hideCancelled: params.get("cancelled") !== "show"
+    };
+  }
+
+  function apptGo(partial) {
+    var q = apptQuery();
+    if (partial.view) q.view = partial.view;
+    if (partial.date) q.date = partial.date;
+    if (partial.business != null) q.business = partial.business || "all";
+    if (partial.hideCancelled != null) q.hideCancelled = !!partial.hideCancelled;
+    var params = new URLSearchParams();
+    if (q.view !== "week") params.set("view", q.view);
+    params.set("date", q.date);
+    if (q.business && q.business !== "all") params.set("business", q.business);
+    if (!q.hideCancelled) params.set("cancelled", "show");
+    history.replaceState(null, "", "appointments.html?" + params.toString());
+    currentRender();
+  }
+
+  function apptShift(dir) {
+    var q = apptQuery();
+    var date = q.view === "week" ? addDays(startOfWeek(q.date), dir * 7) : addMonths(q.date.slice(0, 7) + "-01", dir);
+    apptGo({ date: date });
+  }
+
+  function monthGrid(dateYmd) {
+    var first = dateYmd.slice(0, 7) + "-01";
+    var start = startOfWeek(first);
+    var last = addDays(addMonths(first, 1), -1);
+    var end = addDays(startOfWeek(last), 7);
+    return { start: start, end: end, month: first.slice(0, 7) };
+  }
+
+  function appointmentRange(q, zone) {
+    var grid = monthGrid(q.date);
+    if (q.view === "week") {
+      var start = startOfWeek(q.date);
+      return { from: wallToUtc(addDays(start, -1), "00:00", zone), to: wallToUtc(addDays(start, 8), "00:00", zone) };
+    }
+    return { from: wallToUtc(grid.start, "00:00", zone), to: wallToUtc(grid.end, "00:00", zone) };
+  }
+
+  function apptEdits() {
+    try { return JSON.parse(storageGet("rw_appt_edits") || "{}"); }
+    catch (e) { return {}; }
+  }
+
+  function demoAppointments() {
+    var edits = apptEdits();
+    var patches = edits.patches || {};
+    var out = [];
+    allBusinesses().forEach(function (b) {
+      var tz = zoneOf(b.timezone);
+      (b.bookings || []).forEach(function (booking, index) {
+        var id = "sample:" + b.id + ":" + index;
+        var appt = {
+          id: id,
+          businessId: b.id,
+          businessName: b.name,
+          timezone: tz,
+          startsAt: booking.startsAt || null,
+          endsAt: booking.endsAt || null,
+          customer: booking.customer || "",
+          phone: booking.phone || "",
+          service: booking.service || "",
+          source: booking.source || "Phone",
+          status: booking.status || "Confirmed",
+          callHref: (booking.source || "Phone") === "Phone" ? "client.html?id=" + encodeURIComponent(b.id) + "#receptionist" : ""
+        };
+        var patch = patches[id];
+        if (patch) Object.keys(patch).forEach(function (key) { appt[key] = patch[key]; });
+        out.push(veilAppointment(appt));
+      });
+    });
+    (edits.created || []).forEach(function (item) { out.push(veilAppointment(item)); });
+    return out;
+  }
+
+  function findAppt(id) {
+    for (var i = 0; i < apptShown.length; i++) if (String(apptShown[i].id) === String(id)) return apptShown[i];
+    return null;
+  }
+
+  function apptWhen(appt) {
+    if (!appt || !appt.startsAt) return "Time not set";
+    var zone = appt.timezone || "America/New_York";
+    var start = new Date(appt.startsAt);
+    var text = new Intl.DateTimeFormat("en-US", {
+      timeZone: zone, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit"
+    }).format(start);
+    if (appt.endsAt) text += " – " + clockIn(new Date(appt.endsAt), zone);
+    return text;
+  }
+
+  function apptStatusPill(status) {
+    var key = String(status || "Confirmed").toLowerCase();
+    var cls = key === "cancelled" ? "action" : key === "completed" ? "neutral" : "connected";
+    return '<span class="pill ' + cls + '">' + esc(status || "Confirmed") + "</span>";
+  }
+
+  function visibleAppointments(items, q) {
+    return (items || []).filter(function (appt) {
+      if (q.business && q.business !== "all" && appt.businessId !== q.business) return false;
+      if (q.hideCancelled && String(appt.status).toLowerCase() === "cancelled") return false;
+      return true;
+    });
+  }
+
+  function placeAppt(appt) {
+    var zone = appt.timezone || "America/New_York";
+    var start = new Date(appt.startsAt);
+    var end = appt.endsAt ? new Date(appt.endsAt) : new Date(start.getTime() + 30 * 60000);
+    var startMin = minutesInZone(start, zone);
+    var endMin = ymdInZone(end, zone) === ymdInZone(start, zone) ? minutesInZone(end, zone) : 24 * 60;
+    if (endMin < startMin + 20) endMin = startMin + 20;
+    return { ymd: ymdInZone(start, zone), startMin: startMin, endMin: endMin };
+  }
+
+  function businessOptions(selected, includeAll) {
+    var opts = includeAll ? '<option value="all"' + (selected === "all" ? " selected" : "") + ">All businesses</option>" : "";
+    ordered(allBusinesses()).forEach(function (b) {
+      opts += '<option value="' + esc(b.id) + '"' + (b.id === selected ? " selected" : "") + ">" + esc(b.name) + (b.pilot ? " · Pilot" : "") + "</option>";
+    });
+    return opts;
+  }
+
+  function appointmentChrome(q, body) {
+    var zone = appointmentZone(q.business);
+    var label = q.view === "week"
+      ? dayTitle(startOfWeek(q.date), zone) + " – " + dayTitle(addDays(startOfWeek(q.date), 6), zone)
+      : new Intl.DateTimeFormat("en-US", { timeZone: zone, month: "long", year: "numeric" }).format(new Date(wallToUtc(q.date.slice(0, 7) + "-01", "12:00", zone)));
+    var views = ["week", "month", "list"].map(function (view) {
+      var name = view.charAt(0).toUpperCase() + view.slice(1);
+      return '<button type="button" class="' + (q.view === view ? "on" : "") + '" data-action="appt-view" data-view="' + view + '" aria-pressed="' + (q.view === view ? "true" : "false") + '">' + name + "</button>";
+    }).join("");
+    var zoneNote = q.business && q.business !== "all"
+      ? "Times shown in " + ((findBiz(q.business) || {}).timezone || "the business time zone") + "."
+      : "Times shown in each business's time zone.";
+    var addBtn = canEditBusiness(q.business)
+      ? '<button class="btn btn-primary" type="button" data-action="appt-add">Add appointment</button>'
+      : "";
+    return '<div class="page-head"><div><h1>Appointments</h1><p class="sub">' + esc(label) + " · " + esc(zoneNote) + "</p></div>" +
+      '<div class="head-actions">' + addBtn + "</div></div>" +
+      '<div class="cal-toolbar"><div class="left"><div class="seg" role="group" aria-label="Calendar view">' + views + "</div>" +
+      '<button class="btn btn-sm" type="button" data-action="appt-prev" aria-label="Previous">Back</button>' +
+      '<button class="btn btn-sm" type="button" data-action="appt-today">Today</button>' +
+      '<button class="btn btn-sm" type="button" data-action="appt-next" aria-label="Next">Next</button></div>' +
+      '<div class="right"><label class="field" style="margin:0;min-width:200px"><span class="help">Business</span>' +
+      '<select class="ctrl" data-action="appt-business" aria-label="Business">' + businessOptions(q.business, true) + "</select></label>" +
+      '<button class="btn btn-sm" type="button" data-action="appt-cancelled">' + (q.hideCancelled ? "Show cancelled" : "Hide cancelled") + "</button></div></div>" +
+      body + legal();
+  }
+
+  function eventButton(appt, cls, style) {
+    var zone = appt.timezone || "America/New_York";
+    var time = appt.startsAt ? clockIn(new Date(appt.startsAt), zone) : "Time not set";
+    var detail = appt.service || "";
+    if (appt.businessName && appt.service && appt.businessName !== appt.service) detail = appt.businessName + " · " + appt.service;
+    else if (!detail) detail = appt.businessName || "";
+    var cancelled = String(appt.status).toLowerCase() === "cancelled" ? " cancelled" : "";
+    return '<button type="button" class="' + cls + cancelled + '" style="' + (style || "") + "border-left-color:" + colorFor((findBiz(appt.businessId) || {}).category) +
+      '" data-action="appt-open" data-id="' + esc(appt.id) + '"><strong>' + esc(time) + " " + esc(appt.customer || "Appointment") +
+      "</strong><span>" + esc(detail) + "</span></button>";
+  }
+
+  function weekHtml(items, q) {
+    var start = startOfWeek(q.date);
+    var days = [];
+    for (var i = 0; i < 7; i++) days.push(addDays(start, i));
+    var placed = items.filter(function (appt) { return appt.startsAt; }).map(function (appt) {
+      var spot = placeAppt(appt);
+      spot.appt = appt;
+      return spot;
+    }).filter(function (spot) { return days.indexOf(spot.ymd) >= 0; });
+    var startMin = 8 * 60;
+    var endMin = 19 * 60;
+    placed.forEach(function (spot) {
+      startMin = Math.min(startMin, Math.floor(spot.startMin / 60) * 60);
+      endMin = Math.max(endMin, Math.ceil(spot.endMin / 60) * 60);
+    });
+    startMin = Math.max(0, startMin);
+    endMin = Math.min(24 * 60, Math.max(endMin, startMin + 60));
+    var height = (endMin - startMin) / 60 * 48;
+    var today = todayYmd(appointmentZone(q.business));
+    var heads = days.map(function (ymd) {
+      var cls = ymd === today ? "cal-head today" : "cal-head";
+      return '<div class="' + cls + '"><button type="button" data-action="appt-day" data-date="' + ymd + '">' + esc(dayTitle(ymd, appointmentZone(q.business))) + "</button></div>";
+    }).join("");
+    var hours = "";
+    for (var m = startMin; m < endMin; m += 60) {
+      var labelDate = new Date(wallToUtc("2026-01-05", pad2(m / 60) + ":00", "UTC"));
+      var label = new Intl.DateTimeFormat("en-US", { hour: "numeric", timeZone: "UTC" }).format(labelDate);
+      hours += '<div class="cal-hour" style="top:' + ((m - startMin) / 60 * 48 + 4) + 'px">' + esc(label) + "</div>";
+    }
+    var cols = days.map(function (ymd) {
+      var blocks = placed.filter(function (spot) { return spot.ymd === ymd; }).sort(function (a, b) { return a.startMin - b.startMin; });
+      var lanes = [];
+      blocks.forEach(function (block) {
+        var lane = 0;
+        while (lanes[lane] != null && lanes[lane] > block.startMin) lane += 1;
+        lanes[lane] = block.endMin;
+        block.lane = lane;
+      });
+      var count = Math.max(1, lanes.length);
+      var events = blocks.map(function (block) {
+        var top = (block.startMin - startMin) / 60 * 48;
+        var h = Math.max(28, (block.endMin - block.startMin) / 60 * 48 - 2);
+        var width = 100 / count;
+        var style = "top:" + top + "px;height:" + h + "px;left:" + (block.lane * width) + "%;width:calc(" + width + "% - 4px);";
+        return eventButton(block.appt, "cal-event", style);
+      }).join("");
+      return '<div class="cal-col" style="height:' + height + 'px">' + events + "</div>";
+    }).join("");
+    var unscheduled = items.filter(function (appt) { return !appt.startsAt; });
+    var extra = unscheduled.length ? '<p class="help" style="margin-top:8px">' + unscheduled.length + " appointment" + (unscheduled.length === 1 ? "" : "s") + " with no start time. Open the list to see " + (unscheduled.length === 1 ? "it" : "them") + ".</p>" : "";
+    return '<div class="cal-board"><div class="cal-week"><div class="cal-dow"></div>' + heads +
+      '<div class="cal-gutter" style="height:' + height + 'px">' + hours + "</div>" + cols + "</div></div>" + extra;
+  }
+
+  function monthHtml(items, q) {
+    var grid = monthGrid(q.date);
+    var zone = appointmentZone(q.business);
+    var today = todayYmd(zone);
+    var names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(function (name) {
+      return '<div class="cal-dow">' + name + "</div>";
+    }).join("");
+    var byDay = {};
+    items.forEach(function (appt) {
+      if (!appt.startsAt) return;
+      var ymd = placeAppt(appt).ymd;
+      if (!byDay[ymd]) byDay[ymd] = [];
+      byDay[ymd].push(appt);
+    });
+    var cells = "";
+    for (var ymd = grid.start; ymd < grid.end; ymd = addDays(ymd, 1)) {
+      var outside = ymd.slice(0, 7) !== grid.month;
+      var list = byDay[ymd] || [];
+      var chips = list.slice(0, 3).map(function (appt) { return eventButton(appt, "cal-chip", ""); }).join("");
+      var more = list.length > 3 ? '<button type="button" class="cal-more" data-action="appt-day" data-date="' + ymd + '">+' + (list.length - 3) + " more</button>" : "";
+      cells += '<div class="cal-cell' + (outside ? " out" : "") + (ymd === today ? " today" : "") + '"><button type="button" class="daynum" data-action="appt-day" data-date="' + ymd + '">' +
+        Number(ymd.slice(8)) + "</button>" + chips + more + "</div>";
+    }
+    return '<div class="cal-board"><div class="cal-month">' + names + cells + "</div></div>";
+  }
+
+  function listHtml(items) {
+    var rows = items.slice().sort(function (a, b) {
+      var as = a.startsAt ? new Date(a.startsAt).getTime() : Infinity;
+      var bs = b.startsAt ? new Date(b.startsAt).getTime() : Infinity;
+      return as - bs;
+    });
+    if (!rows.length) return '<section class="card"><div class="empty">No appointments in this range.</div></section>';
+    var html = "";
+    var last = "";
+    rows.forEach(function (appt) {
+      var heading = appt.startsAt ? dayTitle(placeAppt(appt).ymd, appt.timezone || "America/New_York") : "Time not set";
+      if (heading !== last) {
+        if (last) html += "</tbody></table></div></section>";
+        html += '<h3 class="agenda-day">' + esc(heading) + '</h3><section class="card"><div class="table-wrap"><table class="data"><thead><tr><th>When</th><th>Customer</th><th>Business</th><th>Service</th><th>Phone</th><th>Call</th><th>Status</th></tr></thead><tbody>';
+        last = heading;
+      }
+      var call = appt.callHref ? '<a href="' + esc(appt.callHref) + '">View call</a>' : "—";
+      html += '<tr><td><button type="button" class="btn btn-sm" data-action="appt-open" data-id="' + esc(appt.id) + '">' + esc(apptWhen(appt)) + "</button></td><td>" +
+        esc(appt.customer || "—") + "</td><td>" + esc(appt.businessName || "—") + "</td><td>" + esc(appt.service || "—") + "</td><td>" +
+        esc(appt.phone || "—") + "</td><td>" + call + "</td><td>" + apptStatusPill(appt.status) + "</td></tr>";
+    });
+    html += "</tbody></table></div></section>";
+    return html;
+  }
+
+  function paintAppointments(view, q, items) {
+    var shown = visibleAppointments(items, q);
+    if (q.view !== "list") {
+      var grid = q.view === "week" ? (function () {
+        var start = startOfWeek(q.date);
+        var end = addDays(start, 7);
+        return shown.filter(function (appt) {
+          if (!appt.startsAt) return false;
+          var ymd = placeAppt(appt).ymd;
+          return ymd >= start && ymd < end;
+        });
+      })() : shown.filter(function (appt) {
+        if (!appt.startsAt) return false;
+        var bounds = monthGrid(q.date);
+        var ymd = placeAppt(appt).ymd;
+        return ymd >= bounds.start && ymd < bounds.end;
+      });
+      apptShown = items;
+      var body = q.view === "week" ? weekHtml(shown, q) : monthHtml(grid, q);
+      view.innerHTML = appointmentChrome(q, body);
+      return;
+    }
+    var bounds = monthGrid(q.date);
+    var inRange = shown.filter(function (appt) {
+      if (!appt.startsAt) return true;
+      var ymd = placeAppt(appt).ymd;
+      return ymd >= bounds.start && ymd < bounds.end;
+    });
+    apptShown = items;
+    view.innerHTML = appointmentChrome(q, listHtml(inRange));
+  }
+
+  function renderAppointments(view) {
+    var q = apptQuery();
+    document.title = "Appointments · ReceptWise";
+    if (!LIVE) {
+      paintAppointments(view, q, demoAppointments());
+      return;
+    }
+    var zone = appointmentZone(q.business);
+    var range = appointmentRange(q, zone);
+    var key = [q.business, q.view, range.from, range.to].join("|");
+    if (apptCache && apptCache.key === key) {
+      paintAppointments(view, q, apptCache.items);
+      return;
+    }
+    view.innerHTML = appointmentChrome(q, '<section class="card"><div class="empty">Loading appointments…</div></section>');
+    var url = "api/appointments?from=" + encodeURIComponent(range.from) + "&to=" + encodeURIComponent(range.to) + "&unscheduled=1";
+    if (q.business && q.business !== "all") url += "&business=" + encodeURIComponent(q.business);
+    api("GET", url).then(function (data) {
+      var now = apptQuery();
+      var nowKey = [now.business, now.view, appointmentRange(now, appointmentZone(now.business)).from, appointmentRange(now, appointmentZone(now.business)).to].join("|");
+      apptCache = { key: key, items: data.appointments || [] };
+      if (nowKey === key) paintAppointments(view, now, apptCache.items);
+    }).catch(function (err) {
+      if (err && err.status === 401) { location.replace("index.html"); return; }
+      view.innerHTML = appointmentChrome(apptQuery(), '<div class="banner bad">' + esc(err.message || "Could not load appointments.") + "</div>");
+    });
+  }
+
+  function openAppointment(id) {
+    var appt = findAppt(id);
+    if (!appt) return;
+    if (appt.redacted) {
+      openModal(appt.customer || "Appointment",
+        "<p>" + esc(appt.customer || hiddenLabel(appt.status)) + "</p><p class='help'>Receptwise support access is off, so the customer, phone, and call stay hidden.</p>",
+        '<button class="btn btn-primary" type="button" data-action="close-modal">Close</button>');
+      return;
+    }
+    var call = appt.callHref ? '<a href="' + esc(appt.callHref) + '">View call</a>' : "No call on file";
+    var body = '<dl class="kvs"><dt>When</dt><dd>' + esc(apptWhen(appt)) + "</dd><dt>Customer</dt><dd>" + esc(appt.customer || "—") +
+      "</dd><dt>Business</dt><dd>" + esc(appt.businessName || "—") + "</dd><dt>Service</dt><dd>" + esc(appt.service || "—") +
+      "</dd><dt>Phone</dt><dd>" + esc(appt.phone || "—") + "</dd><dt>Status</dt><dd>" + apptStatusPill(appt.status) +
+      "</dd><dt>Source</dt><dd>" + esc(appt.source || "—") + "</dd><dt>Call</dt><dd>" + call + "</dd></dl>" +
+      '<p class="help">Saved in ReceptWise. The receptionist\'s calendar is not changed.</p>';
+    var cancel = String(appt.status).toLowerCase() === "cancelled" ? "" :
+      '<button class="btn btn-danger" type="button" data-action="appt-cancel" data-id="' + esc(appt.id) + '">Cancel appointment</button>';
+    openModal(appt.customer || "Appointment", body,
+      cancel + '<button class="btn" type="button" data-action="appt-edit" data-id="' + esc(appt.id) + '">Edit</button>' +
+      '<button class="btn btn-primary" type="button" data-action="close-modal">Close</button>');
+  }
+
+  function openAppointmentForm(id) {
+    var appt = id ? findAppt(id) : null;
+    var q = apptQuery();
+    var businessId = appt ? appt.businessId : (q.business !== "all" ? q.business : ((ordered(allBusinesses())[0] || {}).id || ""));
+    var zone = appt && appt.timezone ? appt.timezone : appointmentZone(businessId);
+    var businessField = appt
+      ? '<div class="field"><label>Business</label><input class="ctrl" value="' + esc(appt.businessName || "") + '" disabled></div>'
+      : '<div class="field"><label for="appt-business">Business</label><select class="ctrl" id="appt-business">' + businessOptions(businessId, false) + "</select></div>";
+    var body = businessField +
+      '<div class="grid-2"><div class="field"><label for="appt-customer">Customer</label><input class="ctrl" id="appt-customer" value="' + esc(appt ? appt.customer : "") + '"></div>' +
+      '<div class="field"><label for="appt-phone">Phone</label><input class="ctrl" id="appt-phone" value="' + esc(appt ? appt.phone : "") + '"></div></div>' +
+      '<div class="field"><label for="appt-service">Service</label><input class="ctrl" id="appt-service" value="' + esc(appt ? appt.service : "") + '"></div>' +
+      '<div class="grid-2"><div class="field"><label for="appt-start">Starts</label><input class="ctrl" id="appt-start" type="datetime-local" value="' + esc(appt ? inputStamp(appt.startsAt, zone) : "") + '"></div>' +
+      '<div class="field"><label for="appt-end">Ends</label><input class="ctrl" id="appt-end" type="datetime-local" value="' + esc(appt ? inputStamp(appt.endsAt, zone) : "") + '"></div></div>' +
+      '<div class="field"><label for="appt-status">Status</label><select class="ctrl" id="appt-status">' +
+      ["Confirmed", "Completed", "Cancelled"].map(function (status) {
+        return '<option' + (appt && appt.status === status ? " selected" : "") + ">" + status + "</option>";
+      }).join("") + "</select></div>" +
+      "<p class='help'>Saved in ReceptWise only. The receptionist’s calendar is not changed.</p>";
+    openModal(appt ? "Edit appointment" : "Add appointment", body,
+      '<button class="btn" type="button" data-action="close-modal">Close</button>' +
+      '<button class="btn btn-primary" type="button" data-action="appt-save" data-id="' + esc(appt ? appt.id : "") + '">Save</button>');
+  }
+
+  function fieldValue(id) {
+    var el = document.getElementById(id);
+    return el ? String(el.value || "").trim() : "";
+  }
+
+  function saveDemoAppointment(fields) {
+    var edits = apptEdits();
+    edits.patches = edits.patches || {};
+    edits.created = edits.created || [];
+    var biz = findBiz(fields.businessId);
+    var existing = fields.id ? findAppt(fields.id) : null;
+    var tz = existing && existing.timezone ? existing.timezone : zoneOf(biz && biz.timezone);
+    var appt = {
+      id: fields.id || ("local:" + Date.now()),
+      businessId: fields.businessId,
+      businessName: (biz && biz.name) || (existing && existing.businessName) || "",
+      timezone: tz,
+      startsAt: wallToUtc(fields.startDate, fields.startTime, tz),
+      endsAt: fields.endDate ? wallToUtc(fields.endDate, fields.endTime, tz) : null,
+      customer: fields.customer,
+      phone: pretty(digits(fields.phone)) || fields.phone,
+      service: fields.service,
+      source: existing ? existing.source : "Portal",
+      status: fields.status,
+      callHref: existing ? existing.callHref : ""
+    };
+    if (String(appt.id).indexOf("sample:") === 0) edits.patches[appt.id] = appt;
+    else {
+      var replaced = false;
+      edits.created = edits.created.map(function (item) {
+        if (String(item.id) === String(appt.id)) { replaced = true; return appt; }
+        return item;
+      });
+      if (!replaced) edits.created.push(appt);
+    }
+    storageSet("rw_appt_edits", JSON.stringify(edits));
+  }
+
+  function readAppointmentForm(id) {
+    var existing = id ? findAppt(id) : null;
+    var businessId = existing ? existing.businessId : fieldValue("appt-business");
+    var customer = fieldValue("appt-customer");
+    var start = fieldValue("appt-start");
+    var end = fieldValue("appt-end");
+    if (!businessId) { toast("Choose a business."); return null; }
+    if (!customer) { toast("Customer name is required."); return null; }
+    if (!start || start.indexOf("T") < 0) { toast("Start time is required."); return null; }
+    if (end && end <= start) { toast("End time is before the start time."); return null; }
+    var startBits = start.split("T");
+    var endBits = end ? end.split("T") : ["", ""];
+    return {
+      id: id,
+      businessId: businessId,
+      customer: customer,
+      phone: fieldValue("appt-phone"),
+      service: fieldValue("appt-service"),
+      status: fieldValue("appt-status") || "Confirmed",
+      startDate: startBits[0],
+      startTime: startBits[1],
+      endDate: endBits[0],
+      endTime: endBits[1],
+      startsAt: startBits[0] + "T" + startBits[1],
+      endsAt: end ? endBits[0] + "T" + endBits[1] : ""
+    };
+  }
+
+  function saveAppointment(id) {
+    var fields = readAppointmentForm(id);
+    if (!fields) return;
+    if (LIVE) {
+      var zone = appointmentZone(fields.businessId);
+      var payload = {
+        businessId: fields.businessId,
+        customer: fields.customer,
+        phone: fields.phone,
+        service: fields.service,
+        status: fields.status,
+        startsAt: fields.startsAt,
+        endsAt: fields.endsAt,
+        timeZone: zone
+      };
+      var req = id ? api("PATCH", "api/appointments/" + encodeURIComponent(id), payload) : api("POST", "api/appointments", payload);
+      req.then(function () {
+        apptCache = null;
+        closeModal();
+        toast("Appointment saved.");
+        currentRender();
+      }).catch(liveFail);
+      return;
+    }
+    saveDemoAppointment(fields);
+    closeModal();
+    toast("Saved in this browser session.");
+    currentRender();
+  }
+
+  function cancelAppointment(id) {
+    var appt = findAppt(id);
+    if (!appt) return;
+    if (LIVE) {
+      api("PATCH", "api/appointments/" + encodeURIComponent(id), { status: "Cancelled" }).then(function () {
+        apptCache = null;
+        closeModal();
+        toast("Appointment cancelled.");
+        currentRender();
+      }).catch(liveFail);
+      return;
+    }
+    saveDemoAppointment({
+      id: appt.id,
+      businessId: appt.businessId,
+      customer: appt.customer,
+      phone: appt.phone,
+      service: appt.service,
+      status: "Cancelled",
+      startDate: appt.startsAt ? inputStamp(appt.startsAt, appt.timezone).slice(0, 10) : "",
+      startTime: appt.startsAt ? inputStamp(appt.startsAt, appt.timezone).slice(11, 16) : "",
+      endDate: appt.endsAt ? inputStamp(appt.endsAt, appt.timezone).slice(0, 10) : "",
+      endTime: appt.endsAt ? inputStamp(appt.endsAt, appt.timezone).slice(11, 16) : ""
+    });
+    closeModal();
+    toast("Appointment cancelled in this browser session.");
+    currentRender();
+  }
+
   function boot() {
     if (!window.RW_DATA) {
       document.getElementById("app").textContent = "Sample data did not load.";
@@ -3322,6 +4700,10 @@
       location.replace("index.html");
       return;
     }
+    if (page === "add" && isBusinessViewer()) {
+      location.replace("clients.html");
+      return;
+    }
     document.getElementById("app").innerHTML = shell(page);
     currentRender = function () {
       var view = document.getElementById("view");
@@ -3335,6 +4717,7 @@
       else if (page === "phone") renderPhone(view);
       else if (page === "settings") renderSettings(view);
       else if (page === "integrations") renderIntegrations(view);
+      else if (page === "appointments") renderAppointments(view);
       refreshBell();
     };
     if (page === "add") resumeDraft();
