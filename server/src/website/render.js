@@ -4,25 +4,21 @@
 const fs = require('fs');
 const path = require('path');
 const { slugify, prettyPhone } = require('../businesses');
+const { PRESETS, presetFor, iconSvg } = require('./types');
 
 const TEMPLATE_ROOT = path.join(__dirname, '..', '..', 'site-templates');
 
-// Eight industry names share two layouts. The accent is the only per-industry difference.
-const INDUSTRIES = {
-  Restaurant: { template: 'classic', accent: '#c2410c' },
-  Clinic: { template: 'classic', accent: '#0369a1' },
-  Retail: { template: 'classic', accent: '#6d28d9' },
-  'Professional services': { template: 'classic', accent: '#0f766e' },
-  'Auto shop': { template: 'modern', accent: '#1d4ed8' },
-  Salon: { template: 'modern', accent: '#9d174d' },
-  'Home services': { template: 'modern', accent: '#166534' },
-  Studio: { template: 'modern', accent: '#4338ca' }
-};
+// Suggested layout and accent, derived from the type presets so the two stay in step.
+const INDUSTRIES = {};
+PRESETS.forEach((preset) => {
+  INDUSTRIES[preset.category] = { template: preset.template, accent: preset.accent };
+});
 
 const TEMPLATE_IDS = ['classic', 'modern'];
 
 function industryStyle(category) {
-  return INDUSTRIES[category] || { template: 'classic', accent: '#0e7c72' };
+  const preset = presetFor(category);
+  return { template: preset.template, accent: preset.accent };
 }
 
 function resolveTemplate(input, category) {
@@ -100,14 +96,74 @@ function serviceItems(list) {
   return list.map((item) => {
     if (typeof item === 'string') {
       const name = plain(item);
-      return name ? { name, meta: '' } : null;
+      return name ? { name, detail: '', price: '', duration: '', meta: '', placeholderClass: '', showMeta: false } : null;
     }
     if (!item || typeof item !== 'object') return null;
     const name = plain(item.name || item.title);
     if (!name) return null;
-    const meta = [plain(item.length || item.duration), plain(item.price)].filter(Boolean).join(' · ');
-    return { name, meta };
+    const duration = plain(item.length || item.duration);
+    const price = plain(item.price);
+    const detail = plain(item.detail || item.description || item.summary);
+    const meta = [duration, price].filter(Boolean).join(' · ');
+    return {
+      name,
+      detail,
+      price,
+      duration,
+      meta,
+      placeholderClass: '',
+      showMeta: Boolean(duration || price)
+    };
   }).filter(Boolean);
+}
+
+function starFields(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return { stars: '', starsLabel: '' };
+  const s = Math.round(n);
+  if (s < 1 || s > 5) return { stars: '', starsLabel: '' };
+  return {
+    stars: '★★★★★'.slice(0, s) + '☆☆☆☆☆'.slice(0, 5 - s),
+    starsLabel: s + ' out of 5 stars'
+  };
+}
+
+// Only reviews that are already on the business. Nothing is invented.
+function reviewItems(list) {
+  if (!Array.isArray(list)) return [];
+  return list.map((item) => {
+    if (typeof item === 'string') {
+      const text = plain(item);
+      return text ? { text, author: '', when: '', stars: '', starsLabel: '', byline: '' } : null;
+    }
+    if (!item || typeof item !== 'object') return null;
+    const text = plain(item.text || item.quote || item.body);
+    if (!text) return null;
+    const author = plain(item.author || item.name);
+    const when = plain(item.when || item.date);
+    const stars = starFields(item.stars != null ? item.stars : item.rating);
+    return {
+      text,
+      author,
+      when,
+      stars: stars.stars,
+      starsLabel: stars.starsLabel,
+      byline: [author, when].filter(Boolean).join(' · ')
+    };
+  }).filter(Boolean);
+}
+
+function blockText(value) {
+  if (value == null) return '';
+  if (Array.isArray(value)) return value.map((item) => blockText(item)).filter(Boolean).join('\n\n');
+  if (typeof value !== 'string') return '';
+  return value.replace(/\r\n/g, '\n').trim();
+}
+
+function splitHeadline(text) {
+  const words = String(text || '').split(' ').filter(Boolean);
+  if (words.length <= 1) return { headlineLead: '', headlineMark: words[0] || '' };
+  return { headlineLead: words.slice(0, -1).join(' '), headlineMark: words[words.length - 1] };
 }
 
 function phoneFields(e164) {
@@ -139,32 +195,185 @@ function mixWhite(hex, amount) {
   return '#' + [m(r), m(g), m(b)].map((n) => n.toString(16).padStart(2, '0')).join('');
 }
 
+function cssColor(value, fallback) {
+  return /^#[0-9a-fA-F]{6}$/.test(value) ? value : fallback;
+}
+
+function fillCta(pattern, name, place) {
+  return String(pattern || '').replaceAll('{name}', name).replaceAll('{place}', place);
+}
+
+function placeholderServices(preset) {
+  return (preset.highlights || []).map((item) => ({
+    name: plain(item.name),
+    detail: plain(item.detail),
+    price: '',
+    duration: '',
+    meta: '',
+    placeholder: true,
+    placeholderClass: ' is-sample',
+    showMeta: false
+  })).filter((item) => item.name);
+}
+
+function buildSections(site, preset) {
+  const copy = preset.copy;
+  const emphasis = preset.emphasis;
+  const mark = (key) => (emphasis === key ? ' section-emphasis' : '');
+  const catalog = {
+    services: site.services.length ? {
+      isServices: true,
+      id: 'services',
+      kicker: copy.servicesKicker,
+      title: copy.servicesTitle,
+      note: site.servicesPlaceholder ? copy.servicesNote : '',
+      services: site.services,
+      navLabel: copy.nav.services
+    } : null,
+    about: site.about ? {
+      isAbout: true,
+      id: 'about',
+      kicker: copy.aboutKicker,
+      title: site.name,
+      about: site.about,
+      name: site.name,
+      navLabel: copy.nav.about
+    } : null,
+    hours: site.hours ? {
+      isHours: true,
+      id: 'hours',
+      kicker: copy.hoursKicker,
+      title: copy.hoursTitle,
+      hourLines: site.hourLines,
+      navLabel: copy.nav.hours
+    } : null,
+    reviews: site.reviews.length ? {
+      isReviews: true,
+      id: 'reviews',
+      kicker: copy.reviewsKicker,
+      title: copy.reviewsTitle,
+      reviews: site.reviews,
+      navLabel: copy.nav.reviews
+    } : null,
+    visit: site.address ? {
+      isVisit: true,
+      id: 'visit',
+      kicker: copy.visitKicker,
+      title: copy.visitTitle,
+      address: site.address,
+      mapUrl: site.mapUrl,
+      navLabel: copy.nav.visit
+    } : null,
+    contact: site.showContact ? {
+      isContact: true,
+      id: 'contact',
+      kicker: '',
+      title: copy.contactTitle,
+      ctaText: site.ctaText,
+      phoneHref: site.phoneHref,
+      phoneDisplay: site.phoneDisplay,
+      bookHref: site.bookHref,
+      bookExternal: site.bookExternal,
+      callButton: site.callButton,
+      bookLabel: site.bookLabel,
+      callClass: site.callClass,
+      bookClass: site.bookClass,
+      navLabel: copy.nav.contact
+    } : null
+  };
+  const sections = [];
+  const nav = [];
+  let band = 0;
+  (preset.order || []).forEach((key) => {
+    const section = catalog[key];
+    if (!section) return;
+    const banded = key !== 'contact' && key !== 'visit';
+    section.bandClass = banded && band % 2 === 1 ? ' section-band' : '';
+    section.emphasisClass = mark(key);
+    if (banded) band += 1;
+    sections.push(section);
+    nav.push({ href: '#' + section.id, label: section.navLabel });
+  });
+  return { sections, nav };
+}
+
 function buildSite(biz, e164) {
   const profile = (biz && biz.profile) || {};
-  const style = industryStyle(biz && biz.category);
+  const preset = presetFor(biz && biz.category);
   const phone = phoneFields(e164);
   const booking = bookingLink(profile);
   const address = plainAddress(profile.address);
-  const accent = /^#[0-9a-fA-F]{6}$/.test(style.accent) ? style.accent : '#0e7c72';
-  return {
-    name: plain(biz && biz.name) || 'Local business',
+  const accent = cssColor(preset.accent, '#0e7c72');
+  const palette = preset.palette || {};
+  const name = plain(biz && biz.name) || 'Local business';
+  const category = plain(biz && biz.category);
+  const city = plain(biz && biz.city);
+  const headline = plain(profile.headline || profile.tagline) || name;
+  const parts = splitHeadline(headline);
+  const about = blockText(profile.about || profile.story || profile.description);
+  const hours = plainHours(profile.hours);
+  let services = serviceItems(profile.services);
+  const servicesPlaceholder = services.length === 0;
+  if (servicesPlaceholder) services = placeholderServices(preset);
+  const reviews = reviewItems(profile.reviews || profile.testimonials);
+  const showContact = Boolean(phone.phoneHref || booking);
+  const place = city ? ' in ' + city : '';
+  const copy = preset.copy;
+  let ctaText = '';
+  if (phone.phoneHref && booking) ctaText = fillCta(copy.ctaBoth, name, place);
+  else if (phone.phoneHref) ctaText = fillCta(copy.ctaPhone, name, place);
+  else if (booking) ctaText = fillCta(copy.ctaBook, name, place);
+  const bookHref = booking || phone.phoneHref;
+  const site = {
+    name,
+    headline,
+    headlineLead: parts.headlineLead,
+    headlineMark: parts.headlineMark,
     blurb: plain(profile.blurb),
-    category: plain(biz && biz.category),
-    city: plain(biz && biz.city),
-    hours: plainHours(profile.hours),
+    about,
+    category,
+    city,
+    eyebrow: [category, city].filter(Boolean).join(' · '),
+    hours,
+    hourLines: hours.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => ({ line })),
     address,
     mapUrl: address ? 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(address) : '',
     phoneDisplay: phone.phoneDisplay,
     phoneHref: phone.phoneHref,
     bookingUrl: booking,
-    bookHref: booking || phone.phoneHref,
+    bookHref,
     bookExternal: Boolean(booking),
-    services: serviceItems(profile.services),
+    services,
+    servicesPlaceholder,
+    reviews,
     accent,
     accentInk: onAccent(accent),
     accentSoft: mixWhite(accent, 0.88),
-    showContact: Boolean(phone.phoneHref || booking)
+    paper: cssColor(palette.paper, '#f7f6f3'),
+    cream: cssColor(palette.cream, '#efece6'),
+    ink: cssColor(palette.ink, '#1e2a28'),
+    navy: cssColor(palette.navy, palette.ink || '#1e2a28'),
+    night: cssColor(palette.night, '#16191c'),
+    muted: cssColor(palette.muted, '#5c6562'),
+    line: cssColor(palette.line, '#e0ddd6'),
+    orange: cssColor(palette.orange, '#99d5cc'),
+    white: cssColor(palette.white, '#ffffff'),
+    toneClass: 'tone-' + (preset.icon || 'neutral'),
+    iconSvg: iconSvg(preset.icon),
+    showContact,
+    callButton: phone.phoneHref ? (copy.callButton || 'Call') : '',
+    bookLabel: copy.bookLabel || 'Book now',
+    callClass: preset.emergency && phone.phoneHref ? ' btn-emergency' : '',
+    bookClass: preset.bookEmphasis && bookHref ? ' btn-emphasis' : '',
+    ctaText,
+    privacy: name + ' shares this page so people can see services, hours, and how to get in touch. This page does not take form submissions. Do not send medical, financial, or account details here.',
+    year: String(new Date().getFullYear())
   };
+  const laid = buildSections(site, preset);
+  site.sections = laid.sections;
+  site.nav = laid.nav;
+  site.hasNav = laid.nav.length > 0;
+  return site;
 }
 
 function esc(value) {
@@ -236,6 +445,11 @@ function renderTemplate(src, data) {
       i = closeAt + ('{{/' + key + '}}').length;
     } else if (tag.startsWith('/')) {
       i = after;
+    } else if (tag.startsWith('=')) {
+      // Raw markup from a type preset (the icon). Business text stays escaped.
+      const value = data[tag.slice(1).trim()];
+      out += value == null || typeof value === 'object' ? '' : String(value);
+      i = after;
     } else {
       const value = data[tag];
       out += esc(value == null || typeof value === 'object' ? '' : value);
@@ -272,7 +486,9 @@ function renderDocument(site, templateId, { inlineCss } = {}) {
 function siteRecord(site, templateId) {
   return {
     name: site.name,
+    headline: site.headline,
     blurb: site.blurb,
+    about: site.about,
     category: site.category,
     city: site.city,
     hours: site.hours,
@@ -283,6 +499,8 @@ function siteRecord(site, templateId) {
     bookingUrl: site.bookingUrl,
     bookHref: site.bookHref,
     services: site.services,
+    servicesPlaceholder: Boolean(site.servicesPlaceholder),
+    reviews: site.reviews,
     accent: site.accent,
     template: templateId
   };
@@ -341,5 +559,6 @@ module.exports = {
   renderTemplate,
   renderFiles,
   previewHtml,
-  esc
+  esc,
+  presetFor
 };
