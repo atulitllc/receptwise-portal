@@ -59,6 +59,8 @@
   var timers = [];
   var extraCache = null;
   var currentRender = function () {};
+  var apptCache = null;
+  var apptShown = [];
 
   function defaultWizard() {
     return {
@@ -481,6 +483,7 @@
     var active = page === "client" ? "clients" : page;
     var titles = {
       dashboard: "Overview",
+      appointments: "Appointments",
       clients: "Businesses",
       add: "Add business",
       client: "Business",
@@ -493,6 +496,7 @@
     var groups = [
       ["Main", [
         ["dashboard.html", "Overview", "dashboard"],
+        ["appointments.html", "Appointments", "appointments"],
         ["phone.html", "Phone", "phone"],
         ["settings.html", "Receptionist", "settings"],
         ["integrations.html", "Integrations", "integrations"],
@@ -1163,12 +1167,13 @@
 
   function tabBookings(b) {
     var rows = (b.bookings || []).map(function (booking) {
-      return "<tr><td>" + esc(booking.when) + "</td><td>" + esc(booking.customer) + "</td><td>" + esc(booking.service) + "</td><td>" + esc(booking.source) + "</td><td>" + esc(booking.status) + "</td></tr>";
+      return "<tr><td>" + esc(booking.when) + "</td><td>" + esc(booking.customer) + "</td><td>" + esc(booking.phone || "—") + "</td><td>" + esc(booking.service) + "</td><td>" + esc(booking.source) + "</td><td>" + esc(booking.status) + "</td></tr>";
     }).join("");
-    return '<div class="head-actions" style="margin-bottom:12px"><button class="btn btn-primary" type="button" data-action="booking-test" data-id="' + esc(b.id) + '">Run booking test</button>' +
+    return '<div class="head-actions" style="margin-bottom:12px"><a class="btn btn-primary" href="appointments.html?business=' + encodeURIComponent(b.id) + '">Open calendar</a>' +
+      '<button class="btn" type="button" data-action="booking-test" data-id="' + esc(b.id) + '">Run booking test</button>' +
       '<button class="btn" type="button" data-action="send-link" data-id="' + esc(b.id) + '" data-kind="calendar">Send calendar link</button></div>' +
-      '<section class="card"><div class="card-h"><h2>Upcoming</h2></div><div class="table-wrap"><table class="data"><thead><tr><th>When</th><th>Customer</th><th>Service</th><th>Source</th><th>Status</th></tr></thead><tbody>' +
-      (rows || '<tr><td colspan="5"><div class="empty">No upcoming bookings.</div></td></tr>') + "</tbody></table></div></section>";
+      '<section class="card"><div class="card-h"><h2>Upcoming</h2></div><div class="table-wrap"><table class="data"><thead><tr><th>When</th><th>Customer</th><th>Phone</th><th>Service</th><th>Source</th><th>Status</th></tr></thead><tbody>' +
+      (rows || '<tr><td colspan="6"><div class="empty">No upcoming bookings.</div></td></tr>') + "</tbody></table></div></section>";
   }
 
   function tabReviews(b) {
@@ -1849,7 +1854,23 @@
       closeModal();
       toast("Invite saved in this browser session.");
       currentRender();
-    }
+    },
+    "appt-view": function (el) { apptGo({ view: el.dataset.view }); },
+    "appt-prev": function () { apptShift(-1); },
+    "appt-next": function () { apptShift(1); },
+    "appt-today": function () {
+      apptGo({ date: todayYmd(appointmentZone(apptQuery().business)) });
+    },
+    "appt-cancelled": function () {
+      var q = apptQuery();
+      apptGo({ hideCancelled: !q.hideCancelled });
+    },
+    "appt-open": function (el) { openAppointment(el.dataset.id); },
+    "appt-add": function () { openAppointmentForm(""); },
+    "appt-edit": function (el) { openAppointmentForm(el.dataset.id); },
+    "appt-save": function (el) { saveAppointment(el.dataset.id || ""); },
+    "appt-cancel": function (el) { cancelAppointment(el.dataset.id); },
+    "appt-day": function (el) { apptGo({ view: "week", date: el.dataset.date }); }
   };
 
   function numberModal(b) {
@@ -2075,7 +2096,9 @@
   function onChange(event) {
     var el = event.target;
     if (!el || !el.dataset) return;
-    if (el.dataset.action === "go-filter") {
+    if (el.dataset.action === "appt-business") {
+      apptGo({ business: el.value || "all" });
+    } else if (el.dataset.action === "go-filter") {
       var overrides = {};
       overrides[el.dataset.key] = el.value;
       location.href = clientsHref(overrides);
@@ -2467,6 +2490,630 @@
     });
   }
 
+  function zoneOf(value) {
+    var labels = {
+      "Eastern Time": "America/New_York",
+      "Central Time": "America/Chicago",
+      "Mountain Time": "America/Denver",
+      "Pacific Time": "America/Los_Angeles",
+      "Arizona Time": "America/Phoenix",
+      "Alaska Time": "America/Anchorage",
+      "Hawaii Time": "Pacific/Honolulu"
+    };
+    if (!value) return "America/New_York";
+    if (labels[value]) return labels[value];
+    if (String(value).indexOf("/") > 0) return value;
+    return "America/New_York";
+  }
+
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+
+  function zoneParts(date, timeZone) {
+    var dtf = new Intl.DateTimeFormat("en-US", {
+      timeZone: timeZone || "America/New_York",
+      hourCycle: "h23",
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+      weekday: "short"
+    });
+    var map = { hour: "00", minute: "00", second: "00", year: "1970", month: "01", day: "01" };
+    dtf.formatToParts(date).forEach(function (part) {
+      if (part.type !== "literal") map[part.type] = part.value;
+    });
+    return map;
+  }
+
+  function ymdInZone(date, timeZone) {
+    var p = zoneParts(date, timeZone);
+    var hour = Number(p.hour);
+    if (hour === 24) {
+      return addDays(p.year + "-" + p.month + "-" + p.day, 1);
+    }
+    return p.year + "-" + p.month + "-" + p.day;
+  }
+
+  function minutesInZone(date, timeZone) {
+    var p = zoneParts(date, timeZone);
+    var hour = Number(p.hour);
+    if (hour === 24) hour = 0;
+    return hour * 60 + Number(p.minute);
+  }
+
+  function addDays(ymd, n) {
+    var p = String(ymd).split("-");
+    var utc = new Date(Date.UTC(+p[0], +p[1] - 1, +p[2] + n));
+    return utc.getUTCFullYear() + "-" + pad2(utc.getUTCMonth() + 1) + "-" + pad2(utc.getUTCDate());
+  }
+
+  function startOfWeek(ymd) {
+    var p = String(ymd).split("-");
+    var utc = new Date(Date.UTC(+p[0], +p[1] - 1, +p[2]));
+    var day = utc.getUTCDay();
+    return addDays(ymd, day === 0 ? -6 : 1 - day);
+  }
+
+  function addMonths(ymd, n) {
+    var p = String(ymd).split("-");
+    var utc = new Date(Date.UTC(+p[0], +p[1] - 1 + n, 1));
+    return utc.getUTCFullYear() + "-" + pad2(utc.getUTCMonth() + 1) + "-01";
+  }
+
+  function zoneOffsetMs(timeZone, utcMs) {
+    var p = zoneParts(new Date(utcMs), timeZone);
+    var year = +p.year, month = +p.month, day = +p.day, hour = +p.hour;
+    if (hour === 24) {
+      hour = 0;
+      var next = new Date(Date.UTC(year, month - 1, day));
+      next.setUTCDate(next.getUTCDate() + 1);
+      year = next.getUTCFullYear();
+      month = next.getUTCMonth() + 1;
+      day = next.getUTCDate();
+    }
+    return Date.UTC(year, month - 1, day, hour, +p.minute, +p.second) - utcMs;
+  }
+
+  function wallToUtc(ymd, hm, timeZone) {
+    var bits = String(hm || "00:00").split(":");
+    var match = String(ymd || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!match) return null;
+    var utcGuess = Date.UTC(+match[1], +match[2] - 1, +match[3], +bits[0] || 0, +bits[1] || 0, +(bits[2] || 0));
+    var offset = zoneOffsetMs(timeZone, utcGuess);
+    var instant = utcGuess - offset;
+    var again = zoneOffsetMs(timeZone, instant);
+    return new Date(utcGuess - again).toISOString();
+  }
+
+  function clockIn(date, timeZone) {
+    return new Intl.DateTimeFormat("en-US", { timeZone: timeZone, hour: "numeric", minute: "2-digit" }).format(date);
+  }
+
+  function dayTitle(ymd, timeZone) {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone: timeZone, weekday: "short", month: "short", day: "numeric"
+    }).format(new Date(wallToUtc(ymd, "12:00", timeZone)));
+  }
+
+  function todayYmd(zone) {
+    return ymdInZone(new Date(), zone || "America/New_York");
+  }
+
+  function inputStamp(iso, zone) {
+    if (!iso) return "";
+    var p = zoneParts(new Date(iso), zone);
+    var hour = p.hour === "24" ? "00" : p.hour;
+    return p.year + "-" + p.month + "-" + p.day + "T" + hour + ":" + p.minute;
+  }
+
+  function appointmentZone(businessId) {
+    if (businessId && businessId !== "all") {
+      var biz = findBiz(businessId);
+      if (biz) return zoneOf(biz.timezone);
+    }
+    return "America/New_York";
+  }
+
+  function apptQuery() {
+    var params = new URLSearchParams(location.search);
+    var view = params.get("view");
+    if (view !== "month" && view !== "list") view = "week";
+    var date = params.get("date") || "";
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) date = todayYmd(appointmentZone(params.get("business") || params.get("id") || "all"));
+    return {
+      view: view,
+      date: date,
+      business: params.get("business") || params.get("id") || "all",
+      hideCancelled: params.get("cancelled") !== "show"
+    };
+  }
+
+  function apptGo(partial) {
+    var q = apptQuery();
+    if (partial.view) q.view = partial.view;
+    if (partial.date) q.date = partial.date;
+    if (partial.business != null) q.business = partial.business || "all";
+    if (partial.hideCancelled != null) q.hideCancelled = !!partial.hideCancelled;
+    var params = new URLSearchParams();
+    if (q.view !== "week") params.set("view", q.view);
+    params.set("date", q.date);
+    if (q.business && q.business !== "all") params.set("business", q.business);
+    if (!q.hideCancelled) params.set("cancelled", "show");
+    history.replaceState(null, "", "appointments.html?" + params.toString());
+    currentRender();
+  }
+
+  function apptShift(dir) {
+    var q = apptQuery();
+    var date = q.view === "week" ? addDays(startOfWeek(q.date), dir * 7) : addMonths(q.date.slice(0, 7) + "-01", dir);
+    apptGo({ date: date });
+  }
+
+  function monthGrid(dateYmd) {
+    var first = dateYmd.slice(0, 7) + "-01";
+    var start = startOfWeek(first);
+    var last = addDays(addMonths(first, 1), -1);
+    var end = addDays(startOfWeek(last), 7);
+    return { start: start, end: end, month: first.slice(0, 7) };
+  }
+
+  function appointmentRange(q, zone) {
+    var grid = monthGrid(q.date);
+    if (q.view === "week") {
+      var start = startOfWeek(q.date);
+      return { from: wallToUtc(addDays(start, -1), "00:00", zone), to: wallToUtc(addDays(start, 8), "00:00", zone) };
+    }
+    return { from: wallToUtc(grid.start, "00:00", zone), to: wallToUtc(grid.end, "00:00", zone) };
+  }
+
+  function apptEdits() {
+    try { return JSON.parse(storageGet("rw_appt_edits") || "{}"); }
+    catch (e) { return {}; }
+  }
+
+  function demoAppointments() {
+    var edits = apptEdits();
+    var patches = edits.patches || {};
+    var out = [];
+    allBusinesses().forEach(function (b) {
+      var tz = zoneOf(b.timezone);
+      (b.bookings || []).forEach(function (booking, index) {
+        var id = "sample:" + b.id + ":" + index;
+        var appt = {
+          id: id,
+          businessId: b.id,
+          businessName: b.name,
+          timezone: tz,
+          startsAt: booking.startsAt || null,
+          endsAt: booking.endsAt || null,
+          customer: booking.customer || "",
+          phone: booking.phone || "",
+          service: booking.service || "",
+          source: booking.source || "Phone",
+          status: booking.status || "Confirmed",
+          callHref: (booking.source || "Phone") === "Phone" ? "client.html?id=" + encodeURIComponent(b.id) + "#receptionist" : ""
+        };
+        var patch = patches[id];
+        if (patch) Object.keys(patch).forEach(function (key) { appt[key] = patch[key]; });
+        out.push(appt);
+      });
+    });
+    (edits.created || []).forEach(function (item) { out.push(item); });
+    return out;
+  }
+
+  function findAppt(id) {
+    for (var i = 0; i < apptShown.length; i++) if (String(apptShown[i].id) === String(id)) return apptShown[i];
+    return null;
+  }
+
+  function apptWhen(appt) {
+    if (!appt || !appt.startsAt) return "Time not set";
+    var zone = appt.timezone || "America/New_York";
+    var start = new Date(appt.startsAt);
+    var text = new Intl.DateTimeFormat("en-US", {
+      timeZone: zone, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit"
+    }).format(start);
+    if (appt.endsAt) text += " – " + clockIn(new Date(appt.endsAt), zone);
+    return text;
+  }
+
+  function apptStatusPill(status) {
+    var key = String(status || "Confirmed").toLowerCase();
+    var cls = key === "cancelled" ? "action" : key === "completed" ? "neutral" : "connected";
+    return '<span class="pill ' + cls + '">' + esc(status || "Confirmed") + "</span>";
+  }
+
+  function visibleAppointments(items, q) {
+    return (items || []).filter(function (appt) {
+      if (q.business && q.business !== "all" && appt.businessId !== q.business) return false;
+      if (q.hideCancelled && String(appt.status).toLowerCase() === "cancelled") return false;
+      return true;
+    });
+  }
+
+  function placeAppt(appt) {
+    var zone = appt.timezone || "America/New_York";
+    var start = new Date(appt.startsAt);
+    var end = appt.endsAt ? new Date(appt.endsAt) : new Date(start.getTime() + 30 * 60000);
+    var startMin = minutesInZone(start, zone);
+    var endMin = ymdInZone(end, zone) === ymdInZone(start, zone) ? minutesInZone(end, zone) : 24 * 60;
+    if (endMin < startMin + 20) endMin = startMin + 20;
+    return { ymd: ymdInZone(start, zone), startMin: startMin, endMin: endMin };
+  }
+
+  function businessOptions(selected, includeAll) {
+    var opts = includeAll ? '<option value="all"' + (selected === "all" ? " selected" : "") + ">All businesses</option>" : "";
+    ordered(allBusinesses()).forEach(function (b) {
+      opts += '<option value="' + esc(b.id) + '"' + (b.id === selected ? " selected" : "") + ">" + esc(b.name) + (b.pilot ? " · Pilot" : "") + "</option>";
+    });
+    return opts;
+  }
+
+  function appointmentChrome(q, body) {
+    var zone = appointmentZone(q.business);
+    var label = q.view === "week"
+      ? dayTitle(startOfWeek(q.date), zone) + " – " + dayTitle(addDays(startOfWeek(q.date), 6), zone)
+      : new Intl.DateTimeFormat("en-US", { timeZone: zone, month: "long", year: "numeric" }).format(new Date(wallToUtc(q.date.slice(0, 7) + "-01", "12:00", zone)));
+    var views = ["week", "month", "list"].map(function (view) {
+      var name = view.charAt(0).toUpperCase() + view.slice(1);
+      return '<button type="button" class="' + (q.view === view ? "on" : "") + '" data-action="appt-view" data-view="' + view + '" aria-pressed="' + (q.view === view ? "true" : "false") + '">' + name + "</button>";
+    }).join("");
+    var zoneNote = q.business && q.business !== "all"
+      ? "Times shown in " + ((findBiz(q.business) || {}).timezone || "the business time zone") + "."
+      : "Times shown in each business's time zone.";
+    return '<div class="page-head"><div><h1>Appointments</h1><p class="sub">' + esc(label) + " · " + esc(zoneNote) + "</p></div>" +
+      '<div class="head-actions"><button class="btn btn-primary" type="button" data-action="appt-add">Add appointment</button></div></div>' +
+      '<div class="cal-toolbar"><div class="left"><div class="seg" role="group" aria-label="Calendar view">' + views + "</div>" +
+      '<button class="btn btn-sm" type="button" data-action="appt-prev" aria-label="Previous">Back</button>' +
+      '<button class="btn btn-sm" type="button" data-action="appt-today">Today</button>' +
+      '<button class="btn btn-sm" type="button" data-action="appt-next" aria-label="Next">Next</button></div>' +
+      '<div class="right"><label class="field" style="margin:0;min-width:200px"><span class="help">Business</span>' +
+      '<select class="ctrl" data-action="appt-business" aria-label="Business">' + businessOptions(q.business, true) + "</select></label>" +
+      '<button class="btn btn-sm" type="button" data-action="appt-cancelled">' + (q.hideCancelled ? "Show cancelled" : "Hide cancelled") + "</button></div></div>" +
+      body + legal();
+  }
+
+  function eventButton(appt, cls, style) {
+    var zone = appt.timezone || "America/New_York";
+    var time = appt.startsAt ? clockIn(new Date(appt.startsAt), zone) : "Time not set";
+    var detail = appt.service || "";
+    if (appt.businessName && appt.service && appt.businessName !== appt.service) detail = appt.businessName + " · " + appt.service;
+    else if (!detail) detail = appt.businessName || "";
+    var cancelled = String(appt.status).toLowerCase() === "cancelled" ? " cancelled" : "";
+    return '<button type="button" class="' + cls + cancelled + '" style="' + (style || "") + "border-left-color:" + colorFor((findBiz(appt.businessId) || {}).category) +
+      '" data-action="appt-open" data-id="' + esc(appt.id) + '"><strong>' + esc(time) + " " + esc(appt.customer || "Appointment") +
+      "</strong><span>" + esc(detail) + "</span></button>";
+  }
+
+  function weekHtml(items, q) {
+    var start = startOfWeek(q.date);
+    var days = [];
+    for (var i = 0; i < 7; i++) days.push(addDays(start, i));
+    var placed = items.filter(function (appt) { return appt.startsAt; }).map(function (appt) {
+      var spot = placeAppt(appt);
+      spot.appt = appt;
+      return spot;
+    }).filter(function (spot) { return days.indexOf(spot.ymd) >= 0; });
+    var startMin = 8 * 60;
+    var endMin = 19 * 60;
+    placed.forEach(function (spot) {
+      startMin = Math.min(startMin, Math.floor(spot.startMin / 60) * 60);
+      endMin = Math.max(endMin, Math.ceil(spot.endMin / 60) * 60);
+    });
+    startMin = Math.max(0, startMin);
+    endMin = Math.min(24 * 60, Math.max(endMin, startMin + 60));
+    var height = (endMin - startMin) / 60 * 48;
+    var today = todayYmd(appointmentZone(q.business));
+    var heads = days.map(function (ymd) {
+      var cls = ymd === today ? "cal-head today" : "cal-head";
+      return '<div class="' + cls + '"><button type="button" data-action="appt-day" data-date="' + ymd + '">' + esc(dayTitle(ymd, appointmentZone(q.business))) + "</button></div>";
+    }).join("");
+    var hours = "";
+    for (var m = startMin; m < endMin; m += 60) {
+      var labelDate = new Date(wallToUtc("2026-01-05", pad2(m / 60) + ":00", "UTC"));
+      var label = new Intl.DateTimeFormat("en-US", { hour: "numeric", timeZone: "UTC" }).format(labelDate);
+      hours += '<div class="cal-hour" style="top:' + ((m - startMin) / 60 * 48 + 4) + 'px">' + esc(label) + "</div>";
+    }
+    var cols = days.map(function (ymd) {
+      var blocks = placed.filter(function (spot) { return spot.ymd === ymd; }).sort(function (a, b) { return a.startMin - b.startMin; });
+      var lanes = [];
+      blocks.forEach(function (block) {
+        var lane = 0;
+        while (lanes[lane] != null && lanes[lane] > block.startMin) lane += 1;
+        lanes[lane] = block.endMin;
+        block.lane = lane;
+      });
+      var count = Math.max(1, lanes.length);
+      var events = blocks.map(function (block) {
+        var top = (block.startMin - startMin) / 60 * 48;
+        var h = Math.max(28, (block.endMin - block.startMin) / 60 * 48 - 2);
+        var width = 100 / count;
+        var style = "top:" + top + "px;height:" + h + "px;left:" + (block.lane * width) + "%;width:calc(" + width + "% - 4px);";
+        return eventButton(block.appt, "cal-event", style);
+      }).join("");
+      return '<div class="cal-col" style="height:' + height + 'px">' + events + "</div>";
+    }).join("");
+    var unscheduled = items.filter(function (appt) { return !appt.startsAt; });
+    var extra = unscheduled.length ? '<p class="help" style="margin-top:8px">' + unscheduled.length + " appointment" + (unscheduled.length === 1 ? "" : "s") + " with no start time. Open the list to see " + (unscheduled.length === 1 ? "it" : "them") + ".</p>" : "";
+    return '<div class="cal-board"><div class="cal-week"><div class="cal-dow"></div>' + heads +
+      '<div class="cal-gutter" style="height:' + height + 'px">' + hours + "</div>" + cols + "</div></div>" + extra;
+  }
+
+  function monthHtml(items, q) {
+    var grid = monthGrid(q.date);
+    var zone = appointmentZone(q.business);
+    var today = todayYmd(zone);
+    var names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(function (name) {
+      return '<div class="cal-dow">' + name + "</div>";
+    }).join("");
+    var byDay = {};
+    items.forEach(function (appt) {
+      if (!appt.startsAt) return;
+      var ymd = placeAppt(appt).ymd;
+      if (!byDay[ymd]) byDay[ymd] = [];
+      byDay[ymd].push(appt);
+    });
+    var cells = "";
+    for (var ymd = grid.start; ymd < grid.end; ymd = addDays(ymd, 1)) {
+      var outside = ymd.slice(0, 7) !== grid.month;
+      var list = byDay[ymd] || [];
+      var chips = list.slice(0, 3).map(function (appt) { return eventButton(appt, "cal-chip", ""); }).join("");
+      var more = list.length > 3 ? '<button type="button" class="cal-more" data-action="appt-day" data-date="' + ymd + '">+' + (list.length - 3) + " more</button>" : "";
+      cells += '<div class="cal-cell' + (outside ? " out" : "") + (ymd === today ? " today" : "") + '"><button type="button" class="daynum" data-action="appt-day" data-date="' + ymd + '">' +
+        Number(ymd.slice(8)) + "</button>" + chips + more + "</div>";
+    }
+    return '<div class="cal-board"><div class="cal-month">' + names + cells + "</div></div>";
+  }
+
+  function listHtml(items) {
+    var rows = items.slice().sort(function (a, b) {
+      var as = a.startsAt ? new Date(a.startsAt).getTime() : Infinity;
+      var bs = b.startsAt ? new Date(b.startsAt).getTime() : Infinity;
+      return as - bs;
+    });
+    if (!rows.length) return '<section class="card"><div class="empty">No appointments in this range.</div></section>';
+    var html = "";
+    var last = "";
+    rows.forEach(function (appt) {
+      var heading = appt.startsAt ? dayTitle(placeAppt(appt).ymd, appt.timezone || "America/New_York") : "Time not set";
+      if (heading !== last) {
+        if (last) html += "</tbody></table></div></section>";
+        html += '<h3 class="agenda-day">' + esc(heading) + '</h3><section class="card"><div class="table-wrap"><table class="data"><thead><tr><th>When</th><th>Customer</th><th>Business</th><th>Service</th><th>Phone</th><th>Call</th><th>Status</th></tr></thead><tbody>';
+        last = heading;
+      }
+      var call = appt.callHref ? '<a href="' + esc(appt.callHref) + '">View call</a>' : "—";
+      html += '<tr><td><button type="button" class="btn btn-sm" data-action="appt-open" data-id="' + esc(appt.id) + '">' + esc(apptWhen(appt)) + "</button></td><td>" +
+        esc(appt.customer || "—") + "</td><td>" + esc(appt.businessName || "—") + "</td><td>" + esc(appt.service || "—") + "</td><td>" +
+        esc(appt.phone || "—") + "</td><td>" + call + "</td><td>" + apptStatusPill(appt.status) + "</td></tr>";
+    });
+    html += "</tbody></table></div></section>";
+    return html;
+  }
+
+  function paintAppointments(view, q, items) {
+    var shown = visibleAppointments(items, q);
+    if (q.view !== "list") {
+      var grid = q.view === "week" ? (function () {
+        var start = startOfWeek(q.date);
+        var end = addDays(start, 7);
+        return shown.filter(function (appt) {
+          if (!appt.startsAt) return false;
+          var ymd = placeAppt(appt).ymd;
+          return ymd >= start && ymd < end;
+        });
+      })() : shown.filter(function (appt) {
+        if (!appt.startsAt) return false;
+        var bounds = monthGrid(q.date);
+        var ymd = placeAppt(appt).ymd;
+        return ymd >= bounds.start && ymd < bounds.end;
+      });
+      apptShown = items;
+      var body = q.view === "week" ? weekHtml(shown, q) : monthHtml(grid, q);
+      view.innerHTML = appointmentChrome(q, body);
+      return;
+    }
+    var bounds = monthGrid(q.date);
+    var inRange = shown.filter(function (appt) {
+      if (!appt.startsAt) return true;
+      var ymd = placeAppt(appt).ymd;
+      return ymd >= bounds.start && ymd < bounds.end;
+    });
+    apptShown = items;
+    view.innerHTML = appointmentChrome(q, listHtml(inRange));
+  }
+
+  function renderAppointments(view) {
+    var q = apptQuery();
+    document.title = "Appointments · ReceptWise";
+    if (!LIVE) {
+      paintAppointments(view, q, demoAppointments());
+      return;
+    }
+    var zone = appointmentZone(q.business);
+    var range = appointmentRange(q, zone);
+    var key = [q.business, q.view, range.from, range.to].join("|");
+    if (apptCache && apptCache.key === key) {
+      paintAppointments(view, q, apptCache.items);
+      return;
+    }
+    view.innerHTML = appointmentChrome(q, '<section class="card"><div class="empty">Loading appointments…</div></section>');
+    var url = "api/appointments?from=" + encodeURIComponent(range.from) + "&to=" + encodeURIComponent(range.to) + "&unscheduled=1";
+    if (q.business && q.business !== "all") url += "&business=" + encodeURIComponent(q.business);
+    api("GET", url).then(function (data) {
+      var now = apptQuery();
+      var nowKey = [now.business, now.view, appointmentRange(now, appointmentZone(now.business)).from, appointmentRange(now, appointmentZone(now.business)).to].join("|");
+      apptCache = { key: key, items: data.appointments || [] };
+      if (nowKey === key) paintAppointments(view, now, apptCache.items);
+    }).catch(function (err) {
+      if (err && err.status === 401) { location.replace("index.html"); return; }
+      view.innerHTML = appointmentChrome(apptQuery(), '<div class="banner bad">' + esc(err.message || "Could not load appointments.") + "</div>");
+    });
+  }
+
+  function openAppointment(id) {
+    var appt = findAppt(id);
+    if (!appt) return;
+    var call = appt.callHref ? '<a href="' + esc(appt.callHref) + '">View call</a>' : "No call on file";
+    var body = '<dl class="kvs"><dt>When</dt><dd>' + esc(apptWhen(appt)) + "</dd><dt>Customer</dt><dd>" + esc(appt.customer || "—") +
+      "</dd><dt>Business</dt><dd>" + esc(appt.businessName || "—") + "</dd><dt>Service</dt><dd>" + esc(appt.service || "—") +
+      "</dd><dt>Phone</dt><dd>" + esc(appt.phone || "—") + "</dd><dt>Status</dt><dd>" + apptStatusPill(appt.status) +
+      "</dd><dt>Source</dt><dd>" + esc(appt.source || "—") + "</dd><dt>Call</dt><dd>" + call + "</dd></dl>" +
+      '<p class="help">Saved in ReceptWise. The receptionist\'s calendar is not changed.</p>';
+    var cancel = String(appt.status).toLowerCase() === "cancelled" ? "" :
+      '<button class="btn btn-danger" type="button" data-action="appt-cancel" data-id="' + esc(appt.id) + '">Cancel appointment</button>';
+    openModal(appt.customer || "Appointment", body,
+      cancel + '<button class="btn" type="button" data-action="appt-edit" data-id="' + esc(appt.id) + '">Edit</button>' +
+      '<button class="btn btn-primary" type="button" data-action="close-modal">Close</button>');
+  }
+
+  function openAppointmentForm(id) {
+    var appt = id ? findAppt(id) : null;
+    var q = apptQuery();
+    var businessId = appt ? appt.businessId : (q.business !== "all" ? q.business : ((ordered(allBusinesses())[0] || {}).id || ""));
+    var zone = appt && appt.timezone ? appt.timezone : appointmentZone(businessId);
+    var businessField = appt
+      ? '<div class="field"><label>Business</label><input class="ctrl" value="' + esc(appt.businessName || "") + '" disabled></div>'
+      : '<div class="field"><label for="appt-business">Business</label><select class="ctrl" id="appt-business">' + businessOptions(businessId, false) + "</select></div>";
+    var body = businessField +
+      '<div class="grid-2"><div class="field"><label for="appt-customer">Customer</label><input class="ctrl" id="appt-customer" value="' + esc(appt ? appt.customer : "") + '"></div>' +
+      '<div class="field"><label for="appt-phone">Phone</label><input class="ctrl" id="appt-phone" value="' + esc(appt ? appt.phone : "") + '"></div></div>' +
+      '<div class="field"><label for="appt-service">Service</label><input class="ctrl" id="appt-service" value="' + esc(appt ? appt.service : "") + '"></div>' +
+      '<div class="grid-2"><div class="field"><label for="appt-start">Starts</label><input class="ctrl" id="appt-start" type="datetime-local" value="' + esc(appt ? inputStamp(appt.startsAt, zone) : "") + '"></div>' +
+      '<div class="field"><label for="appt-end">Ends</label><input class="ctrl" id="appt-end" type="datetime-local" value="' + esc(appt ? inputStamp(appt.endsAt, zone) : "") + '"></div></div>' +
+      '<div class="field"><label for="appt-status">Status</label><select class="ctrl" id="appt-status">' +
+      ["Confirmed", "Completed", "Cancelled"].map(function (status) {
+        return '<option' + (appt && appt.status === status ? " selected" : "") + ">" + status + "</option>";
+      }).join("") + "</select></div>" +
+      "<p class='help'>Saved in ReceptWise only. The receptionist’s calendar is not changed.</p>";
+    openModal(appt ? "Edit appointment" : "Add appointment", body,
+      '<button class="btn" type="button" data-action="close-modal">Close</button>' +
+      '<button class="btn btn-primary" type="button" data-action="appt-save" data-id="' + esc(appt ? appt.id : "") + '">Save</button>');
+  }
+
+  function fieldValue(id) {
+    var el = document.getElementById(id);
+    return el ? String(el.value || "").trim() : "";
+  }
+
+  function saveDemoAppointment(fields) {
+    var edits = apptEdits();
+    edits.patches = edits.patches || {};
+    edits.created = edits.created || [];
+    var biz = findBiz(fields.businessId);
+    var existing = fields.id ? findAppt(fields.id) : null;
+    var tz = existing && existing.timezone ? existing.timezone : zoneOf(biz && biz.timezone);
+    var appt = {
+      id: fields.id || ("local:" + Date.now()),
+      businessId: fields.businessId,
+      businessName: (biz && biz.name) || (existing && existing.businessName) || "",
+      timezone: tz,
+      startsAt: wallToUtc(fields.startDate, fields.startTime, tz),
+      endsAt: fields.endDate ? wallToUtc(fields.endDate, fields.endTime, tz) : null,
+      customer: fields.customer,
+      phone: pretty(digits(fields.phone)) || fields.phone,
+      service: fields.service,
+      source: existing ? existing.source : "Portal",
+      status: fields.status,
+      callHref: existing ? existing.callHref : ""
+    };
+    if (String(appt.id).indexOf("sample:") === 0) edits.patches[appt.id] = appt;
+    else {
+      var replaced = false;
+      edits.created = edits.created.map(function (item) {
+        if (String(item.id) === String(appt.id)) { replaced = true; return appt; }
+        return item;
+      });
+      if (!replaced) edits.created.push(appt);
+    }
+    storageSet("rw_appt_edits", JSON.stringify(edits));
+  }
+
+  function readAppointmentForm(id) {
+    var existing = id ? findAppt(id) : null;
+    var businessId = existing ? existing.businessId : fieldValue("appt-business");
+    var customer = fieldValue("appt-customer");
+    var start = fieldValue("appt-start");
+    var end = fieldValue("appt-end");
+    if (!businessId) { toast("Choose a business."); return null; }
+    if (!customer) { toast("Customer name is required."); return null; }
+    if (!start || start.indexOf("T") < 0) { toast("Start time is required."); return null; }
+    if (end && end <= start) { toast("End time is before the start time."); return null; }
+    var startBits = start.split("T");
+    var endBits = end ? end.split("T") : ["", ""];
+    return {
+      id: id,
+      businessId: businessId,
+      customer: customer,
+      phone: fieldValue("appt-phone"),
+      service: fieldValue("appt-service"),
+      status: fieldValue("appt-status") || "Confirmed",
+      startDate: startBits[0],
+      startTime: startBits[1],
+      endDate: endBits[0],
+      endTime: endBits[1],
+      startsAt: startBits[0] + "T" + startBits[1],
+      endsAt: end ? endBits[0] + "T" + endBits[1] : ""
+    };
+  }
+
+  function saveAppointment(id) {
+    var fields = readAppointmentForm(id);
+    if (!fields) return;
+    if (LIVE) {
+      var zone = appointmentZone(fields.businessId);
+      var payload = {
+        businessId: fields.businessId,
+        customer: fields.customer,
+        phone: fields.phone,
+        service: fields.service,
+        status: fields.status,
+        startsAt: fields.startsAt,
+        endsAt: fields.endsAt,
+        timeZone: zone
+      };
+      var req = id ? api("PATCH", "api/appointments/" + encodeURIComponent(id), payload) : api("POST", "api/appointments", payload);
+      req.then(function () {
+        apptCache = null;
+        closeModal();
+        toast("Appointment saved.");
+        currentRender();
+      }).catch(liveFail);
+      return;
+    }
+    saveDemoAppointment(fields);
+    closeModal();
+    toast("Saved in this browser session.");
+    currentRender();
+  }
+
+  function cancelAppointment(id) {
+    var appt = findAppt(id);
+    if (!appt) return;
+    if (LIVE) {
+      api("PATCH", "api/appointments/" + encodeURIComponent(id), { status: "Cancelled" }).then(function () {
+        apptCache = null;
+        closeModal();
+        toast("Appointment cancelled.");
+        currentRender();
+      }).catch(liveFail);
+      return;
+    }
+    saveDemoAppointment({
+      id: appt.id,
+      businessId: appt.businessId,
+      customer: appt.customer,
+      phone: appt.phone,
+      service: appt.service,
+      status: "Cancelled",
+      startDate: appt.startsAt ? inputStamp(appt.startsAt, appt.timezone).slice(0, 10) : "",
+      startTime: appt.startsAt ? inputStamp(appt.startsAt, appt.timezone).slice(11, 16) : "",
+      endDate: appt.endsAt ? inputStamp(appt.endsAt, appt.timezone).slice(0, 10) : "",
+      endTime: appt.endsAt ? inputStamp(appt.endsAt, appt.timezone).slice(11, 16) : ""
+    });
+    closeModal();
+    toast("Appointment cancelled in this browser session.");
+    currentRender();
+  }
+
   function boot() {
     if (!window.RW_DATA) {
       document.getElementById("app").textContent = "Sample data did not load.";
@@ -2495,6 +3142,7 @@
       else if (page === "phone") renderPhone(view);
       else if (page === "settings") renderSettings(view);
       else if (page === "integrations") renderIntegrations(view);
+      else if (page === "appointments") renderAppointments(view);
       refreshBell();
     };
     currentRender();

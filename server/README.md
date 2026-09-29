@@ -28,6 +28,9 @@ Session cookie plus `X-RW-Client: portal` on every write. `GET /api/health` does
 | GET | `/api/health` | database check |
 | GET | `/api/export?format=json` or `sql` | admin only. Clients, settings, calls, bookings, activity. No passwords or third-party tokens. |
 | GET | `/api/metrics?business=slug` | calls today/7d/30d, answered, missed, duration, bookings, recent calls, activity |
+| GET | `/api/appointments?business=slug&from=&to=` | bookings for one business, or every business when `business` is omitted. `from`/`to` are ISO instants. |
+| POST | `/api/appointments` | add a booking in the portal. Does not write to an external calendar. |
+| PATCH | `/api/appointments/:id` | edit or cancel a booking in the portal |
 | POST | `/api/calls/sync` | backfill from Vapi for every linked business |
 | GET | `/api/businesses/:slug/phone` | live Vapi/Twilio status, or a not-connected state |
 | GET/PUT | `/api/businesses/:slug/settings` | save and push greeting, hours, booking rules, transfer, FAQ |

@@ -147,7 +147,7 @@
         reviewLink: "",
         socialAccounts: { facebook: "", instagram: "", gbp: "" },
         bookings: [
-          { when: "Tue, Sep 30 · 10:00 AM", customer: "Riley Cho", service: "Intro demo", source: "Phone", status: "Confirmed" }
+          { when: "Wed, Sep 30 · 10:00 AM", customer: "Riley Cho", phone: "(628) 555-0174", service: "Intro demo", source: "Phone", status: "Confirmed", startsAt: "2026-09-30T17:00:00.000Z", endsAt: "2026-09-30T17:20:00.000Z" }
         ],
         calls: [
           {
@@ -258,9 +258,9 @@
         reviewLink: "https://search.google.com/local/writereview?placeid=sample-harbor",
         socialAccounts: { facebook: "Harbor & Rye", instagram: "@harborandrye", gbp: "Harbor & Rye" },
         bookings: [
-          { when: "Fri, Oct 2 · 7:00 PM", customer: "Marco Diaz", service: "Dinner for 2", source: "Phone", status: "Confirmed" },
-          { when: "Sat, Oct 3 · 5:30 PM", customer: "Priya Shah", service: "Dinner for 4", source: "Phone", status: "Confirmed" },
-          { when: "Sun, Oct 4 · 6:00 PM", customer: "Noah Bennett", service: "Dinner for 2", source: "Website", status: "Confirmed" }
+          { when: "Fri, Oct 2 · 7:00 PM", customer: "Marco Diaz", phone: "(503) 555-2201", service: "Dinner for 2", source: "Phone", status: "Confirmed", startsAt: "2026-10-03T02:00:00.000Z", endsAt: "2026-10-03T03:30:00.000Z" },
+          { when: "Sat, Oct 3 · 5:30 PM", customer: "Priya Shah", phone: "(503) 555-0144", service: "Dinner for 4", source: "Phone", status: "Confirmed", startsAt: "2026-10-04T00:30:00.000Z", endsAt: "2026-10-04T02:00:00.000Z" },
+          { when: "Sun, Oct 4 · 6:00 PM", customer: "Noah Bennett", service: "Dinner for 2", source: "Website", status: "Confirmed", startsAt: "2026-10-05T01:00:00.000Z", endsAt: "2026-10-05T02:30:00.000Z" }
         ],
         calls: [
           {
@@ -392,9 +392,9 @@
         reviewLink: "https://search.google.com/local/writereview?placeid=sample-northline",
         socialAccounts: { facebook: "", instagram: "", gbp: "Northline Family Clinic" },
         bookings: [
-          { when: "Wed, Oct 1 · 2:20 PM", customer: "Helen Cho", service: "New patient visit", source: "Phone", status: "Confirmed" },
-          { when: "Thu, Oct 2 · 9:00 AM", customer: "Samir Adeyemi", service: "Follow-up visit", source: "Phone", status: "Confirmed" },
-          { when: "Thu, Oct 2 · 11:40 AM", customer: "Greta Holm", service: "Physical", source: "Website", status: "Confirmed" }
+          { when: "Thu, Oct 1 · 2:20 PM", customer: "Helen Cho", phone: "(617) 555-0181", service: "New patient visit", source: "Phone", status: "Confirmed", startsAt: "2026-10-01T18:20:00.000Z", endsAt: "2026-10-01T19:00:00.000Z" },
+          { when: "Fri, Oct 2 · 9:00 AM", customer: "Samir Adeyemi", phone: "(617) 555-0160", service: "Follow-up visit", source: "Phone", status: "Confirmed", startsAt: "2026-10-02T13:00:00.000Z", endsAt: "2026-10-02T13:20:00.000Z" },
+          { when: "Fri, Oct 2 · 11:40 AM", customer: "Greta Holm", service: "Physical", source: "Website", status: "Confirmed", startsAt: "2026-10-02T15:40:00.000Z", endsAt: "2026-10-02T16:20:00.000Z" }
         ],
         calls: [
           {
@@ -510,7 +510,7 @@
         reviewLink: "https://search.google.com/local/writereview?placeid=sample-maple",
         socialAccounts: { facebook: "Maple Street Auto", instagram: "", gbp: "" },
         bookings: [
-          { when: "Mon, Sep 29 · 8:30 AM", customer: "Andre Wallace", service: "Oil service", source: "Phone", status: "Confirmed" }
+          { when: "Tue, Sep 29 · 8:30 AM", customer: "Andre Wallace", phone: "(773) 555-0166", service: "Oil service", source: "Phone", status: "Confirmed", startsAt: "2026-09-29T13:30:00.000Z", endsAt: "2026-09-29T14:15:00.000Z" }
         ],
         calls: [
           {
@@ -624,9 +624,9 @@
         reviewLink: "https://search.google.com/local/writereview?placeid=sample-lumen",
         socialAccounts: { facebook: "Lumen Salon", instagram: "@lumensalon", gbp: "Lumen Salon" },
         bookings: [
-          { when: "Thu, Oct 2 · 11:00 AM", customer: "June Park", service: "Cut and color", source: "Phone", status: "Confirmed" },
-          { when: "Thu, Oct 2 · 1:30 PM", customer: "Alicia Grant", service: "Cut", source: "Phone", status: "Confirmed" },
-          { when: "Sat, Oct 4 · 10:00 AM", customer: "Ren Ito", service: "Blowout", source: "Website", status: "Confirmed" }
+          { when: "Fri, Oct 2 · 11:00 AM", customer: "June Park", phone: "(206) 555-0194", service: "Cut and color", source: "Phone", status: "Confirmed", startsAt: "2026-10-02T18:00:00.000Z", endsAt: "2026-10-02T20:00:00.000Z" },
+          { when: "Fri, Oct 2 · 1:30 PM", customer: "Alicia Grant", phone: "(206) 555-0177", service: "Cut", source: "Phone", status: "Confirmed", startsAt: "2026-10-02T20:30:00.000Z", endsAt: "2026-10-02T21:15:00.000Z" },
+          { when: "Sat, Oct 4 · 10:00 AM", customer: "Ren Ito", service: "Blowout", source: "Website", status: "Confirmed", startsAt: "2026-10-04T17:00:00.000Z", endsAt: "2026-10-04T17:30:00.000Z" }
         ],
         calls: [
           {
@@ -836,7 +836,7 @@
         reviewLink: "https://search.google.com/local/writereview?placeid=sample-oak",
         socialAccounts: { facebook: "", instagram: "@oakandthread", gbp: "Oak & Thread" },
         bookings: [
-          { when: "Sat, Oct 4 · 1:00 PM", customer: "Lila Nguyen", service: "Styling visit", source: "Phone", status: "Confirmed" }
+          { when: "Sat, Oct 4 · 1:00 PM", customer: "Lila Nguyen", phone: "(737) 555-0111", service: "Styling visit", source: "Phone", status: "Confirmed", startsAt: "2026-10-04T18:00:00.000Z", endsAt: "2026-10-04T18:30:00.000Z" }
         ],
         calls: [
           {

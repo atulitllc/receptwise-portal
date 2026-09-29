@@ -236,7 +236,15 @@ async function toUi(biz) {
     bookingsToday: bookedToday.rows[0].n,
     calls: calls.rows.map((c) => callToUi(c, tz)),
     bookings: bookings.rows.map((b) => ({
-      when: fmtWhen(b.starts_at, tz), customer: b.customer || '', service: b.service || '', source: b.source, status: b.status
+      id: Number(b.id),
+      when: fmtWhen(b.starts_at, tz),
+      startsAt: b.starts_at ? new Date(b.starts_at).toISOString() : null,
+      endsAt: b.ends_at ? new Date(b.ends_at).toISOString() : null,
+      customer: b.customer || '',
+      phone: prettyPhone(b.phone) || b.phone || '',
+      service: b.service || '',
+      source: b.source,
+      status: b.status
     })),
     checklist,
     live: true
