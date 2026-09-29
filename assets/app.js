@@ -1197,24 +1197,33 @@
       if (closed && closed.checked) hours[day[0]] = { closed: true, open: "", close: "" };
       else if (open.value && close && close.value) hours[day[0]] = { closed: false, open: open.value, close: close.value };
     });
-    var ringFirst = Array.prototype.slice.call(root.querySelectorAll("[data-ring-row]")).map(function (row) {
-      var label = row.querySelector("[data-fwd='label']");
-      var number = row.querySelector("[data-fwd='number']");
-      return { label: label ? label.value : "", number: number ? number.value : "" };
-    });
-    return {
+    var aiBtn = root.querySelector("[data-fwd='ai']");
+    var carrierSel = root.querySelector("[data-fwd='carrier']");
+    var businessInput = root.querySelector("[data-fwd='businessNumber']");
+    var transferInput = root.querySelector("[data-fwd='transfer']");
+    var ringsSel = root.querySelector("[data-fwd='rings']");
+    var draft = {
       businessId: root.getAttribute("data-business"),
       mode: modeBtn ? modeBtn.getAttribute("data-fwd-mode") : "conditional",
-      carrier: (root.querySelector("[data-fwd='carrier']") || {}).value || "",
-      rings: Number((root.querySelector("[data-fwd='rings']") || {}).value) || 4,
-      businessNumber: (root.querySelector("[data-fwd='businessNumber']") || {}).value || "",
-      transferNumber: (root.querySelector("[data-fwd='transfer']") || {}).value || "",
-      aiEnabled: ((root.querySelector("[data-fwd='ai']") || {}).getAttribute("aria-pressed") === "true"),
-      hours: hours,
       afterHours: "ai_immediate",
-      ringFirst: ringFirst,
       status: root.getAttribute("data-status") || "not_set_up"
     };
+    // Fields that belong to the other mode are left off the draft so a save
+    // does not wipe the business number, carrier, hours, or ring-first list.
+    if (carrierSel) draft.carrier = carrierSel.value || "";
+    if (ringsSel) draft.rings = Number(ringsSel.value) || 4;
+    if (businessInput) draft.businessNumber = businessInput.value || "";
+    if (transferInput) draft.transferNumber = transferInput.value || "";
+    if (root.querySelector("[data-fwd='open']")) draft.hours = hours;
+    if (root.querySelector("[data-action='fwd-add-ring']")) {
+      draft.ringFirst = Array.prototype.slice.call(root.querySelectorAll("[data-ring-row]")).map(function (row) {
+        var label = row.querySelector("[data-fwd='label']");
+        var number = row.querySelector("[data-fwd='number']");
+        return { label: label ? label.value : "", number: number ? number.value : "" };
+      });
+    }
+    if (aiBtn) draft.aiEnabled = aiBtn.getAttribute("aria-pressed") === "true";
+    return draft;
   }
 
   function forwardingPayload(b, draft, status) {
