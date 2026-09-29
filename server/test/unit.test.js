@@ -401,6 +401,7 @@ test('feature status registry is the single badge source', () => {
     reviews: 'mockup',
     website_generator: 'in_progress',
     cloudflare_pages: 'in_progress',
+    domains_hosting: 'real',
     outreach: 'mockup',
     voice_dropdown: 'real',
     email_domain: 'mockup',

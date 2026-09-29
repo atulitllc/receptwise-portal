@@ -72,10 +72,16 @@ const config = {
     owner: (env.GITHUB_OWNER || env.GITHUB_ORG || 'atulitllc').trim() || 'atulitllc',
     org: (env.GITHUB_OWNER || env.GITHUB_ORG || 'atulitllc').trim() || 'atulitllc'
   },
-  // Optional. Both values are required before a site is also uploaded to Cloudflare Pages.
+  // Optional. Token and account id upload a site to Cloudflare Pages.
+  // Zone id plus the Render key and service id run the Domains card (panel health, Pages domain, DNS-only wildcard).
   cloudflare: {
     token: env.CLOUDFLARE_API_TOKEN || '',
-    accountId: env.CLOUDFLARE_ACCOUNT_ID || ''
+    accountId: env.CLOUDFLARE_ACCOUNT_ID || '',
+    zoneId: env.CLOUDFLARE_ZONE_ID || ''
+  },
+  render: {
+    apiKey: env.RENDER_API_KEY || '',
+    serviceId: env.RENDER_SERVICE_ID || ''
   },
   // Pilot client #1 is ReceptWise itself. Ids are overridable; they are not secrets.
   pilot: {
@@ -92,5 +98,11 @@ config.meta.configured = Boolean(config.meta.appId && config.meta.appSecret);
 config.trello.configured = Boolean(config.trello.apiKey && config.trello.token);
 config.github.configured = Boolean(config.github.token);
 config.cloudflare.configured = Boolean(config.cloudflare.token && config.cloudflare.accountId);
+config.domainsConfigured = function domainsConfigured() {
+  return Boolean(
+    config.cloudflare.token && config.cloudflare.accountId && config.cloudflare.zoneId
+    && config.render.apiKey && config.render.serviceId
+  );
+};
 
 module.exports = config;
