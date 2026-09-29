@@ -1745,7 +1745,8 @@
     if (!liveAdmin()) return "";
     return '<section class="card" id="domains-card"><div class="card-h"><h2>Domains</h2><div>' + badge("domains_hosting") +
       '<button class="btn btn-sm" type="button" data-action="recheck-domains" data-id="' + esc(b.id) + '">Re-check</button></div></div>' +
-      '<div class="card-b" id="domains-body"><p class="help">Checking the panel…</p></div></section>';
+      '<div class="card-b"><div id="domains-body"><p class="help">Checking the panel…</p></div>' +
+      '<div class="field"><label for="domains-host">Website domain</label><input class="ctrl" id="domains-host" value="" placeholder="www.cafe.example"></div></div></section>';
   }
 
   var domainsSeq = 0;
@@ -1761,8 +1762,9 @@
     if (panel.url) html += "<p><strong>Customer panel</strong><br><a href='" + esc(panel.url) + "' target='_blank' rel='noopener'>" + esc(panel.url) + "</a></p>";
     if (panel.reservedNote) html += "<p class='banner warn'>" + esc(panel.reservedNote) + "</p>";
     html += "<p class='banner " + (health.ok ? "ok" : "bad") + "'>" + esc(health.detail || "Not checked") + "</p>";
-    html += "<div class='field'><label for='domains-host'>Website domain</label><input class='ctrl' id='domains-host' value='" + esc(site.domain || "") + "' placeholder='www.cafe.example'></div>";
     if (site.message) html += "<p>" + esc(site.message) + "</p>";
+    var input = document.getElementById("domains-host");
+    if (input && document.activeElement !== input) input.value = site.domain || "";
     if (site.verification || site.ssl) {
       html += "<dl class='kvs'><dt>Verification</dt><dd>" + esc(site.verification || "—") + "</dd><dt>SSL</dt><dd>" + esc(site.ssl || "—") + "</dd></dl>";
     }

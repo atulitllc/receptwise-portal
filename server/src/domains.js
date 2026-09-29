@@ -78,7 +78,10 @@ async function checkHealth(url) {
     return { ok: false, detail: 'HTTP ' + res.status };
   } catch (err) {
     const aborted = err && (err.name === 'AbortError' || /aborted|abort/i.test(err.message || ''));
-    return { ok: false, detail: aborted ? 'Timed out' : ((err && err.message) || 'Could not reach the panel') };
+    if (aborted) return { ok: false, detail: 'Timed out' };
+    const cause = err && err.cause;
+    const detail = (cause && cause.message) || (err && err.message) || 'Could not reach the panel';
+    return { ok: false, detail: String(detail).replace(/^fetch failed:?\s*/i, '') || 'Could not reach the panel' };
   } finally {
     clearTimeout(timer);
   }
