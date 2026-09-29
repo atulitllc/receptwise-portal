@@ -16,7 +16,8 @@ process.env.VAPI_CALENDAR_TOOL_IDS = 'tool-check,tool-book';
 const vapi = require('../src/integrations/vapi');
 const twilio = require('../src/integrations/twilio');
 const { extractBookings, classifyCall, bookingFromStructured, zonedInstant } = require('../src/calls');
-const { slugify } = require('../src/businesses');
+const { slugify, normalizeSubdomain } = require('../src/businesses');
+const { classifyHost, notFoundPage } = require('../src/portalHost');
 const settings = require('../src/settings');
 const { presentNumbers } = require('../src/phoneView');
 const cryptoBox = require('../src/cryptoBox');
@@ -665,6 +666,26 @@ test('a business scope only allows that business', () => {
   assert.doesNotThrow(() => assertScope({}, { id: 4 }));
   assert.doesNotThrow(() => assertScope({ businessId: '4' }, { id: 4 }));
   assert.throws(() => assertScope({ businessId: 2 }, { id: 4 }), /Business not found/);
+});
+
+test('customer panel hosts are one label under receptwise.com', () => {
+  assert.deepEqual(classifyHost('panel.receptwise.com'), { kind: 'primary', reserved: 'panel' });
+  assert.equal(classifyHost('www.receptwise.com').kind, 'primary');
+  assert.equal(classifyHost('api.receptwise.com').reserved, 'api');
+  assert.equal(classifyHost('sphere.receptwise.com').reserved, 'sphere');
+  assert.equal(classifyHost('receptwise.com').kind, 'primary');
+  assert.equal(classifyHost('receptwise-portal.onrender.com').kind, 'primary');
+  assert.equal(classifyHost('localhost').kind, 'primary');
+  assert.equal(classifyHost('foo.bar.receptwise.com').kind, 'primary');
+  assert.deepEqual(classifyHost('Harbor.ReceptWise.com:443'), { kind: 'customer', label: 'harbor' });
+  const page = notFoundPage('missing');
+  assert.match(page, /This panel was not found/);
+  assert.match(page, /missing\.receptwise\.com/);
+  assert.equal(page.includes('data-page="login"'), false);
+  assert.equal(normalizeSubdomain('Harbor-Cafe'), 'harbor-cafe');
+  assert.equal(normalizeSubdomain('panel'), 'panel');
+  assert.equal(normalizeSubdomain('-nope'), '');
+  assert.equal(normalizeSubdomain('a'), 'a');
 });
 
 test('meta dialog URL uses the business login config when set', () => {

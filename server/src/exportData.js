@@ -42,7 +42,7 @@ function insert(table, columns, row) {
 async function snapshot(user) {
   const [businesses, setup, phones, assistants, integrations, calls, bookings, activity, forwarding, ringFirst, portRequests, demoRequests] = await Promise.all([
     db.query(
-      `SELECT id, slug, name, category, city, timezone, status, pilot, profile, receptionist, created_at, updated_at
+      `SELECT id, slug, name, category, city, timezone, status, pilot, subdomain, profile, receptionist, created_at, updated_at
        FROM businesses ORDER BY id`
     ),
     db.query(
@@ -164,7 +164,7 @@ function toSql(data) {
   sql += '-- Apply after migrations have created the tables. This file does not restore sign-in or connected-account tokens.\n';
   sql += 'BEGIN;\n';
   data.clients.forEach((client) => {
-    sql += insert('businesses', ['id', 'slug', 'name', 'category', 'city', 'timezone', 'status', 'pilot', 'profile', 'receptionist', 'created_at', 'updated_at'], client);
+    sql += insert('businesses', ['id', 'slug', 'name', 'category', 'city', 'timezone', 'status', 'pilot', 'subdomain', 'profile', 'receptionist', 'created_at', 'updated_at'], client);
     (client.setup || []).forEach((step) => { sql += insert('business_setup', ['business_id', 'step_key', 'status', 'detail', 'owner', 'is_next', 'data', 'updated_at'], step); });
     (client.phoneNumbers || []).forEach((phone) => {
       sql += insert('phone_numbers', ['id', 'business_id', 'e164', 'provider', 'twilio_sid', 'vapi_phone_number_id', 'sms_enabled', 'status', 'created_at'], phone);
@@ -217,7 +217,18 @@ async function send(req, res) {
     err.status = 400;
     throw err;
   }
+  const portal = req.customerPortal && req.customerPortal.business;
   const data = await snapshot(req.user);
+  if (portal) {
+    const id = Number(portal.id);
+    const same = (row) => Number(row.business_id) === id;
+    data.clients = (data.clients || []).filter((row) => Number(row.id) === id);
+    data.settings = (data.settings || []).filter((row) => Number(row.businessId) === id);
+    data.calls = (data.calls || []).filter(same);
+    data.bookings = (data.bookings || []).filter(same);
+    data.activity = (data.activity || []).filter((row) => row.business_id == null || same(row));
+    data.demoRequests = [];
+  }
   await audit.record(req.user.id, null, 'data.export', { format });
   const day = data.exportedAt.slice(0, 10);
   res.set('Cache-Control', 'no-store');

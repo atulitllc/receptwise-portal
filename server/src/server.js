@@ -25,6 +25,7 @@ const websites = require('./website/service');
 const appointments = require('./appointments');
 const privacy = require('./privacy');
 const phoneForwarding = require('./phoneForwarding');
+const portalHost = require('./portalHost');
 
 // The portal pages live at the repo root (also published as the GitHub Pages demo).
 const SITE_ROOT = path.join(__dirname, '..', '..');
@@ -67,6 +68,41 @@ async function callsByDay(businessId) {
   const out = [0, 0, 0, 0, 0, 0, 0];
   rows.forEach((r) => { if (r.ago >= 0 && r.ago <= 6) out[6 - r.ago] = r.n; });
   return out;
+}
+
+function portalBiz(req) {
+  return (req.customerPortal && req.customerPortal.business) || null;
+}
+
+function portalView(req) {
+  const biz = portalBiz(req);
+  if (!biz) return null;
+  return {
+    businessName: biz.name,
+    businessId: biz.slug,
+    subdomain: biz.subdomain || '',
+    panelUrl: businesses.panelUrl(biz.subdomain)
+  };
+}
+
+function isOwnerStaff(user) {
+  return !!(user && (user.role === 'owner' || user.role === 'staff'));
+}
+
+// A customer host always wins, including for an admin. Owner and staff on the wrong host see nothing.
+async function scopeFor(req) {
+  const portal = portalBiz(req);
+  if (portal) {
+    if (isOwnerStaff(req.user) && Number(req.user.businessId) !== Number(portal.id)) {
+      return { rows: [], businessId: -1, team: false };
+    }
+    return { rows: [portal], businessId: portal.id, team: !isOwnerStaff(req.user) };
+  }
+  if (isOwnerStaff(req.user)) {
+    const biz = req.user.businessSlug ? await businesses.getBySlug(req.user.businessSlug) : null;
+    return { rows: biz ? [biz] : [], businessId: biz ? biz.id : -1, team: false };
+  }
+  return { rows: null, businessId: null, team: true };
 }
 
 function createApp() {
@@ -146,6 +182,24 @@ function createApp() {
   // Public marketing form. Own body limit, no session and no X-RW-Client header.
   demoRequests.mountPublic(app, wrap);
 
+  // <slug>.receptwise.com is that business's panel. Reserved names and every other host stay the main panel.
+  app.use(wrap(async (req, res, next) => {
+    if (req.path.startsWith('/webhooks')) return next();
+    const host = portalHost.classifyHost(req.hostname);
+    if (host.kind !== 'customer') {
+      req.customerPortal = null;
+      return next();
+    }
+    const biz = await businesses.getBySubdomain(host.label);
+    if (!biz) {
+      if (req.path.startsWith('/api') || req.path.startsWith('/webhooks') || req.path.startsWith('/oauth')) {
+        return res.status(404).json({ error: 'This panel was not found.' });
+      }
+      return res.status(404).type('html').send(portalHost.notFoundPage(host.label));
+    }
+    req.customerPortal = { subdomain: biz.subdomain, business: biz };
+    next();
+  }));
   app.use(express.json({ limit: '1mb' }));
   app.use(wrap(auth.loadUser));
 
@@ -153,7 +207,9 @@ function createApp() {
   const api = express.Router();
   api.use(auth.requireAppHeader);
   api.use((req, _res, next) => {
-    if (privacy.isBusinessUser(req.user)) req.businessScope = { businessId: req.user.businessId };
+    const portal = portalBiz(req);
+    if (portal) req.businessScope = { businessId: portal.id };
+    else if (privacy.isBusinessUser(req.user)) req.businessScope = { businessId: req.user.businessId };
     next();
   });
 
@@ -210,12 +266,20 @@ function createApp() {
     res.json({ numbers: await provisioning.searchNumbers(areaCode) });
   }));
 
-  api.get('/businesses', auth.requireUser, wrap(async (req, res) => res.json({ businesses: await businesses.listUi(req.user) })));
+  api.get('/businesses', auth.requireUser, wrap(async (req, res) => {
+    const scope = await scopeFor(req);
+    const list = scope.rows
+      ? await Promise.all(scope.rows.map((row) => businesses.toUi(row, req.user)))
+      : await businesses.listUi(req.user);
+    res.json({ businesses: list });
+  }));
   api.post('/businesses/draft', auth.requireUser, requireReceptwise, wrap(async (req, res) => {
+    if (portalBiz(req)) return res.status(403).json({ error: 'Add businesses from the main panel.' });
     const biz = await businesses.createDraft(req.body || {}, req.user.id);
     res.status(201).json({ business: await businesses.toUi(biz, req.user) });
   }));
   api.post('/businesses', auth.requireUser, requireReceptwise, wrap(async (req, res) => {
+    if (portalBiz(req)) return res.status(403).json({ error: 'Add businesses from the main panel.' });
     const biz = await businesses.createBusiness(req.body || {}, req.user.id);
     res.status(201).json({ business: await businesses.toUi(biz, req.user) });
   }));
@@ -223,6 +287,8 @@ function createApp() {
   async function loadBiz(req, res, next) {
     const biz = await businesses.getBySlug(req.params.slug);
     if (!biz) return res.status(404).json({ error: 'Business not found.' });
+    const portal = portalBiz(req);
+    if (portal && portal.slug !== biz.slug) return res.status(404).json({ error: 'Business not found.' });
     if (privacy.isBusinessUser(req.user) && Number(req.user.businessId) !== Number(biz.id)) {
       return res.status(404).json({ error: 'Business not found.' });
     }
@@ -241,7 +307,7 @@ function createApp() {
 
   api.get('/businesses/:slug', withBiz, wrap(async (req, res) => res.json({ business: await businesses.toUi(req.biz, req.user) })));
   api.put('/businesses/:slug', withBiz, wrap(async (req, res) => {
-    const updated = await businesses.updateBusiness(req.params.slug, req.body || {}, req.user.id);
+    const updated = await businesses.updateBusiness(req.params.slug, req.body || {}, req.user.id, { role: req.user.role });
     res.json({ business: await businesses.toUi(updated, req.user) });
   }));
   api.put('/businesses/:slug/draft', withBiz, wrap(async (req, res) => {
@@ -428,6 +494,13 @@ function createApp() {
   }));
 
   api.get('/metrics', auth.requireUser, wrap(async (req, res) => {
+    const portal = portalBiz(req);
+    if (portal) {
+      if (req.query.business && String(req.query.business) !== 'all' && String(req.query.business) !== portal.slug) {
+        return res.status(404).json({ error: 'Business not found.' });
+      }
+      return res.json(await metrics.collect(portal.id, req.user));
+    }
     if (privacy.isBusinessUser(req.user)) {
       const slug = String(req.query.business || '');
       if (slug && slug !== 'all' && slug !== req.user.businessSlug) {
@@ -441,7 +514,14 @@ function createApp() {
     res.json(await metrics.collect(biz.id, req.user));
   }));
   api.post('/calls/sync', auth.requireUser, wrap(async (req, res) => {
+    const portal = portalBiz(req);
     let slug = req.body && req.body.business;
+    if (portal) {
+      if (slug && String(slug) !== portal.slug) return res.status(404).json({ error: 'Business not found.' });
+      const result = await provisioning.syncCalls(portal);
+      await require('./audit').record(req.user.id, portal.id, 'call.sync', result);
+      return res.json(Object.assign({ ok: true }, result));
+    }
     if (privacy.isBusinessUser(req.user)) {
       if (slug && String(slug) !== req.user.businessSlug) return res.status(404).json({ error: 'Business not found.' });
       slug = req.user.businessSlug;
@@ -462,6 +542,8 @@ function createApp() {
   api.get('/integrations/meta/start', auth.requireUser, wrap(async (req, res) => {
     const biz = await businesses.getBySlug(String(req.query.business || ''));
     if (!biz) return res.status(404).json({ error: 'Business not found.' });
+    const portal = portalBiz(req);
+    if (portal && portal.slug !== biz.slug) return res.status(404).json({ error: 'Business not found.' });
     if (privacy.isBusinessUser(req.user) && Number(req.user.businessId) !== Number(biz.id)) {
       return res.status(404).json({ error: 'Business not found.' });
     }
@@ -487,18 +569,24 @@ function createApp() {
   // Live data replaces the demo's sample data: plans come from the static file, everything else from Postgres.
   const staticData = fs.readFileSync(path.join(SITE_ROOT, 'assets', 'data.js'), 'utf8');
   app.get('/assets/data.js', wrap(async (req, res) => {
-    let payload = { live: { user: null, integrations: {} }, businesses: [], team: [], feed: [], callsByDay: [] };
+    const portal = portalView(req);
+    let payload = { live: { user: null, integrations: {}, portal }, businesses: [], team: [], feed: [], callsByDay: [] };
     if (req.user) {
-      const homeId = privacy.isBusinessUser(req.user) ? req.user.businessId : null;
-      const [list, team, byDay, dash] = await Promise.all([
-        businesses.listUi(req.user), teamList(), callsByDay(homeId), metrics.collect(homeId, req.user)
+      const scope = await scopeFor(req);
+      const list = scope.rows
+        ? await Promise.all(scope.rows.map((row) => businesses.toUi(row, req.user)))
+        : await businesses.listUi(req.user);
+      const [team, byDay, dash] = await Promise.all([
+        scope.team ? teamList() : [],
+        callsByDay(scope.businessId),
+        metrics.collect(scope.businessId, req.user)
       ]);
       const integrations = Object.assign(provisioning.status(), {
         meta: meta.configured(),
         encryption: Boolean(config.tokenKey)
       });
       payload = {
-        live: { user: req.user, integrations },
+        live: { user: req.user, integrations, portal },
         businesses: list,
         team,
         feed: dash.activity.map((item) => ({ time: item.time, businessId: item.businessId, text: item.text })),

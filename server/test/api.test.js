@@ -2559,4 +2559,134 @@ describe('control panel API', () => {
     });
     assert.equal(teamPatch.status, 403);
   });
+
+  it('routes customer panel hosts and keeps the main panel on reserved names', async () => {
+    const pilot = await request('GET', '/assets/data.js', {
+      headers: { Host: 'receptwise.receptwise.com', 'X-RW-Client': '' }
+    });
+    assert.equal(pilot.status, 200, pilot.text);
+    assert.match(pilot.text, /"businessName":"ReceptWise"/);
+    assert.match(pilot.text, /"subdomain":"receptwise"/);
+    assert.match(pilot.text, /"panelUrl":"https:\/\/receptwise\.receptwise\.com"/);
+
+    for (const host of ['panel.receptwise.com', 'www.receptwise.com', 'api.receptwise.com', 'sphere.receptwise.com']) {
+      const page = await request('GET', '/', { headers: { Host: host, 'X-RW-Client': '' } });
+      assert.equal(page.status, 200, host);
+      assert.match(page.text, /Sign in/);
+      assert.match(page.text, /data-page="login"/);
+      const data = await request('GET', '/assets/data.js', { headers: { Host: host, 'X-RW-Client': '' } });
+      assert.match(data.text, /"portal":null/);
+    }
+
+    const missing = await request('GET', '/', { headers: { Host: 'missing.receptwise.com', 'X-RW-Client': '' } });
+    assert.equal(missing.status, 404);
+    assert.match(missing.text, /This panel was not found/);
+    assert.equal(missing.text.includes('data-page="login"'), false);
+    const missingApi = await request('POST', '/api/auth/login', {
+      headers: { Host: 'missing.receptwise.com' },
+      body: { email: 'admin@receptwise.example', password: 'pilot-password-10' }
+    });
+    assert.equal(missingApi.status, 404);
+    assert.match(missingApi.json.error, /not found/i);
+
+    const created = await request('GET', '/api/businesses/harbor-cafe', { cookie });
+    assert.equal(created.status, 200, created.text);
+    assert.equal(created.json.business.subdomain, 'harbor-cafe');
+    assert.equal(created.json.business.panelUrl, 'https://harbor-cafe.receptwise.com');
+
+    const reservedName = await request('POST', '/api/businesses', {
+      cookie,
+      body: { name: 'Panel', category: 'Cafe', city: 'Salem, MA' }
+    });
+    assert.equal(reservedName.status, 201, reservedName.text);
+    assert.equal(reservedName.json.business.subdomain, 'panel-panel');
+
+    const renamed = await request('PUT', '/api/businesses/harbor-cafe', {
+      cookie,
+      body: { subdomain: 'harbor' }
+    });
+    assert.equal(renamed.status, 200, renamed.text);
+    assert.equal(renamed.json.business.subdomain, 'harbor');
+    assert.equal(renamed.json.business.panelUrl, 'https://harbor.receptwise.com');
+
+    const reserved = await request('PUT', '/api/businesses/harbor-cafe', {
+      cookie,
+      body: { subdomain: 'panel' }
+    });
+    assert.equal(reserved.status, 400);
+    const collision = await request('PUT', '/api/businesses/harbor-cafe', {
+      cookie,
+      body: { subdomain: 'receptwise' }
+    });
+    assert.equal(collision.status, 409);
+
+    const team = await request('POST', '/api/users', {
+      cookie,
+      body: { email: 'panel-team@receptwise.example', name: 'Panel Team', password: 'team-password-10', role: 'team' }
+    });
+    assert.equal(team.status, 201, team.text);
+    const teamLogin = await request('POST', '/api/auth/login', {
+      body: { email: 'panel-team@receptwise.example', password: 'team-password-10' }
+    });
+    const teamCookie = cookieFrom(teamLogin.setCookie);
+    const denied = await request('PUT', '/api/businesses/harbor-cafe', {
+      cookie: teamCookie,
+      body: { subdomain: 'other-cafe' }
+    });
+    assert.equal(denied.status, 403);
+    const unchanged = await request('PUT', '/api/businesses/harbor-cafe', {
+      cookie: teamCookie,
+      body: { subdomain: 'harbor', name: 'Harbor Cafe' }
+    });
+    assert.equal(unchanged.status, 200, unchanged.text);
+    assert.equal(unchanged.json.business.subdomain, 'harbor');
+
+    const customer = await request('POST', '/api/users', {
+      cookie,
+      body: { email: 'owner@harbor.test', name: 'Harbor Owner', password: 'harbor-password-10', role: 'customer', business: 'harbor-cafe' }
+    });
+    assert.equal(customer.status, 201, customer.text);
+    assert.equal(customer.json.user.role, 'customer');
+    assert.equal(customer.json.user.businessId, 'harbor-cafe');
+
+    const ownerLogin = await request('POST', '/api/auth/login', {
+      headers: { Host: 'harbor.receptwise.com' },
+      body: { email: 'owner@harbor.test', password: 'harbor-password-10' }
+    });
+    assert.equal(ownerLogin.status, 200, ownerLogin.text);
+    assert.equal(ownerLogin.json.home, 'client.html?id=harbor-cafe');
+    const ownerCookie = cookieFrom(ownerLogin.setCookie);
+
+    const wrongHost = await request('POST', '/api/auth/login', {
+      headers: { Host: 'receptwise.receptwise.com' },
+      body: { email: 'owner@harbor.test', password: 'harbor-password-10' }
+    });
+    assert.equal(wrongHost.status, 403);
+
+    const adminThere = await request('POST', '/api/auth/login', {
+      headers: { Host: 'harbor.receptwise.com' },
+      body: { email: 'admin@receptwise.example', password: 'pilot-password-10' }
+    });
+    assert.equal(adminThere.status, 200, adminThere.text);
+    assert.equal(adminThere.json.home, 'dashboard.html');
+
+    const ownList = await request('GET', '/api/businesses', { cookie: ownerCookie, headers: { Host: 'harbor.receptwise.com' } });
+    assert.equal(ownList.status, 200, ownList.text);
+    assert.deepEqual(ownList.json.businesses.map((b) => b.id), ['harbor-cafe']);
+    const other = await request('GET', '/api/businesses/receptwise', { cookie: ownerCookie, headers: { Host: 'harbor.receptwise.com' } });
+    assert.equal(other.status, 404);
+    const blocked = await request('POST', '/api/businesses', {
+      cookie: ownerCookie,
+      headers: { Host: 'harbor.receptwise.com' },
+      body: { name: 'Nope Cafe', category: 'Cafe' }
+    });
+    assert.equal(blocked.status, 403);
+
+    const scoped = await request('GET', '/assets/data.js', {
+      cookie: ownerCookie,
+      headers: { Host: 'harbor.receptwise.com', 'X-RW-Client': '' }
+    });
+    assert.match(scoped.text, /"businessName":"Harbor Cafe"/);
+    assert.match(scoped.text, /"role":"customer"/);
+  });
 });

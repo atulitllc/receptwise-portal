@@ -19,6 +19,8 @@ Receptwise `admin` and `team` accounts see per-business counts and line health. 
 
 The process listens on `0.0.0.0:$PORT`.
 
+`panel.receptwise.com` (and `www`, `api`, `sphere`, the apex, and any non-`receptwise.com` host) serves the main panel. `<slug>.receptwise.com` looks up `businesses.subdomain`. A customer user belongs to one business (`users.business_id`) and lands on that business after sign-in. Create one with `POST /api/users` and `{ "role": "customer", "business": "<slug>", "email", "password", "name" }`.
+
 ## API
 
 Session cookie plus `X-RW-Client: portal` on every write. `GET /api/health` does not need a session.

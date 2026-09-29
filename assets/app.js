@@ -2393,7 +2393,8 @@
       : tabOverview(b);
     view.innerHTML = '<section class="card client-head"><div class="client-ident"><div class="avatar" style="background:' + colorFor(b.category) + '">' + esc(initials(b.name)) +
       "</div><div><h1 class='client-title'>" + esc(b.name) + "</h1><p class='sub'>" + esc(b.category) + " · " + esc(b.city) + " · " + esc((b.owner && b.owner.name) || "") +
-      "</p><div class='pills'>" + pill(b.status) + '<span class="pill neutral">' + esc(b.plan) + "</span>" + (b.pilot ? '<span class="pill pilot">Pilot</span>' : "") + "</div></div></div>" +
+      "</p><div class='pills'>" + pill(b.status) + '<span class="pill neutral">' + esc(b.plan) + "</span>" + (b.pilot ? '<span class="pill pilot">Pilot</span>' : "") + "</div>" +
+      panelAddress(b) + "</div></div>" +
       '<div class="head-actions">' + (b.status === "draft" ? '<a class="btn btn-primary" href="add.html?draft=' + encodeURIComponent(b.id) + '">Resume setup</a>' : '') +
       '<button class="btn" type="button" data-action="call-receptionist" data-id="' + esc(b.id) + '">Call the receptionist</button>' +
       '<button class="btn btn-primary" type="button" data-action="send-steps" data-id="' + esc(b.id) + '">Send owner their steps</button></div></section>' +
@@ -2494,17 +2495,45 @@
       exportCard + legal();
   }
 
+  function customerPortal() {
+    return (window.RW_LIVE && window.RW_LIVE.portal) || null;
+  }
+
+  function landing(user, home) {
+    if (home) return home;
+    if (user && user.role === "customer" && user.businessId) return "client.html?id=" + encodeURIComponent(user.businessId);
+    return "dashboard.html";
+  }
+
+  function panelAddress(b) {
+    if (!b || !b.subdomain) return "";
+    var url = b.panelUrl || ("https://" + b.subdomain + ".receptwise.com");
+    var link = '<a href="' + esc(url) + '">' + esc(url) + "</a>";
+    if (isAdmin()) {
+      return '<form class="subdomain-row" data-action="save-subdomain" data-id="' + esc(b.id) + '">' +
+        '<label for="panel-subdomain">Customer panel</label><span>https://</span>' +
+        '<input class="ctrl" id="panel-subdomain" name="subdomain" value="' + esc(b.subdomain) + '" maxlength="63" autocomplete="off" spellcheck="false">' +
+        "<span>.receptwise.com</span><button class='btn' type='submit'>Save</button></form>" +
+        '<p class="help">Customer panel: ' + link + "</p>";
+    }
+    return '<p class="help">Customer panel: ' + link + "</p>";
+  }
+
   function renderLogin() {
-    if (session()) {
-      location.replace("dashboard.html");
+    var signedIn = session();
+    if (signedIn) {
+      location.replace(landing(signedIn));
       return;
     }
-    document.getElementById("app").innerHTML = '<div class="login"><section class="login-brand"><div class="brand"><img class="brand-mark" src="assets/favicon.svg" alt=""><div><div class="brand-name">Recept<span>Wise</span></div><div class="brand-sub">Control panel</div></div></div>' +
-      "<h1>Set up a local business without leaving the panel.</h1><p>Phone, receptionist, calendar, reviews, social, and website. One monthly bill for the owner.</p><ul>" +
+    var portal = customerPortal();
+    var named = portal && portal.businessName ? portal.businessName : "";
+    if (named) document.title = "Sign in · " + named;
+    document.getElementById("app").innerHTML = '<div class="login"><section class="login-brand"><div class="brand"><img class="brand-mark" src="assets/favicon.svg" alt=""><div><div class="brand-name">Recept<span>Wise</span></div><div class="brand-sub">' + (named ? esc(named) : "Control panel") + "</div></div></div>" +
+      "<h1>" + (named ? "Sign in to " + esc(named) + "." : "Set up a local business without leaving the panel.") + "</h1><p>Phone, receptionist, calendar, reviews, social, and website. One monthly bill for the owner.</p><ul>" +
       "<li>Answer calls, book the open time, and hand off when someone asks for a person</li><li>Forward the number already on the door, or buy a new one</li>" +
       "<li>Track every connection: confirmed, pending, or needs action</li></ul>" +
       '<p class="legal">ReceptWise is a product of [Placeholder].' + (LIVE ? "" : " This is a clickable prototype with sample data.") + '</p></section>' +
-      '<section class="login-panel"><form class="login-card" data-action="login"><h2>Sign in</h2><p class="sub">Internal team only.</p>' +
+      '<section class="login-panel"><form class="login-card" data-action="login"><h2>Sign in</h2><p class="sub">' + (named ? "Sign in to " + esc(named) + "." : "Internal team only.") + "</p>" +
       '<div class="field" style="margin-top:16px"><label for="email">Email</label><input class="ctrl" id="email" name="email" type="email" autocomplete="username" placeholder="you@receptwise.example"></div>' +
       '<div class="field"><label for="password">Password</label><input class="ctrl" id="password" name="password" type="password" autocomplete="current-password" placeholder="' + (LIVE ? "Password" : "Any password") + '"></div>' +
       '<button class="btn btn-primary" type="submit" style="width:100%">Sign in</button><p class="help">' + (LIVE ? "Team accounts only. Ask an admin for access." : "This prototype accepts any email and password.") + '</p></form></section></div>' +
@@ -3707,13 +3736,26 @@
 
   function onSubmit(event) {
     var form = event.target;
-    if (!form || form.dataset.action !== "login") return;
+    if (!form || !form.dataset) return;
+    if (form.dataset.action === "save-subdomain") {
+      event.preventDefault();
+      var current = findBiz(form.dataset.id);
+      if (!current) return;
+      var next = (form.subdomain && form.subdomain.value || "").trim().toLowerCase();
+      api("PUT", "api/businesses/" + encodeURIComponent(current.id), { subdomain: next }).then(function (data) {
+        replaceBiz(data.business);
+        toast("Panel address saved.");
+        if (currentRender) currentRender();
+      }).catch(liveFail);
+      return;
+    }
+    if (form.dataset.action !== "login") return;
     event.preventDefault();
     var email = (form.email && form.email.value || "").trim();
     if (LIVE) {
       var password = form.password ? form.password.value : "";
-      api("POST", "api/auth/login", { email: email, password: password }).then(function () {
-        location.href = "dashboard.html";
+      api("POST", "api/auth/login", { email: email, password: password }).then(function (data) {
+        location.href = landing(data && data.user, data && data.home);
       }).catch(function (err) { toast(err.message); });
       return;
     }
