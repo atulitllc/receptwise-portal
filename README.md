@@ -18,7 +18,7 @@ Sign-in on the static demo accepts any email and password. Sample data includes 
 | Integrations | `integrations.html` | Instagram, Facebook, Google, and later networks |
 | Businesses | `clients.html` | Filter by type, size tier, and status |
 | Add business | `add.html` | New business wizard |
-| Business | `client.html?id=receptwise` | Setup checklist and the older tabs |
+| Business | `client.html?id=receptwise` | Setup checklist, phone and forwarding, and the older tabs |
 | Billing and plans | `billing.html` | Solo / Small / Growing tiers |
 | Team and settings | `team.html` | Teammates and the legal entity |
 
@@ -32,7 +32,7 @@ The company that owns the product is **[Placeholder]** in the footer and on the 
 | --- | --- |
 | `DATABASE_URL`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` | Sign-in, businesses, settings saved in Postgres, empty metrics |
 | `VAPI_API_KEY` | Phone page reads live numbers. Saving receptionist settings backs up the assistant, then PATCHes `firstMessage` and the managed section of the system prompt. Sync from Vapi backfills calls. |
-| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | Phone page adds Twilio status for each number. Admins can still buy a number from the business page. |
+| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | Phone page adds Twilio status for each number. Admins can buy a number from the business page, and an admin can place a forwarding test call to that business's own number. |
 | `VAPI_WEBHOOK_SECRET` plus the Vapi server URL | End-of-call reports are stored (summary, caller, outcome, recording, and bookings). A `book_demo` tool call stores the start, customer, and phone from its arguments. Sync from Vapi backfills the same fields. |
 | `META_APP_ID`, `META_APP_SECRET`, `TOKEN_ENCRYPTION_KEY`, and a public `APP_BASE_URL` | Facebook Login for Business stores the Page and Instagram tokens encrypted. The page shows the account name. |
 | `TRELLO_API_KEY`, `TRELLO_TOKEN`, or a key pasted on Integrations, plus `TOKEN_ENCRYPTION_KEY` for a pasted key | Test connection, choose a board and list, and open a card for each new booking and missed call. A booking card is updated when the booking changes. |

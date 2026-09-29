@@ -105,8 +105,15 @@
     not_verified: "Not connected",
     attached: "Attached",
     unassigned: "Not attached",
-    missing_on_vapi: "Not connected"
+    missing_on_vapi: "Not connected",
+    not_set_up: "Not set up",
+    pending_test: "Pending test",
+    verified: "Verified"
   };
+
+  var FWD_DAYS = [
+    ["sun", "Sun"], ["mon", "Mon"], ["tue", "Tue"], ["wed", "Wed"], ["thu", "Thu"], ["fri", "Fri"], ["sat", "Sat"]
+  ];
 
   var wizard = defaultWizard();
   var openCheck = "";
@@ -563,12 +570,23 @@
   }
 
   function phoneStatus(b) {
+    var fwd = b.forwarding;
+    if (fwd && fwd.status) {
+      if (fwd.mode === "ported") return fwd.status === "verified" ? "Number on ReceptWise" : "Ring-first " + (STATUS_LABEL[fwd.status] || fwd.status);
+      if (fwd.status === "verified") return "Forwarding verified";
+      if (fwd.status === "pending_test") return "Forwarding pending test";
+      return "Forwarding not set up";
+    }
     var forwarding = checklistItem(b, "forwarding");
     if (!b.phone || b.phone.mode === "new") return "New number active";
     if (b.phone.mode === "port") return "Port in progress";
     if (forwarding.status === "connected") return "Forwarding confirmed";
     if (forwarding.status === "action") return "Forwarding needs action";
     return "Forwarding pending";
+  }
+
+  function isAdminUser() {
+    return !!(LIVE && window.RW_LIVE && window.RW_LIVE.user && window.RW_LIVE.user.role === "admin");
   }
 
   function heat(used, cap) {
@@ -1741,7 +1759,7 @@
   function checkAction(b, item) {
     var id = esc(b.id);
     if (item.key === "test") return '<button class="btn btn-sm" type="button" data-action="run-greeting-test" data-id="' + id + '">Run test call</button>';
-    if (item.key === "forwarding") return '<button class="btn btn-sm" type="button" data-action="forward-test" data-id="' + id + '">Run forwarding test</button>';
+    if (item.key === "forwarding") return '<button class="btn btn-sm" type="button" data-action="fwd-test" data-id="' + id + '">Test forwarding</button>';
     if (item.key === "calendar") {
       if (!calendarSignIn(b)) return '<p class="help">' + esc(calendarDescribe(window.RWCalendarStep ? window.RWCalendarStep.choiceValue((b.calendar && b.calendar.provider) || "none") : "none").checklist) + "</p>";
       return '<button class="btn btn-sm" type="button" data-action="send-link" data-id="' + id + '" data-kind="calendar">Send sign-in link</button> <button class="btn btn-sm" type="button" data-action="booking-test" data-id="' + id + '">Run booking test</button>';
@@ -1759,26 +1777,220 @@
     return "";
   }
 
-  function phonePanel(b) {
+  function legacyForwarding(b) {
     var phone = b.phone || {};
-    var tests = (phone.tests || []).map(function (test) {
-      return "<tr><td>" + esc(test.when) + "</td><td>" + esc(test.result) + "</td><td>" + esc(test.note) + "</td></tr>";
-    }).join("");
-    var codes = "";
-    if (phone.mode === "forward") {
-      codes = codePair(phone.carrier || "verizon", phone.forwardType || "missed", phone.aiNumber) +
-        '<button class="btn btn-sm" type="button" data-action="send-forward-live" data-id="' + esc(b.id) + '">Send instructions to the client</button> ';
-    } else if (phone.mode === "port") {
-      codes = '<div class="note">Porting is in progress. Keep forwarding until the number moves, so the business does not miss calls.</div>';
+    var mode = phone.mode === "port" || phone.mode === "new" ? "ported" : "conditional";
+    var carrierMap = {
+      verizon: "verizon", "att-mobile": "att", "att-landline": "att", att: "att", tmobile: "tmobile",
+      comcast: "comcast", spectrum: "spectrum", ringcentral: "ringcentral", other: "other"
+    };
+    var tests = phone.tests || [];
+    var status = "not_set_up";
+    if (tests.some(function (test) { return /confirm/i.test(test.result || ""); })) status = "verified";
+    else if (tests.length) status = "pending_test";
+    return {
+      mode: mode,
+      carrier: carrierMap[phone.carrier] || "",
+      rings: 4,
+      businessNumber: phone.businessNumber || "",
+      forwardTo: phone.aiNumber || "",
+      status: status,
+      transferNumber: b.transfer || (b.owner && b.owner.mobile) || "",
+      ringFirst: mode === "ported" && b.transfer ? [{ label: "Desk", number: b.transfer }] : [],
+      hours: {},
+      afterHours: "ai_immediate",
+      aiEnabled: true,
+      portRequests: []
+    };
+  }
+
+  function forwardingStore() {
+    try { return JSON.parse(storageGet("rw_forwarding") || "{}"); }
+    catch (e) { return {}; }
+  }
+
+  function forwardingFor(b) {
+    if (b.forwarding && b.forwarding._ready) return b.forwarding;
+    var saved = null;
+    if (!LIVE) saved = forwardingStore()[b.id] || null;
+    var base = saved || b.forwarding || legacyForwarding(b);
+    if (!base.forwardTo) base.forwardTo = (b.phone && b.phone.aiNumber) || "";
+    base._ready = true;
+    b.forwarding = base;
+    return base;
+  }
+
+  function applyForwardingLocal(b, fwd) {
+    fwd._ready = true;
+    b.forwarding = fwd;
+    b.transfer = fwd.transferNumber || b.transfer || "";
+    if (!b.phone) b.phone = {};
+    b.phone.mode = fwd.mode === "ported" ? "port" : "forward";
+    b.phone.carrier = fwd.carrier || "";
+    b.phone.businessNumber = fwd.businessNumber || "";
+    b.phone.forwardType = "missed";
+    if (!b.phone.aiNumber) b.phone.aiNumber = fwd.forwardTo || "";
+    var item = checklistItem(b, "forwarding");
+    if (fwd.status === "verified") {
+      item.status = "connected";
+      item.detail = "Forwarding is verified.";
+    } else if (fwd.status === "pending_test") {
+      item.status = "action";
+      item.detail = "Forwarding is waiting on a test.";
     } else {
-      codes = '<div class="note calm">This business publishes the new number ' + esc(phone.aiNumber || "") + ". No forwarding code is required.</div>";
+      item.status = "pending";
+      item.detail = "Forwarding is not turned on yet.";
     }
-    return '<section class="card" style="margin-top:14px"><div class="card-h"><h2>Phone and forwarding</h2><span class="feat-row">' + badge("phone_number") + badge("number_search") + '<span class="help">' + esc(phoneStatus(b)) + "</span></span></div><div class='card-b'>" +
-      '<dl class="kvs"><dt>AI number</dt><dd>' + esc(phone.aiNumber || "—") + "</dd><dt>Business number</dt><dd>" + esc(phone.businessNumber || "—") + "</dd><dt>Mode</dt><dd>" +
-      esc(phone.mode === "forward" ? "Forward existing number" : phone.mode === "port" ? "Port the number" : "New number") + "</dd></dl>" + codes +
-      '<button class="btn btn-sm btn-primary" type="button" data-action="forward-test" data-id="' + esc(b.id) + '">Run forwarding test</button>' +
-      '<div class="table-wrap" style="margin-top:10px"><table class="data"><thead><tr><th>When</th><th>Result</th><th>Note</th></tr></thead><tbody>' +
-      (tests || '<tr><td colspan="3"><div class="empty">No test calls yet.</div></td></tr>') + "</tbody></table></div></div></section>";
+    if (!LIVE) {
+      var all = forwardingStore();
+      var copy = Object.assign({}, fwd);
+      delete copy._ready;
+      all[b.id] = copy;
+      storageSet("rw_forwarding", JSON.stringify(all));
+    }
+  }
+
+  function readForwardingForm() {
+    var root = document.getElementById("phone-forwarding");
+    if (!root) return null;
+    var modeBtn = root.querySelector("[data-fwd-mode].on");
+    var hours = {};
+    FWD_DAYS.forEach(function (day) {
+      var closed = root.querySelector("[data-day='" + day[0] + "'][data-fwd='closed']");
+      var open = root.querySelector("[data-day='" + day[0] + "'][data-fwd='open']");
+      var close = root.querySelector("[data-day='" + day[0] + "'][data-fwd='close']");
+      if (!open) return;
+      if (closed && closed.checked) hours[day[0]] = { closed: true, open: "", close: "" };
+      else if (open.value && close && close.value) hours[day[0]] = { closed: false, open: open.value, close: close.value };
+    });
+    var aiBtn = root.querySelector("[data-fwd='ai']");
+    var carrierSel = root.querySelector("[data-fwd='carrier']");
+    var businessInput = root.querySelector("[data-fwd='businessNumber']");
+    var transferInput = root.querySelector("[data-fwd='transfer']");
+    var ringsSel = root.querySelector("[data-fwd='rings']");
+    var draft = {
+      businessId: root.getAttribute("data-business"),
+      mode: modeBtn ? modeBtn.getAttribute("data-fwd-mode") : "conditional",
+      afterHours: "ai_immediate",
+      status: root.getAttribute("data-status") || "not_set_up"
+    };
+    // Fields that belong to the other mode are left off the draft so a save
+    // does not wipe the business number, carrier, hours, or ring-first list.
+    if (carrierSel) draft.carrier = carrierSel.value || "";
+    if (ringsSel) draft.rings = Number(ringsSel.value) || 4;
+    if (businessInput) draft.businessNumber = businessInput.value || "";
+    if (transferInput) draft.transferNumber = transferInput.value || "";
+    if (root.querySelector("[data-fwd='open']")) draft.hours = hours;
+    if (root.querySelector("[data-action='fwd-add-ring']")) {
+      draft.ringFirst = Array.prototype.slice.call(root.querySelectorAll("[data-ring-row]")).map(function (row) {
+        var label = row.querySelector("[data-fwd='label']");
+        var number = row.querySelector("[data-fwd='number']");
+        return { label: label ? label.value : "", number: number ? number.value : "" };
+      });
+    }
+    if (aiBtn) draft.aiEnabled = aiBtn.getAttribute("aria-pressed") === "true";
+    return draft;
+  }
+
+  function forwardingPayload(b, draft, status) {
+    var prev = forwardingFor(b);
+    var next = Object.assign({}, prev, draft || {});
+    next.forwardTo = prev.forwardTo || (b.phone && b.phone.aiNumber) || "";
+    next.portRequests = prev.portRequests || [];
+    next.status = status || next.status || "not_set_up";
+    next.afterHours = "ai_immediate";
+    delete next._ready;
+    return next;
+  }
+
+  function fwdInstructionsHtml(fwd) {
+    var lib = window.RW_FORWARDING;
+    if (!lib) return '<div class="note">Forwarding instructions did not load.</div>';
+    if (!fwd.carrier) return '<div class="note calm">Choose a phone company to see the steps for no-answer forwarding.</div>';
+    var help = lib.instructions({ carrier: fwd.carrier || "other", rings: fwd.rings || 4, forwardTo: fwd.forwardTo });
+    var html = '<div class="note">' + esc(help.caveat) + "</div>";
+    if (help.missingNumber) html += '<div class="note calm">A ReceptWise number is not assigned yet. The steps below leave a blank where that number will go.</div>';
+    help.steps.forEach(function (item) {
+      html += '<div class="code-card"><strong>' + esc(item.heading) + "</strong><p class='help'>" + esc(item.text) + "</p>";
+      item.codes.forEach(function (itemCode) { html += codeRow(itemCode.label, itemCode.value); });
+      if (item.check) html += '<p class="fwd-check">Check with your carrier.</p>';
+      html += "</div>";
+    });
+    return html;
+  }
+
+  function phonePanel(b) {
+    var fwd = forwardingFor(b);
+    var carriers = (window.RW_FORWARDING && window.RW_FORWARDING.CARRIERS) || [
+      { id: "att", label: "AT&T" }, { id: "verizon", label: "Verizon" }, { id: "tmobile", label: "T-Mobile" },
+      { id: "comcast", label: "Comcast/Xfinity" }, { id: "spectrum", label: "Spectrum" },
+      { id: "ringcentral", label: "RingCentral/other VoIP" }, { id: "other", label: "Other" }
+    ];
+    var rings = Number(fwd.rings) || 4;
+    var seconds = rings * 5;
+    var mode = fwd.mode === "ported" ? "ported" : "conditional";
+    var target = fwd.forwardTo || (b.phone && b.phone.aiNumber) || "";
+    var html = '<section class="card" id="phone-forwarding" style="margin-top:14px" data-business="' + esc(b.id) + '" data-status="' + esc(fwd.status || "not_set_up") + '">' +
+      '<div class="card-h"><h2>Phone &amp; forwarding</h2>' + pill(fwd.status || "not_set_up") + "</div><div class='card-b'>" +
+      "<p class='help'>Most businesses keep their number and turn on no-answer forwarding to the ReceptWise number. If the number moves onto the ReceptWise line, this page controls who rings first.</p>" +
+      '<div class="seg" role="group" aria-label="Setup mode">' +
+      '<button type="button" data-action="fwd-mode" data-id="' + esc(b.id) + '" data-fwd-mode="conditional"' + (mode === "conditional" ? ' class="on"' : "") + ">Conditional forwarding</button>" +
+      '<button type="button" data-action="fwd-mode" data-id="' + esc(b.id) + '" data-fwd-mode="ported"' + (mode === "ported" ? ' class="on"' : "") + ">Ported number</button></div>" +
+      '<dl class="kvs" style="margin-top:12px"><dt>ReceptWise number</dt><dd>' + esc(target || "Not assigned yet") + "</dd>" +
+      "<dt>Status</dt><dd>" + esc(STATUS_LABEL[fwd.status] || "Not set up") + "</dd></dl>" +
+      '<div class="grid-2"><div class="field"><label for="fwd-transfer">Transfer to a person</label>' +
+      '<input class="ctrl" id="fwd-transfer" data-fwd="transfer" value="' + esc(fwd.transferNumber || "") + '" placeholder="(555) 555-0100"></div>';
+    if (mode === "conditional") {
+      html += '<div class="field"><label for="fwd-business">Business number</label>' +
+        '<input class="ctrl" id="fwd-business" data-fwd="businessNumber" value="' + esc(fwd.businessNumber || "") + '" placeholder="(555) 555-0199"></div></div>' +
+        '<div class="grid-2"><div class="field"><label for="fwd-carrier">Phone company</label><select class="ctrl" id="fwd-carrier" data-fwd="carrier" data-action="fwd-refresh">' +
+        '<option value="">Choose a carrier</option>' + carriers.map(function (carrier) {
+          return '<option value="' + esc(carrier.id) + '"' + (fwd.carrier === carrier.id ? " selected" : "") + ">" + esc(carrier.label) + "</option>";
+        }).join("") + '</select></div><div class="field"><label for="fwd-rings">Rings before forwarding</label><select class="ctrl" id="fwd-rings" data-fwd="rings" data-action="fwd-refresh">' +
+        [1, 2, 3, 4, 5, 6].map(function (n) {
+          return '<option value="' + n + '"' + (rings === n ? " selected" : "") + ">" + n + " ring" + (n === 1 ? "" : "s") + " · about " + (n * 5) + " seconds</option>";
+        }).join("") + "</select><p class='help'>The carrier controls this timer. ReceptWise only saves what you want and shows their steps.</p></div></div>" +
+        '<div id="fwd-instructions">' + fwdInstructionsHtml(fwd) + "</div>";
+    } else {
+      var rows = (fwd.ringFirst && fwd.ringFirst.length ? fwd.ringFirst : [{ label: "", number: "" }]).map(function (row, index) {
+        return '<div class="fwd-ring" data-ring-row><input class="ctrl" data-fwd="label" value="' + esc(row.label || "") + '" placeholder="Cell or desk" aria-label="Ring-first label">' +
+          '<input class="ctrl" data-fwd="number" value="' + esc(row.number || "") + '" placeholder="(555) 555-0100" aria-label="Ring-first number">' +
+          '<button class="btn btn-sm" type="button" data-action="fwd-remove-ring" data-id="' + esc(b.id) + '" data-index="' + index + '">Remove</button></div>';
+      }).join("");
+      var hoursHtml = FWD_DAYS.map(function (day) {
+        var row = (fwd.hours && fwd.hours[day[0]]) || {};
+        var closed = !!row.closed;
+        return '<div class="fwd-day"><span>' + day[1] + '</span><label><input type="checkbox" data-day="' + day[0] + '" data-fwd="closed"' + (closed ? " checked" : "") + "> Closed</label>" +
+          '<input class="ctrl" type="time" data-day="' + day[0] + '" data-fwd="open" value="' + esc(row.open || "") + '" aria-label="' + day[1] + ' open">' +
+          '<input class="ctrl" type="time" data-day="' + day[0] + '" data-fwd="close" value="' + esc(row.close || "") + '" aria-label="' + day[1] + ' close"></div>';
+      }).join("");
+      var requests = (fwd.portRequests || []).map(function (item) {
+        return "<li>" + esc(item.businessNumber || "") + " · " + esc(item.contactName || "Request") + " · " + esc(item.status || "requested") + "</li>";
+      }).join("");
+      html += '<div class="field"><label>Ring duration</label><select class="ctrl" data-fwd="rings" data-action="fwd-refresh">' +
+        [1, 2, 3, 4, 5, 6].map(function (n) {
+          return '<option value="' + n + '"' + (rings === n ? " selected" : "") + ">" + n + " ring" + (n === 1 ? "" : "s") + " · " + (n * 5) + " seconds</option>";
+        }).join("") + "</select><p class='help'>Ring-first uses this as the dial timeout (" + seconds + " seconds).</p></div></div>" +
+        "<h3>Ring these phones first</h3><p class='help'>Cell and desk numbers ring together during business hours.</p>" + rows +
+        '<button class="btn btn-sm" type="button" data-action="fwd-add-ring" data-id="' + esc(b.id) + '">Add a number</button>' +
+        "<h3>Business hours</h3><p class='help'>Outside these hours the receptionist answers immediately. With no hours saved, ring-first applies all day. " + esc(b.hours ? "Hours on file: " + b.hours + "." : "") + "</p>" +
+        '<div class="fwd-hours">' + hoursHtml + "</div>" +
+        '<label class="setting-row"><span><strong>Receptionist answers</strong><div class="help">Turn this off to ring the phones above and stop there. After hours, with this on, the receptionist answers without ringing the desk.</div></span>' +
+        '<button class="switch' + (fwd.aiEnabled !== false ? " on" : "") + '" type="button" data-action="fwd-ai" data-id="' + esc(b.id) + '" data-fwd="ai" aria-pressed="' + (fwd.aiEnabled !== false ? "true" : "false") + '"><i></i></button></label>' +
+        '<div class="note calm">Ring-first is saved here. Pointing the live number at it is not automatic yet, and an unanswered ring does not yet connect the receptionist. Conditional forwarding still uses the carrier.</div>' +
+        "<h3>Request a number port</h3><p class='help'>This only records the request. It does not send anything to a carrier.</p>" +
+        '<div class="grid-2"><div class="field"><label>Number to port</label><input class="ctrl" data-fwd="portNumber" placeholder="(555) 555-0199"></div>' +
+        '<div class="field"><label>Name on the account</label><input class="ctrl" data-fwd="portName" placeholder="As the carrier has it"></div></div>' +
+        '<div class="grid-2"><div class="field"><label>Current carrier</label><input class="ctrl" data-fwd="portCarrier" placeholder="Carrier name"></div>' +
+        '<div class="field"><label>Note</label><input class="ctrl" data-fwd="portNotes" placeholder="Optional"></div></div>' +
+        '<button class="btn btn-sm" type="button" data-action="fwd-port" data-id="' + esc(b.id) + '">Request number port</button>' +
+        (requests ? "<ul>" + requests + "</ul>" : "");
+    }
+    html += '<div class="head-actions"><button class="btn btn-primary" type="button" data-action="fwd-save" data-id="' + esc(b.id) + '">Save</button>';
+    if (mode === "conditional") html += '<button class="btn" type="button" data-action="fwd-test" data-id="' + esc(b.id) + '">Test forwarding</button>';
+    if (fwd.status === "pending_test") html += '<button class="btn" type="button" data-action="fwd-verify" data-id="' + esc(b.id) + '">Mark verified</button>';
+    html += "</div></div></section>";
+    return html;
   }
 
   function minuteBanner(b) {
@@ -2445,43 +2657,149 @@
       closeModal();
       toast("Owner steps marked as sent.");
     },
-    "forward-test": function (el) {
+    "fwd-mode": function (el) {
       var b = findBiz(el.dataset.id);
       if (!b) return;
-      var target = (b.phone && (b.phone.mode === "forward" ? b.phone.businessNumber : b.phone.aiNumber)) || "the number";
-      openModal("Forwarding test", "<p>Calling " + esc(target) + " from the ReceptWise test number…</p>");
-      later(1100, function () {
-        var item = checklistItem(b, "forwarding");
-        if (b.phone && b.phone.mode === "new") {
-          openModal("Forwarding test", "<p class='banner ok'>This business uses a new number, so there is nothing to forward. A test call to " + esc(b.phone.aiNumber) + " would check the greeting instead.</p>",
-            '<button class="btn btn-primary" type="button" data-action="close-refresh">Done</button>');
-          return;
-        }
-        if (item.status === "action") {
-          openModal("Forwarding test", "<p><strong>Not working.</strong> The receptionist did not pick up within 45 seconds.</p><ul><li>The code was typed wrong.</li><li>It was dialed from a different line.</li><li>This phone company needs its website instead of a code.</li></ul>",
-            '<button class="btn" type="button" data-action="close-modal">Close</button><button class="btn btn-primary" type="button" data-action="confirm-forward" data-id="' + esc(b.id) + '">Client redialed — confirm</button>');
-        } else {
-          item.status = "connected";
-          item.detail = "Forwarding test confirmed just now.";
-          b.phone.tests = b.phone.tests || [];
-          b.phone.tests.unshift({ when: "Just now", result: "Confirmed", note: "The receptionist answered the test call." });
-          openModal("Forwarding test", "<p class='banner ok'>Confirmed. The receptionist answered, and the call record matches the test number.</p>",
-            '<button class="btn btn-primary" type="button" data-action="close-refresh">Done</button>');
-        }
-      });
-    },
-    "confirm-forward": function (el) {
-      var b = findBiz(el.dataset.id);
-      if (!b) return;
-      var item = checklistItem(b, "forwarding");
-      item.status = "connected";
-      item.detail = "Forwarding confirmed after the client redialed.";
-      b.phone.tests = b.phone.tests || [];
-      b.phone.tests.unshift({ when: "Just now", result: "Confirmed", note: "Retry succeeded." });
-      closeModal();
-      toast("Forwarding marked confirmed.");
+      var draft = readForwardingForm() || {};
+      draft.mode = el.getAttribute("data-fwd-mode") || "conditional";
+      applyForwardingLocal(b, forwardingPayload(b, draft));
       currentRender();
     },
+    "fwd-refresh": function () {
+      var draft = readForwardingForm();
+      if (!draft) return;
+      var b = findBiz(draft.businessId);
+      if (!b) return;
+      applyForwardingLocal(b, forwardingPayload(b, draft));
+      currentRender();
+    },
+    "fwd-ai": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      var draft = readForwardingForm() || {};
+      draft.aiEnabled = el.getAttribute("aria-pressed") !== "true";
+      applyForwardingLocal(b, forwardingPayload(b, draft));
+      currentRender();
+    },
+    "fwd-add-ring": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      var draft = readForwardingForm() || {};
+      draft.ringFirst = (draft.ringFirst || []).concat([{ label: "", number: "" }]);
+      applyForwardingLocal(b, forwardingPayload(b, draft));
+      currentRender();
+    },
+    "fwd-remove-ring": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      var draft = readForwardingForm() || {};
+      var index = Number(el.dataset.index);
+      draft.ringFirst = (draft.ringFirst || []).filter(function (_row, i) { return i !== index; });
+      applyForwardingLocal(b, forwardingPayload(b, draft));
+      currentRender();
+    },
+    "fwd-save": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      var payload = forwardingPayload(b, readForwardingForm());
+      if (LIVE) {
+        api("PUT", "api/businesses/" + encodeURIComponent(b.id) + "/forwarding", payload).then(function (data) {
+          replaceBiz(data.business);
+          toast("Phone settings saved.");
+          currentRender();
+        }).catch(liveFail);
+        return;
+      }
+      applyForwardingLocal(b, payload);
+      toast("Saved in this browser session.");
+      currentRender();
+    },
+    "fwd-verify": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      var payload = forwardingPayload(b, readForwardingForm(), "verified");
+      if (LIVE) {
+        api("PUT", "api/businesses/" + encodeURIComponent(b.id) + "/forwarding", payload).then(function (data) {
+          replaceBiz(data.business);
+          toast("Marked verified.");
+          currentRender();
+        }).catch(liveFail);
+        return;
+      }
+      applyForwardingLocal(b, payload);
+      toast("Marked verified in this browser session.");
+      currentRender();
+    },
+    "fwd-test": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      var draft = readForwardingForm() || forwardingFor(b);
+      var place = isAdminUser() && draft.mode !== "ported";
+      if (place) {
+        openModal("Test forwarding", "<p>This places a real call from the ReceptWise number to <strong>" + esc(draft.businessNumber || "the business number") + "</strong>. Only an admin can send it.</p>",
+          '<button class="btn" type="button" data-action="close-modal">Cancel</button><button class="btn btn-primary" type="button" data-action="fwd-test-go" data-id="' + esc(b.id) + '" data-confirm="yes">Place test call</button>');
+      } else {
+        openModal("Test forwarding", "<p>This marks forwarding as pending a manual test. No call is placed.</p>",
+          '<button class="btn" type="button" data-action="close-modal">Cancel</button><button class="btn btn-primary" type="button" data-action="fwd-test-go" data-id="' + esc(b.id) + '">Mark pending test</button>');
+      }
+    },
+    "fwd-test-go": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      var confirm = el.dataset.confirm === "yes";
+      var payload = forwardingPayload(b, readForwardingForm(), "pending_test");
+      closeModal();
+      if (!LIVE) {
+        applyForwardingLocal(b, payload);
+        toast("Marked pending a manual test. No call was placed.");
+        currentRender();
+        return;
+      }
+      api("PUT", "api/businesses/" + encodeURIComponent(b.id) + "/forwarding", payload).then(function () {
+        return api("POST", "api/businesses/" + encodeURIComponent(b.id) + "/forwarding/test", { confirm: confirm });
+      }).then(function (data) {
+        if (data.business) replaceBiz(data.business);
+        toast(data.placed ? "Test call placed to the business number." : "Marked pending a manual test. No call was placed.");
+        currentRender();
+      }).catch(liveFail);
+    },
+    "fwd-port": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      var root = document.getElementById("phone-forwarding");
+      var body = {
+        businessNumber: root ? (root.querySelector("[data-fwd='portNumber']") || {}).value || "" : "",
+        contactName: root ? (root.querySelector("[data-fwd='portName']") || {}).value || "" : "",
+        carrier: root ? (root.querySelector("[data-fwd='portCarrier']") || {}).value || "" : "",
+        notes: root ? (root.querySelector("[data-fwd='portNotes']") || {}).value || "" : ""
+      };
+      if (digits(body.businessNumber).length < 10) {
+        toast("Enter the 10-digit number to port.");
+        return;
+      }
+      if (LIVE) {
+        api("POST", "api/businesses/" + encodeURIComponent(b.id) + "/forwarding/port-request", body).then(function () {
+          return api("GET", "api/businesses/" + encodeURIComponent(b.id));
+        }).then(function (data) {
+          replaceBiz(data.business);
+          toast("Port request recorded. Nothing was sent to a carrier.");
+          currentRender();
+        }).catch(liveFail);
+        return;
+      }
+      var payload = forwardingPayload(b, readForwardingForm());
+      payload.portRequests = (payload.portRequests || []).concat([{
+        businessNumber: body.businessNumber,
+        contactName: body.contactName,
+        carrier: body.carrier,
+        notes: body.notes,
+        status: "requested"
+      }]);
+      applyForwardingLocal(b, payload);
+      toast("Port request recorded in this browser. Nothing was sent to a carrier.");
+      currentRender();
+    },
+    "forward-test": function (el) { actions["fwd-test"](el); },
     "run-greeting-test": function (el) {
       var b = findBiz(el.dataset.id);
       if (!b) return;
@@ -3134,6 +3452,8 @@
       var listBox = document.getElementById("trello-list");
       if (listBox) listBox.innerHTML = '<option value="">Loading lists…</option>';
       loadTrelloLists(el.dataset.id || pageBizId(), el.value, "");
+    } else if (el.dataset.action === "fwd-refresh") {
+      actions["fwd-refresh"](el);
     } else if (el.dataset.action === "go-business") {
       var pageName = document.body.dataset.page || "phone";
       var file = pageName === "settings" ? "settings.html" : pageName === "integrations" ? "integrations.html" : "phone.html";

@@ -5,6 +5,7 @@ const config = require('./config');
 const calendarConnection = require('./calendarConnection');
 const voices = require('./voices');
 const privacy = require('./privacy');
+const phoneForwarding = require('./phoneForwarding');
 
 const STEPS = [
   ['number', 'AI number'],
@@ -370,6 +371,7 @@ async function toUi(biz, user, ctx) {
     { key: 'number', label: 'Number bought', done: Boolean(phones.rows[0]), step: 2 },
     { key: 'test', label: 'Test call', done: Boolean(testStep && testStep.status === 'connected'), step: 3 }
   ];
+  const forwarding = await phoneForwarding.presentFor(biz, phones.rows[0] || null);
   const view = Object.assign({
     owner: { name: '', mobile: '', email: '' },
     greeting: '', voice: '', languages: ['English'], transfer: '',
@@ -396,6 +398,7 @@ async function toUi(biz, user, ctx) {
     setupProgress,
     assistantPublished,
     phone,
+    forwarding,
     texts: 0,
     minutesUsed: Math.round((stats.rows[0].month_sec || 0) / 60),
     callsToday: stats.rows[0].today,

@@ -786,6 +786,13 @@ a.tab:hover { background: white; text-decoration: none; }
 .guide .code { display: block; white-space: normal; word-break: break-all; margin: 8px 0; }
 .checks { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 12px; }
 .pill.saved { background: var(--amber-soft); color: var(--amber); }
+.pill.verified { background: var(--green-soft); color: var(--green); }
+.pill.pending_test { background: var(--amber-soft); color: var(--amber); }
+.pill.not_set_up { background: var(--line); color: var(--ink-soft); }
+.fwd-check { margin: 8px 0 0; font-size: 12px; font-weight: 700; color: var(--amber); }
+.fwd-ring, .fwd-day { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: center; margin-bottom: 8px; }
+.fwd-day { grid-template-columns: 42px auto 1fr 1fr; }
+.fwd-hours { margin: 8px 0 14px; }
 .call-focus td { background: var(--teal-soft); }
 
 .cal-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
@@ -849,6 +856,7 @@ a.tab:hover { background: white; text-decoration: none; }
   .phone-num { font-size: 22px; }
   .cal-toolbar { align-items: stretch; }
   .cal-toolbar .left, .cal-toolbar .right { width: 100%; }
+  .fwd-ring, .fwd-day { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {
