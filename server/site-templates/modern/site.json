@@ -1,0 +1,16 @@
+{
+  "name": "",
+  "blurb": "",
+  "category": "",
+  "city": "",
+  "hours": "",
+  "address": "",
+  "mapUrl": "",
+  "phoneDisplay": "",
+  "phoneHref": "",
+  "bookingUrl": "",
+  "bookHref": "",
+  "services": [],
+  "accent": "#1d4ed8",
+  "template": "modern"
+}

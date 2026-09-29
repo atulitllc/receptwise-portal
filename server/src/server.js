@@ -17,6 +17,7 @@ const social = require('./social');
 const meta = require('./integrations/meta');
 const trelloSync = require('./trelloSync');
 const exportData = require('./exportData');
+const websites = require('./website/service');
 
 // The portal pages live at the repo root (also published as the GitHub Pages demo).
 const SITE_ROOT = path.join(__dirname, '..', '..');
@@ -207,6 +208,19 @@ function createApp() {
   }));
   api.delete('/businesses/:slug/integrations/:provider', withBiz, wrap(async (req, res) => {
     res.json(await social.removeIntegration(req.biz, req.params.provider, req.user.id));
+  }));
+
+  // Website generator. Preview, generate, and regenerate are admin-only. Missing GITHUB_TOKEN is HTTP 409.
+  api.get('/businesses/:slug/website/preview', auth.requireAdmin, wrap(loadBiz), wrap(async (req, res) => {
+    res.json(await websites.preview(req.biz, req.query.template));
+  }));
+  api.post('/businesses/:slug/website/generate', auth.requireAdmin, wrap(loadBiz), wrap(async (req, res) => {
+    const result = await websites.generate(req.biz, (req.body || {}).template, req.user.id);
+    res.status(201).json(Object.assign({ ok: true }, result));
+  }));
+  api.post('/businesses/:slug/website/regenerate', auth.requireAdmin, wrap(loadBiz), wrap(async (req, res) => {
+    const result = await websites.regenerate(req.biz, req.user.id, (req.body || {}).template);
+    res.json(Object.assign({ ok: true }, result));
   }));
 
   api.get('/metrics', auth.requireUser, wrap(async (req, res) => {

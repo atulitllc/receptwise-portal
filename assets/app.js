@@ -1087,7 +1087,7 @@
     if (item.key === "email") return '<button class="btn btn-sm" type="button" data-action="check-email" data-id="' + id + '">Check DNS records</button>';
     if (item.key === "reviews") return '<button class="btn btn-sm" type="button" data-action="open-review" data-id="' + id + '">Review link</button>';
     if (item.key === "gbp" || item.key === "social") return '<button class="btn btn-sm" type="button" data-action="send-link" data-id="' + id + '" data-kind="social">Send connect link</button>';
-    if (item.key === "website") return '<button class="btn btn-sm" type="button" data-action="check-domain" data-id="' + id + '">Check domain</button>';
+    if (item.key === "website") return '<a class="btn btn-sm" href="#website">Website</a>';
     if (item.key === "billing") return '<button class="btn btn-sm" type="button" data-action="payment-link" data-id="' + id + '">Send payment link</button>';
     if (item.key === "number") return '<button class="btn btn-sm" type="button" data-action="call-receptionist" data-id="' + id + '">Call the number</button>';
     return "";
@@ -1206,14 +1206,106 @@
       (posts || '<tr><td colspan="4"><div class="empty">No posts yet.</div></td></tr>') + "</tbody></table></div></section>";
   }
 
+  var siteTemplatePick = {};
+  var SITE_SUGGEST = {
+    Restaurant: "classic",
+    Clinic: "classic",
+    Retail: "classic",
+    "Professional services": "classic",
+    "Auto shop": "modern",
+    Salon: "modern",
+    "Home services": "modern",
+    Studio: "modern"
+  };
+
+  function liveAdmin() {
+    return !!(LIVE && window.RW_LIVE && window.RW_LIVE.user && window.RW_LIVE.user.role === "admin");
+  }
+
+  function chosenSiteTemplate(b) {
+    var picked = siteTemplatePick[b.id];
+    if (picked === "classic" || picked === "modern") return picked;
+    var stored = b.generatedWebsite && b.generatedWebsite.template;
+    if (stored === "classic" || stored === "modern") return stored;
+    return SITE_SUGGEST[b.category] || "classic";
+  }
+
+  function templateChoice(b, id, title, detail) {
+    var on = chosenSiteTemplate(b) === id ? " on" : "";
+    return '<button class="choice' + on + '" type="button" data-action="pick-site-template" data-id="' + esc(b.id) + '" data-template="' + id + '"><b>' +
+      esc(title) + "</b><span>" + esc(detail) + "</span></button>";
+  }
+
   function tabWebsite(b) {
-    return '<div class="split"><div class="browser"><div class="browser-bar"><i></i><i></i><i></i><span class="url">' + esc(b.website || "draft") + '</span></div><div class="mini-site"><strong>' +
-      esc(b.name) + "</strong><p>" + esc(b.blurb || b.category) + "</p><p class='help'>" + esc(b.hours || "") + "</p><div class='mini-actions'><span class='btn btn-sm'>Call</span><span class='btn btn-sm btn-primary'>Book</span></div></div></div>" +
-      '<section class="card"><div class="card-b"><h2>' + esc(b.template || "Template") + " template</h2><p class='sub'>" + esc(b.domainStatus || "") + "</p>" +
-      '<div class="head-actions" style="margin-top:12px"><button class="btn btn-primary" type="button" data-action="publish-site" data-id="' + esc(b.id) + '">Publish</button>' +
-      '<button class="btn" type="button" data-action="check-domain" data-id="' + esc(b.id) + '">Check domain</button>' +
-      '<button class="btn" type="button" data-action="toast-chat" data-id="' + esc(b.id) + '">Chat button settings</button></div>' +
-      "<p class='help'>Click-to-call uses " + esc((b.phone && b.phone.aiNumber) || "the AI number") + ". Book opens the calendar. Chat is the website widget.</p></div></section></div>";
+    var site = b.generatedWebsite || null;
+    var admin = liveAdmin();
+    var githubReady = !!(LIVE && window.RW_LIVE && window.RW_LIVE.integrations && window.RW_LIVE.integrations.github);
+    var banner = "";
+    if (LIVE && admin && !githubReady) banner = '<div class="banner warn">Needs GITHUB_TOKEN on Render</div>';
+    else if (LIVE && !admin) banner = '<div class="banner warn">Only an admin can generate the website.</div>';
+    else if (!LIVE) banner = '<div class="note">Generating a GitHub repository runs on the live control panel. This demo does not create a repo.</div>';
+    var suggested = SITE_SUGGEST[b.category] || "classic";
+    var urlLabel = (site && site.pagesUrl) || "Not generated yet";
+    var preview = admin
+      ? '<iframe class="site-frame" id="site-preview" title="Website preview for ' + esc(b.name) + '" sandbox="allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation"></iframe>'
+      : '<div class="mini-site"><strong>' + esc(b.name) + "</strong><p>" + esc(b.blurb || b.category || "") + "</p><p class='help'>" +
+        (LIVE ? "An admin sees the real template in this frame." : "On the live panel, this frame shows the real Classic or Modern template.") + "</p></div>";
+    var links = "";
+    if (site && site.repoUrl) {
+      links = '<div style="margin-top:12px"><p><a href="' + esc(site.repoUrl) + '" target="_blank" rel="noopener">' + esc(site.repoFullName || "GitHub repository") + "</a></p>" +
+        '<p><a href="' + esc(site.pagesUrl) + '" target="_blank" rel="noopener">GitHub Pages URL</a></p>' +
+        "<p class='help'>That is the address GitHub Pages would use after you publish. This panel does not host the site.</p>" +
+        (site.lastPrUrl ? '<p><a href="' + esc(site.lastPrUrl) + '" target="_blank" rel="noopener">Latest pull request</a></p><p class="help">Regenerate commits to a new branch and opens a pull request. It does not overwrite main.</p>' : "") +
+        "</div>";
+    }
+    var button = "";
+    if (!LIVE || admin) {
+      button = site && site.repoUrl
+        ? '<button class="btn btn-primary" type="button" data-action="regenerate-website" data-id="' + esc(b.id) + '">Regenerate</button>'
+        : '<button class="btn btn-primary" type="button" data-action="generate-website" data-id="' + esc(b.id) + '">Generate website</button>';
+    }
+    var phone = (b.phone && b.phone.aiNumber) ? "Call uses the AI number " + b.phone.aiNumber + "." : "No AI number is on file, so the call button is left off.";
+    return '<div class="split"><div class="browser"><div class="browser-bar"><i></i><i></i><i></i><span class="url">' + esc(urlLabel) + "</span></div>" + preview + "</div>" +
+      '<section class="card"><div class="card-b">' + banner +
+      "<h2>Website</h2><p class='help'>Two real designs: Classic and Modern. The eight industry names are not eight layouts. They pick an accent color and a suggested design.</p>" +
+      "<p class='sub'>" + esc(b.category || "This business") + " suggests " + (suggested === "modern" ? "Modern" : "Classic") + ". You can choose either.</p>" +
+      '<div class="choice-grid">' +
+      templateChoice(b, "classic", "Classic", "Warm page, rounded buttons, large call button.") +
+      templateChoice(b, "modern", "Modern", "Dark hero, sharp type, accent bar.") +
+      "</div>" +
+      '<div class="head-actions">' + button + "</div>" +
+      links +
+      "<p class='help'>" + esc(phone) + " Book now uses a saved booking or calendar link, or the AI number when there is no link.</p>" +
+      "</div></section></div>";
+  }
+
+  var previewSeq = 0;
+  function loadSitePreview(b) {
+    if (!liveAdmin() || !b) return;
+    var frame = document.getElementById("site-preview");
+    if (!frame) return;
+    var seq = ++previewSeq;
+    frame.srcdoc = '<!DOCTYPE html><p style="font-family:system-ui,sans-serif;padding:16px;color:#3c4b5f">Loading preview…</p>';
+    api("GET", "api/businesses/" + encodeURIComponent(b.id) + "/website/preview?template=" + encodeURIComponent(chosenSiteTemplate(b))).then(function (data) {
+      if (seq !== previewSeq) return;
+      var node = document.getElementById("site-preview");
+      if (node && data && data.html) node.srcdoc = data.html;
+    }).catch(function (err) {
+      if (seq !== previewSeq) return;
+      var node = document.getElementById("site-preview");
+      if (!node) return;
+      var message = err && err.data && err.data.code === "NOT_CONFIGURED" ? "Needs GITHUB_TOKEN on Render" : (err && err.message) || "Preview failed.";
+      node.srcdoc = '<!DOCTYPE html><p style="font-family:system-ui,sans-serif;padding:16px;color:#3c4b5f">' + esc(message) + "</p>";
+    });
+  }
+
+  function websiteFail(err) {
+    var missing = err && err.data && err.data.missing;
+    if (err && err.data && err.data.code === "NOT_CONFIGURED" && missing && missing.indexOf("GITHUB_TOKEN") !== -1) {
+      toast("Needs GITHUB_TOKEN on Render");
+      return;
+    }
+    liveFail(err);
   }
 
   function tabOutreach(b) {
@@ -1284,6 +1376,7 @@
       '<div class="head-actions"><button class="btn" type="button" data-action="call-receptionist" data-id="' + esc(b.id) + '">Call the receptionist</button>' +
       '<button class="btn btn-primary" type="button" data-action="send-steps" data-id="' + esc(b.id) + '">Send owner their steps</button></div></section>' +
       '<nav class="tabs">' + tabs + "</nav>" + body + legal();
+    if (tab === "website") loadSitePreview(b);
   }
 
   function renderBilling(view) {
@@ -1667,38 +1760,16 @@
         }
       });
     },
-    "check-domain": function (el) {
-      var b = findBiz(el.dataset.id);
-      if (!b) return;
-      var item = checklistItem(b, "website");
-      openModal("Domain check", "<p>Loading " + esc(b.website) + " over a secure connection…</p>");
-      later(800, function () {
-        if (item.status === "connected") {
-          openModal("Domain check", "<p class='banner ok'>Website is live. The padlock check passed.</p>", '<button class="btn btn-primary" type="button" data-action="close-modal">Close</button>');
-        } else if (item.status === "action") {
-          openModal("Domain check", "<p><strong>Needs action.</strong> " + esc(item.detail) + "</p>", '<button class="btn btn-primary" type="button" data-action="close-modal">Close</button>');
-        } else {
-          openModal("Domain check", "<p>The site is still a draft, so the business domain does not show our padlock yet.</p>", '<button class="btn btn-primary" type="button" data-action="close-modal">Close</button>');
-        }
-      });
-    },
-    "publish-site": function (el) {
-      var b = findBiz(el.dataset.id);
-      if (!b) return;
-      var item = checklistItem(b, "website");
-      if (item.status === "action") {
-        toast("Draft published. The domain record still has to change before the padlock check passes.");
-        return;
-      }
-      item.status = "connected";
-      item.detail = b.website + " loads with a padlock.";
-      b.domainStatus = item.detail;
-      toast("Website published.");
+    "pick-site-template": function (el) {
+      if (el.dataset.template !== "classic" && el.dataset.template !== "modern") return;
+      siteTemplatePick[el.dataset.id] = el.dataset.template;
       currentRender();
     },
-    "toast-chat": function () {
-      openModal("Chat and call button", "<p>The site shows a call button to the AI number and a chat widget. Chat on the free starter tool covers the website first. Instagram and Facebook messages wait on a later approval.</p>",
-        '<button class="btn btn-primary" type="button" data-action="close-modal">Close</button>');
+    "generate-website": function () {
+      toast("Generating a GitHub repository runs on the live control panel.");
+    },
+    "regenerate-website": function () {
+      toast("Updating the repository runs on the live control panel.");
     },
     "open-review": function (el) {
       var b = findBiz(el.dataset.id);
@@ -2051,6 +2122,32 @@
         toast(data.synced + " calls checked.");
         currentRender();
       }).catch(function (err) { el.disabled = false; liveFail(err); });
+    },
+    "generate-website": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      el.disabled = true;
+      api("POST", "api/businesses/" + encodeURIComponent(b.id) + "/website/generate", { template: chosenSiteTemplate(b) }).then(function (data) {
+        replaceBiz(data.business);
+        toast(data.pagesEnabled ? "Website repository created." : "Website repository created. Turn on GitHub Pages from the repository settings.");
+        currentRender();
+      }).catch(function (err) {
+        el.disabled = false;
+        websiteFail(err);
+      });
+    },
+    "regenerate-website": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      el.disabled = true;
+      api("POST", "api/businesses/" + encodeURIComponent(b.id) + "/website/regenerate", { template: chosenSiteTemplate(b) }).then(function (data) {
+        replaceBiz(data.business);
+        toast("Pull request opened. Main was not overwritten.");
+        currentRender();
+      }).catch(function (err) {
+        el.disabled = false;
+        websiteFail(err);
+      });
     }
   };
   if (LIVE) Object.keys(liveActions).forEach(function (key) { actions[key] = liveActions[key]; });

@@ -186,10 +186,22 @@ function callToUi(c, tz) {
   };
 }
 
+function generatedWebsite(row) {
+  if (!row) return null;
+  return {
+    repoFullName: row.repo_full_name,
+    repoUrl: row.repo_url,
+    pagesUrl: row.pages_url,
+    template: row.template,
+    lastGeneratedAt: row.last_generated_at,
+    lastPrUrl: row.last_pr_url || ''
+  };
+}
+
 // Full UI object for one business row.
 async function toUi(biz) {
   const tz = biz.timezone || 'America/New_York';
-  const [steps, phones, calls, bookings, stats] = await Promise.all([
+  const [steps, phones, calls, bookings, stats, website] = await Promise.all([
     db.query('SELECT * FROM business_setup WHERE business_id = $1', [biz.id]),
     db.query('SELECT * FROM phone_numbers WHERE business_id = $1 AND status = \'active\' ORDER BY id DESC LIMIT 1', [biz.id]),
     db.query('SELECT * FROM calls WHERE business_id = $1 ORDER BY coalesce(started_at, created_at) DESC LIMIT 50', [biz.id]),
@@ -199,6 +211,7 @@ async function toUi(biz) {
          coalesce(sum(duration_sec) FILTER (WHERE started_at >= date_trunc('month', now() AT TIME ZONE $2) AT TIME ZONE $2), 0)::int AS month_sec,
          count(*) FILTER (WHERE started_at >= date_trunc('day', now() AT TIME ZONE $2) AT TIME ZONE $2)::int AS today
        FROM calls WHERE business_id = $1`, [biz.id, tz]),
+    db.query('SELECT * FROM business_websites WHERE business_id = $1', [biz.id])
   ]);
   const bookedToday = await db.query(
     `SELECT count(*)::int AS n FROM bookings WHERE business_id = $1 AND created_at >= date_trunc('day', now() AT TIME ZONE $2) AT TIME ZONE $2`, [biz.id, tz]);
@@ -239,7 +252,8 @@ async function toUi(biz) {
       when: fmtWhen(b.starts_at, tz), customer: b.customer || '', service: b.service || '', source: b.source, status: b.status
     })),
     checklist,
-    live: true
+    live: true,
+    generatedWebsite: generatedWebsite(website.rows[0])
   });
 }
 

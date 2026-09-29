@@ -43,6 +43,9 @@ Session cookie plus `X-RW-Client: portal` on every write. `GET /api/health` does
 | POST | `/webhooks/vapi` | `X-Vapi-Secret`. Stores end-of-call reports and opens Trello cards when a list is saved. |
 | POST | `/api/businesses/:slug/assistant/publish` | full assistant publish (existing path) |
 | POST | `/api/businesses/:slug/calls/sync` | backfill one business |
+| GET | `/api/businesses/:slug/website/preview?template=` | admin. Rendered Classic or Modern page for the preview frame |
+| POST | `/api/businesses/:slug/website/generate` | admin. New public GitHub repo. Body `{ "template": "classic" }` or `"modern"`. `409` with `GITHUB_TOKEN` when the token is missing |
+| POST | `/api/businesses/:slug/website/regenerate` | admin. New branch and pull request. Does not overwrite `main` |
 
 Settings pushes `GET` the assistant, store that JSON in `assistant_backups`, then `PATCH` `firstMessage` and `model` with a `<!-- receptwise:managed -->` block replaced in the system prompt. Tool ids already on the assistant are left in place.
 
