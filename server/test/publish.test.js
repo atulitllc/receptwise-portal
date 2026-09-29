@@ -22,13 +22,21 @@ function json(status, body) {
   };
 }
 
-function installFetch({ pagesFail } = {}) {
+function installFetch({ pagesFail, emptyRepo } = {}) {
   const seen = [];
+  const calls = [];
+  seen.calls = calls;
   const projects = new Set();
+  let blobs = 0;
   global.fetch = async (url, opts = {}) => {
     const target = new URL(String(url));
     const method = opts.method || 'GET';
+    let body = null;
+    if (typeof opts.body === 'string') {
+      try { body = JSON.parse(opts.body); } catch (e) { body = null; }
+    }
     seen.push(method + ' ' + target.hostname + target.pathname);
+    calls.push({ method, path: target.pathname, body });
     if (target.hostname === 'api.github.com') {
       if (method === 'GET' && target.pathname === '/user') return json(200, { login: 'member-bot' });
       if (method === 'GET' && target.pathname.endsWith('/git/ref/heads/main')) return json(200, { object: { sha: 'mainsha' } });
@@ -38,7 +46,16 @@ function installFetch({ pagesFail } = {}) {
         const body = JSON.parse(opts.body);
         return json(201, { name: body.name, full_name: 'atulitllc/' + body.name, html_url: 'https://github.com/atulitllc/' + body.name });
       }
-      if (method === 'POST' && target.pathname.endsWith('/git/blobs')) return json(201, { sha: 'blob' });
+      if (method === 'POST' && target.pathname.endsWith('/git/blobs')) {
+        blobs += 1;
+        if (emptyRepo && blobs === 1) return json(409, { message: 'Git Repository is empty.' });
+        return json(201, { sha: 'blob' + blobs });
+      }
+      if (method === 'PUT' && target.pathname.includes('/contents/')) {
+        if (!emptyRepo) return json(500, { message: 'contents API is only for an empty repository' });
+        if (body && Object.prototype.hasOwnProperty.call(body, 'sha')) return json(422, { message: 'unexpected sha' });
+        return json(201, { commit: { sha: 'seedsha' } });
+      }
       if (method === 'POST' && target.pathname.endsWith('/git/trees')) return json(201, { sha: 'tree' });
       if (method === 'POST' && target.pathname.endsWith('/git/commits')) return json(201, { sha: 'commit' });
       if (method === 'POST' && target.pathname.endsWith('/git/refs')) return json(201, { ref: 'refs/heads/main' });
@@ -124,6 +141,9 @@ test('generate publishes GitHub and Cloudflare from the same files', async () =>
     assert.ok(seen.some((line) => line.startsWith('POST api.github.com/orgs/atulitllc/repos')));
     assert.ok(seen.filter((line) => line.includes('api.cloudflare.com') && line.endsWith('/deployments')).length >= 2);
     assert.equal(seen.some((line) => line.includes('/user/repos')), false);
+    assert.equal(seen.calls.some((call) => call.method === 'PUT'), false);
+    const root = seen.calls.find((call) => call.method === 'POST' && call.path.endsWith('/git/commits'));
+    assert.deepEqual(root.body.parents, []);
   } finally {
     await db.query('DELETE FROM businesses WHERE id = $1', [biz.id]);
     github.clearOwnerCache();
@@ -183,6 +203,82 @@ test('a Cloudflare error does not roll back the GitHub repository', async () => 
     assert.match(created.cloudflare.error, /Authentication error/);
     assert.equal(created.business.generatedWebsite.cloudflareStatus, 'error');
     assert.match(created.business.generatedWebsite.cloudflareError, /Authentication error/);
+    const kept = await db.query('SELECT repo_full_name FROM business_websites WHERE business_id = $1', [biz.id]);
+    assert.equal(kept.rows[0].repo_full_name, created.repoFullName);
+  } finally {
+    await db.query('DELETE FROM businesses WHERE id = $1', [biz.id]);
+    github.clearOwnerCache();
+    config.github.token = previousToken;
+    config.cloudflare.token = previousCf;
+    config.cloudflare.accountId = previousAccount;
+    global.fetch = previousFetch;
+  }
+});
+
+test('an empty repository is seeded, then the full site and Cloudflare publish, and regenerate opens a pull request from main', async () => {
+  await db.migrate();
+  const previousFetch = global.fetch;
+  const previousToken = config.github.token;
+  const previousCf = config.cloudflare.token;
+  const previousAccount = config.cloudflare.accountId;
+  github.clearOwnerCache();
+  config.github.token = 'gh-test';
+  config.cloudflare.token = 'cf-test';
+  config.cloudflare.accountId = 'account-1';
+  const seen = installFetch({ emptyRepo: true });
+  const biz = await makeBiz('Empty Repo ' + Date.now(), 'www.empty-repo.example');
+  try {
+    const created = await websites.generate(biz, 'classic', null);
+    assert.match(created.repoFullName, /^atulitllc\/empty-repo-/);
+    assert.equal(created.cloudflare.status, 'deployed');
+    assert.match(created.cloudflare.url, /\.pages\.dev$/);
+    const puts = seen.calls.filter((call) => call.method === 'PUT' && call.path.includes('/contents/'));
+    assert.equal(puts.length, 1);
+    assert.equal(Object.prototype.hasOwnProperty.call(puts[0].body, 'sha'), false);
+    assert.equal(puts[0].body.message, 'Initial commit');
+    const siteCommit = seen.calls.find((call) => call.method === 'POST' && call.path.endsWith('/git/commits'));
+    assert.deepEqual(siteCommit.body.parents, ['mainsha']);
+    assert.equal(seen.calls.some((call) => call.method === 'POST' && call.path.endsWith('/git/refs') && call.body.ref === 'refs/heads/main'), false);
+    const again = await websites.regenerate(biz, null, 'classic');
+    assert.match(again.prUrl, /\/pull\/4$/);
+    assert.equal(again.cloudflare.status, 'deployed');
+    const updates = seen.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/git/commits'));
+    assert.deepEqual(updates[updates.length - 1].body.parents, ['mainsha']);
+    const branch = seen.calls.find((call) => call.method === 'POST' && call.path.endsWith('/git/refs'));
+    assert.match(branch.body.ref, /^refs\/heads\/site-update-/);
+    assert.equal(seen.calls.filter((call) => call.method === 'PUT').length, 1);
+    assert.equal(seen.some((line) => line.startsWith('DELETE ')), false);
+  } finally {
+    await db.query('DELETE FROM businesses WHERE id = $1', [biz.id]);
+    github.clearOwnerCache();
+    config.github.token = previousToken;
+    config.cloudflare.token = previousCf;
+    config.cloudflare.accountId = previousAccount;
+    global.fetch = previousFetch;
+  }
+});
+
+test('a Cloudflare error on an empty repository still keeps the GitHub repository', async () => {
+  await db.migrate();
+  const previousFetch = global.fetch;
+  const previousToken = config.github.token;
+  const previousCf = config.cloudflare.token;
+  const previousAccount = config.cloudflare.accountId;
+  github.clearOwnerCache();
+  config.github.token = 'gh-test';
+  config.cloudflare.token = 'cf-test';
+  config.cloudflare.accountId = 'account-1';
+  const seen = installFetch({ emptyRepo: true, pagesFail: true });
+  const biz = await makeBiz('Empty Cf ' + Date.now(), '');
+  try {
+    const created = await websites.generate(biz, 'modern', null);
+    assert.match(created.repoFullName, /^atulitllc\/empty-cf-/);
+    assert.equal(created.cloudflare.status, 'error');
+    assert.match(created.cloudflare.error, /Authentication error/);
+    const kept = await db.query('SELECT repo_full_name FROM business_websites WHERE business_id = $1', [biz.id]);
+    assert.equal(kept.rows[0].repo_full_name, created.repoFullName);
+    assert.equal(seen.calls.filter((call) => call.method === 'PUT' && call.path.includes('/contents/')).length, 1);
+    assert.equal(seen.some((line) => line.startsWith('DELETE ')), false);
   } finally {
     await db.query('DELETE FROM businesses WHERE id = $1', [biz.id]);
     github.clearOwnerCache();

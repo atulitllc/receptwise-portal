@@ -101,12 +101,30 @@ async function ghOnce(method, path, body) {
   if (!res.ok) {
     const err = new UpstreamError('GitHub', res.status, data && data.message ? data : (data || 'HTTP ' + res.status));
     err.github = data;
-    if (res.status === 401) {
-      err.message = 'GitHub rejected GITHUB_TOKEN.';
-    }
+    const clear = adminGitHubMessage(res.status, data);
+    if (clear) err.message = clear;
     throw err;
   }
   return data;
+}
+
+// Short sentences for the admin toast. The raw GitHub JSON stays on err.github for callers that branch on it.
+function adminGitHubMessage(status, data) {
+  const message = data && typeof data.message === 'string' ? data.message.trim() : '';
+  if (status === 401) return 'GitHub rejected GITHUB_TOKEN.';
+  if (status === 403) {
+    if (/rate limit/i.test(message)) return 'GitHub rate limit reached. Wait and try again.';
+    return 'GitHub refused this request. The token needs permission to create public repositories and push files.';
+  }
+  if (status === 404) return 'GitHub could not find that repository or branch.';
+  if (status === 409 && /empty/i.test(message)) {
+    return 'The GitHub repository is empty, so the first file could not be written yet.';
+  }
+  if (status === 422) {
+    return message ? 'GitHub rejected the request: ' + message : 'GitHub rejected the request.';
+  }
+  if (message && message.length <= 160) return 'GitHub: ' + message;
+  return '';
 }
 
 function nameTaken(err) {
@@ -169,13 +187,23 @@ function encodeBlob(text) {
   return Buffer.from(String(text), 'utf8').toString('base64');
 }
 
+async function createBlob(org, repo, text) {
+  try {
+    return await gh('POST', '/repos/' + encodeURIComponent(org) + '/' + encodeURIComponent(repo) + '/git/blobs', {
+      content: encodeBlob(text),
+      encoding: 'base64'
+    }, { retryNotFound: true });
+  } catch (err) {
+    // An empty repository (auto_init false) answers 409 on the first Git Data blob.
+    if (err && err.upstreamStatus === 409) err.emptyRepo = true;
+    throw err;
+  }
+}
+
 async function writeTree(org, repo, files, baseTree) {
   const entries = [];
   for (const path of Object.keys(files)) {
-    const blob = await gh('POST', '/repos/' + encodeURIComponent(org) + '/' + encodeURIComponent(repo) + '/git/blobs', {
-      content: encodeBlob(files[path]),
-      encoding: 'base64'
-    }, { retryNotFound: true });
+    const blob = await createBlob(org, repo, files[path]);
     entries.push({ path, mode: '100644', type: 'blob', sha: blob.sha });
   }
   const body = { tree: entries };
@@ -183,19 +211,64 @@ async function writeTree(org, repo, files, baseTree) {
   return gh('POST', '/repos/' + encodeURIComponent(org) + '/' + encodeURIComponent(repo) + '/git/trees', body, { retryNotFound: true });
 }
 
-// First commit on an empty repo (auto_init false): root commit, then refs/heads/main.
-async function initialCommit(org, repo, message, files) {
+function repoPath(org, repo, suffix) {
+  return '/repos/' + encodeURIComponent(org) + '/' + encodeURIComponent(repo) + suffix;
+}
+
+// Root commit when the Git database already accepts blobs. parents is empty; this creates refs/heads/main.
+async function rootCommit(org, repo, message, files) {
   const tree = await writeTree(org, repo, files);
-  const commit = await gh('POST', '/repos/' + encodeURIComponent(org) + '/' + encodeURIComponent(repo) + '/git/commits', {
+  const commit = await gh('POST', repoPath(org, repo, '/git/commits'), {
     message,
     tree: tree.sha,
     parents: []
   }, { retryNotFound: true });
-  await gh('POST', '/repos/' + encodeURIComponent(org) + '/' + encodeURIComponent(repo) + '/git/refs', {
+  await gh('POST', repoPath(org, repo, '/git/refs'), {
     ref: 'refs/heads/main',
     sha: commit.sha
   }, { retryNotFound: true });
   return commit.sha;
+}
+
+// Contents API creates the first commit on an empty repository. Omit sha: there is no parent file.
+async function seedFirstCommit(org, repo) {
+  return gh('PUT', repoPath(org, repo, '/contents/.nojekyll'), {
+    message: 'Initial commit',
+    content: encodeBlob('\n')
+  }, { retryNotFound: true });
+}
+
+// Full site on top of the branch tip. Used after the Contents API seed, and not for pull requests.
+async function commitOnMain(org, repo, message, files) {
+  const ref = await gh('GET', repoPath(org, repo, '/git/ref/heads/main'), undefined, { retryNotFound: true });
+  const parentSha = ref && ref.object && ref.object.sha;
+  if (!parentSha) {
+    const err = new Error('The repository has no main branch to update.');
+    err.status = 409;
+    throw err;
+  }
+  const parent = await gh('GET', repoPath(org, repo, '/git/commits/' + parentSha), undefined, { retryNotFound: true });
+  const baseTree = parent && parent.tree && parent.tree.sha;
+  const tree = await writeTree(org, repo, files, baseTree);
+  const commit = await gh('POST', repoPath(org, repo, '/git/commits'), {
+    message,
+    tree: tree.sha,
+    parents: [parentSha]
+  }, { retryNotFound: true });
+  await gh('PATCH', repoPath(org, repo, '/git/refs/heads/main'), { sha: commit.sha, force: false });
+  return commit.sha;
+}
+
+// Prefer a root Git Data commit. If blob create returns 409 because the repo is empty, seed via
+// the Contents API (no parent), then write the full site with the Git Data API from that tip.
+async function initialCommit(org, repo, message, files) {
+  try {
+    return await rootCommit(org, repo, message, files);
+  } catch (err) {
+    if (!err || !err.emptyRepo) throw err;
+    await seedFirstCommit(org, repo);
+    return commitOnMain(org, repo, message, files);
+  }
 }
 
 async function branchCommit(org, repo, { branch, message, files }) {

@@ -27,6 +27,7 @@ const appointments = require('./appointments');
 const privacy = require('./privacy');
 const phoneForwarding = require('./phoneForwarding');
 const portalHost = require('./portalHost');
+const panelLogin = require('./panelLogin');
 
 // The portal pages live at the repo root (also published as the GitHub Pages demo).
 const SITE_ROOT = path.join(__dirname, '..', '..');
@@ -487,6 +488,16 @@ function createApp() {
   api.post('/businesses/:slug/website/regenerate', auth.requireAdmin, wrap(loadBiz), wrap(async (req, res) => {
     const result = await websites.regenerate(req.biz, req.user.id, (req.body || {}).template);
     res.json(Object.assign({ ok: true }, result));
+  }));
+
+  // Panel sign-in for one business. Platform admins on the main panel host only. Password is write-only.
+  api.get('/businesses/:slug/panel-login', auth.requireAdmin, wrap(loadBiz), wrap(async (req, res) => {
+    if (portalBiz(req)) return res.status(403).json({ error: 'Set the panel login from the main panel.' });
+    res.json(await panelLogin.present(req.biz));
+  }));
+  api.put('/businesses/:slug/panel-login', auth.requireAdmin, wrap(loadBiz), wrap(async (req, res) => {
+    if (portalBiz(req)) return res.status(403).json({ error: 'Set the panel login from the main panel.' });
+    res.json(await panelLogin.save(req.biz, req.body || {}, req.user.id));
   }));
 
   api.get('/businesses/:slug/support-access', withBiz, wrap(async (req, res) => {

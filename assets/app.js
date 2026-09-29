@@ -1743,7 +1743,43 @@
       '</div></section><section class="card"><div class="card-h"><h2>Activity</h2></div><div class="card-b">' + activity +
       '</div></section><section class="card"><div class="card-h"><h2>Business</h2></div><div class="card-b"><dl class="kvs">' + facts.map(function (row) {
         return "<dt>" + esc(row[0]) + "</dt><dd>" + esc(row[1]) + "</dd>";
-      }).join("") + "</dl></div></section>" + domainsCard(b) + supportCard(b) + "</div></div>" + phonePanel(b);
+      }).join("") + "</dl></div></section>" + panelLoginCard(b) + domainsCard(b) + supportCard(b) + "</div></div>" + phonePanel(b);
+  }
+
+  function panelLoginCard(b) {
+    if (!liveAdmin() || onCustomerHost()) return "";
+    return '<section class="card" id="panel-login-card"><div class="card-h"><h2>Panel login</h2></div><div class="card-b">' +
+      '<p class="help" id="panel-login-status">Loading the current login…</p>' +
+      '<form data-action="save-panel-login" data-id="' + esc(b.id) + '" autocomplete="off">' +
+      '<div class="field"><label for="panel-login-username">Username</label>' +
+      '<input class="ctrl" id="panel-login-username" name="username" type="email" autocomplete="off" spellcheck="false" placeholder="owner@business.example"></div>' +
+      '<div class="field"><label for="panel-login-password">Password</label>' +
+      '<input class="ctrl" id="panel-login-password" name="password" type="password" autocomplete="new-password" placeholder="At least 10 characters"></div>' +
+      '<p class="help">Username is the email they type on the sign-in page. The password is saved hashed and is not shown again.</p>' +
+      '<button class="btn btn-primary" type="submit">Save login</button></form></div></section>';
+  }
+
+  function panelLoginNote(data) {
+    if (!data || !data.hasLogin) return "No panel login yet. Saving creates the owner account for this business.";
+    if (data.role === "staff") return "This resets the first staff login. The password is not shown again.";
+    return "This resets the owner login. The password is not shown again.";
+  }
+
+  var panelLoginSeq = 0;
+  function loadPanelLogin(b) {
+    if (!liveAdmin() || onCustomerHost() || !b) return;
+    var seq = ++panelLoginSeq;
+    api("GET", "api/businesses/" + encodeURIComponent(b.id) + "/panel-login").then(function (data) {
+      if (seq !== panelLoginSeq) return;
+      var status = document.getElementById("panel-login-status");
+      var input = document.getElementById("panel-login-username");
+      if (status) status.textContent = panelLoginNote(data);
+      if (input && document.activeElement !== input) input.value = (data && data.username) || "";
+    }).catch(function (err) {
+      if (seq !== panelLoginSeq) return;
+      var status = document.getElementById("panel-login-status");
+      if (status) status.textContent = (err && err.message) || "Could not load the panel login.";
+    });
   }
 
   function domainsCard(b) {
@@ -2456,7 +2492,10 @@
       '<button class="btn btn-primary" type="button" data-action="send-steps" data-id="' + esc(b.id) + '">Send owner their steps</button></div></section>' +
       '<nav class="tabs">' + tabs + "</nav>" + featureBar(TAB_FEATURES[tab]) + body + legal();
     if (tab === "website") loadSitePreview(b);
-    if (tab === "overview") loadDomains(b);
+    if (tab === "overview") {
+      loadDomains(b);
+      loadPanelLogin(b);
+    }
   }
 
   function noteCalendarReturn() {
@@ -3818,6 +3857,31 @@
   function onSubmit(event) {
     var form = event.target;
     if (!form || !form.dataset) return;
+    if (form.dataset.action === "save-panel-login") {
+      event.preventDefault();
+      var loginBiz = findBiz(form.dataset.id);
+      if (!loginBiz) return;
+      var username = (form.username && form.username.value || "").trim();
+      var password = form.password ? form.password.value : "";
+      var button = form.querySelector("button");
+      if (button) button.disabled = true;
+      api("PUT", "api/businesses/" + encodeURIComponent(loginBiz.id) + "/panel-login", {
+        username: username,
+        password: password
+      }).then(function (data) {
+        if (button) button.disabled = false;
+        if (form.password) form.password.value = "";
+        var status = document.getElementById("panel-login-status");
+        if (status) status.textContent = panelLoginNote(data);
+        var kept = document.getElementById("panel-login-username");
+        if (kept) kept.value = (data && data.username) || username;
+        toast(data && data.created ? "Owner login created." : "Panel login updated.");
+      }).catch(function (err) {
+        if (button) button.disabled = false;
+        liveFail(err);
+      });
+      return;
+    }
     if (form.dataset.action === "save-subdomain") {
       event.preventDefault();
       var current = findBiz(form.dataset.id);

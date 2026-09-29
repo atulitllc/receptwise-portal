@@ -133,6 +133,7 @@ async function generate(biz, templateInput, userId) {
      VALUES ($1, $2, $3, $4, $5, now())`,
     [biz.id, fullName, repoUrl, pagesUrl, templateId]
   );
+  // Cloudflare is independent of GitHub Pages. A Cloudflare failure is stored and does not delete the repository.
   const cf = await publishCloudflare(files, created.name, biz);
   await saveCloudflare(biz.id, cf);
   const detail = (pagesEnabled
