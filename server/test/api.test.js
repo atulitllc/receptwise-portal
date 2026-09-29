@@ -16,6 +16,7 @@ process.env.TOKEN_ENCRYPTION_KEY = 'test-token-key';
 process.env.APP_BASE_URL = 'https://panel.example.test';
 process.env.GOOGLE_OAUTH_CLIENT_ID = 'google-client-id';
 process.env.GOOGLE_OAUTH_CLIENT_SECRET = 'google-client-secret';
+process.env.CALCOM_WEBHOOK_SECRET = 'test-calcom-webhook';
 process.env.NODE_ENV = 'test';
 process.env.SMS_ENABLED = 'false';
 process.env.VAPI_ASSISTANT_ID = 'c3c8899c-e42d-494b-bf47-3af37f942341';
@@ -35,6 +36,8 @@ const trelloCards = {};
 let trelloSeq = 0;
 let googleBusy = [];
 let googleEventPosts = 0;
+let calcomSlotTaken = false;
+let calcomBookingPosts = 0;
 
 function jsonRes(status, body) {
   return {
@@ -187,6 +190,32 @@ global.fetch = async (url, opts = {}) => {
       return jsonRes(200, { id: cardPath[1], name: card.name, desc: card.desc });
     }
     return jsonRes(404, { message: 'trello ' + method + ' ' + u.pathname });
+  }
+  if (target.includes('api.cal.com')) {
+    if (path === '/v2/event-types' && method === 'GET') {
+      return jsonRes(200, {
+        status: 'success',
+        data: [{ id: 12345, title: '20 min demo', slug: '20-min-demo', lengthInMinutes: 20 }]
+      });
+    }
+    if (path === '/v2/slots' && method === 'GET') {
+      return jsonRes(200, {
+        status: 'success',
+        data: {
+          '2026-10-06': [{ start: '2026-10-06T10:00:00-04:00', end: '2026-10-06T10:20:00-04:00' }]
+        }
+      });
+    }
+    if (path === '/v2/bookings' && method === 'POST') {
+      calcomBookingPosts += 1;
+      if (calcomSlotTaken) return jsonRes(409, { message: 'User already has booking at this time' });
+      const body = JSON.parse(opts.body);
+      return jsonRes(201, {
+        status: 'success',
+        data: { uid: 'bk-uid-1', start: body.start, end: '2026-10-06T14:20:00.000Z' }
+      });
+    }
+    return jsonRes(404, { message: 'cal.com ' + method + ' ' + path });
   }
   return jsonRes(404, { message: 'not mocked' });
 };
@@ -1469,5 +1498,289 @@ describe('control panel API', () => {
     const restored = JSON.parse(httpCalls.find((call) => call.method === 'PATCH' && call.url.includes('/assistant/')).opts.body);
     assert.deepEqual(restored.model.toolIds, ['tool-check', 'tool-book']);
     assert.equal(restored.model.tools.some((tool) => tool.function && tool.function.name === 'book_appointment'), false);
+  });
+
+  it('books a Cal.com event type and follows webhook changes', async () => {
+    const crypto = require('crypto');
+    calcomSlotTaken = false;
+    calcomBookingPosts = 0;
+    const secret = 'cal_live_harbor_key';
+    const created = await request('POST', '/api/businesses', {
+      cookie,
+      body: { name: 'Harbor Cal', category: 'Professional services', timezone: 'America/New_York' }
+    });
+    assert.equal(created.status, 201, created.text);
+    const slug = created.json.business.id;
+    const biz = await db.query('SELECT id FROM businesses WHERE slug = $1', [slug]);
+    const businessId = Number(biz.rows[0].id);
+
+    const beforeSave = httpCalls.length;
+    const saved = await request('PUT', '/api/businesses/' + slug + '/calendar', {
+      cookie,
+      body: {
+        provider: 'calcom',
+        apiKey: secret,
+        calcomEventTypeId: '12345',
+        eventTypeTitle: '20 min demo',
+        lengthInMinutes: 20
+      }
+    });
+    assert.equal(saved.status, 200, saved.text);
+    assert.equal(saved.json.calcomKeySaved, true);
+    assert.equal(saved.json.calendar.calcomEventTypeId, '12345');
+    assert.equal(JSON.stringify(saved.json).includes(secret), false);
+    assert.equal(httpCalls.slice(beforeSave).some((call) => /cal\.com|vapi\.ai/i.test(call.url)), false);
+
+    const types = await request('GET', '/api/businesses/' + slug + '/calcom/event-types', { cookie });
+    assert.equal(types.status, 200, types.text);
+    assert.equal(types.json.eventTypes[0].title, '20 min demo');
+    assert.equal(types.json.eventTypes[0].lengthInMinutes, 20);
+    const typeCall = httpCalls.filter((call) => call.url.includes('/v2/event-types')).pop();
+    assert.equal(typeCall.method, 'GET');
+    assert.equal(typeCall.opts.headers.Authorization, 'Bearer ' + secret);
+    assert.equal(typeCall.opts.headers['cal-api-version'], '2026-06-12');
+
+    httpCalls.length = 0;
+    const published = await request('POST', '/api/businesses/' + slug + '/assistant/publish', { cookie });
+    assert.equal(published.status, 200, published.text);
+    assert.equal(published.json.ownCalendar, true);
+    const assistantCall = httpCalls.find((call) => call.method === 'POST' && new URL(call.url).pathname === '/assistant');
+    const assistant = JSON.parse(assistantCall.opts.body);
+    assert.deepEqual(assistant.model.toolIds, []);
+    const names = assistant.model.tools.map((tool) => tool.function && tool.function.name).filter(Boolean);
+    assert.deepEqual(names, ['check_availability', 'book_appointment']);
+    assert.match(assistant.model.messages[0].content, /chosen Cal.com event type/);
+    assert.match(assistant.model.messages[0].content, /Speak the confirmed local time/);
+    assert.equal(assistant.model.messages[0].content.includes('sets the event title'), false);
+
+    const status = await request('GET', '/api/businesses/' + slug + '/google-calendar', { cookie });
+    assert.equal(status.json.provider, 'calcom');
+    assert.equal(status.json.active, 'calcom');
+    assert.equal(status.json.warning, '');
+    assert.equal(status.json.calcom.connected, true);
+    assert.equal(status.json.calcom.eventTypeTitle, '20 min demo');
+    assert.equal(status.json.calcom.keySaved, true);
+    assert.equal(JSON.stringify(status.json).includes(secret), false);
+    assert.equal(httpCalls.some((call) => call.url.includes('api.cal.com') && call.url.includes('/v2/')), false);
+
+    const tested = await request('POST', '/api/businesses/' + slug + '/calcom/test', { cookie });
+    assert.equal(tested.status, 200, tested.text);
+    assert.equal(tested.json.ok, true);
+    assert.equal(tested.json.eventTypeId, '12345');
+    assert.equal(tested.json.slotCount, 1);
+    const testSlot = httpCalls.filter((call) => call.url.includes('/v2/slots')).pop();
+    assert.equal(testSlot.opts.headers['cal-api-version'], '2024-09-04');
+    assert.equal(new URL(testSlot.url).searchParams.get('timeZone'), 'America/New_York');
+
+    const toolBody = (toolCallId, name, args) => ({
+      message: {
+        type: 'tool-calls',
+        call: {
+          id: 'call-cal-book',
+          assistant: { metadata: { receptwiseBusinessId: String(businessId) } }
+        },
+        toolCallList: [{ id: toolCallId, name, arguments: args }]
+      }
+    });
+    const free = await request('POST', '/webhooks/vapi/tools', {
+      headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+      body: toolBody('c1', 'check_availability', {
+        startDateTime: '2026-10-06T10:00:00-04:00',
+        endDateTime: '2026-10-06T12:00:00-04:00'
+      })
+    });
+    assert.equal(free.status, 200, free.text);
+    const freeResult = JSON.parse(free.json.results[0].result);
+    assert.equal(freeResult.free, true);
+    assert.equal(freeResult.timeZone, 'America/New_York');
+    assert.equal(freeResult.startLocal, '2026-10-06T10:00:00-04:00');
+    const slotCall = httpCalls.filter((call) => new URL(call.url).pathname === '/v2/slots').pop();
+    const slotUrl = new URL(slotCall.url);
+    assert.equal(slotCall.opts.headers['cal-api-version'], '2024-09-04');
+    assert.equal(slotCall.opts.headers.Authorization, 'Bearer ' + secret);
+    assert.equal(slotUrl.searchParams.get('eventTypeId'), '12345');
+    assert.equal(slotUrl.searchParams.get('timeZone'), 'America/New_York');
+    assert.equal(slotUrl.searchParams.get('format'), 'range');
+    assert.equal(slotUrl.searchParams.get('start'), '2026-10-06T14:00:00.000Z');
+    assert.equal(slotUrl.searchParams.get('end'), '2026-10-06T16:00:00.000Z');
+
+    const booked = await request('POST', '/webhooks/vapi/tools', {
+      headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+      body: toolBody('c2', 'book_appointment', {
+        startDateTime: '2026-10-06T10:00:00-04:00',
+        name: 'Ada Lovelace',
+        phone: '7815550100',
+        email: 'ada@example.test',
+        service: 'demo'
+      })
+    });
+    assert.equal(booked.status, 200, booked.text);
+    const bookedResult = JSON.parse(booked.json.results[0].result);
+    assert.equal(bookedResult.booked, true);
+    assert.equal(bookedResult.uid, 'bk-uid-1');
+    assert.equal(bookedResult.startLocal, '2026-10-06T10:00:00-04:00');
+    assert.equal(bookedResult.endLocal, '2026-10-06T10:20:00-04:00');
+    assert.match(bookedResult.startLabel, /10:00/);
+    const bookCall = httpCalls.filter((call) => call.method === 'POST' && new URL(call.url).pathname === '/v2/bookings').pop();
+    assert.equal(bookCall.opts.headers['cal-api-version'], '2026-02-25');
+    assert.equal(bookCall.opts.headers.Authorization, 'Bearer ' + secret);
+    const bookBody = JSON.parse(bookCall.opts.body);
+    assert.equal(bookBody.eventTypeId, 12345);
+    assert.equal(bookBody.start, '2026-10-06T14:00:00.000Z');
+    assert.deepEqual(bookBody.attendee, {
+      name: 'Ada Lovelace',
+      email: 'ada@example.test',
+      timeZone: 'America/New_York',
+      language: 'en',
+      phoneNumber: '+17815550100'
+    });
+    assert.equal(bookBody.metadata.business, 'Harbor Cal');
+    assert.equal(bookBody.metadata.phone, '7815550100');
+    assert.equal(bookBody.metadata.businessId, String(businessId));
+    const row = await db.query(
+      'SELECT source, calcom_uid, customer, email, status FROM bookings WHERE id = $1',
+      [bookedResult.bookingId]
+    );
+    assert.equal(row.rows[0].source, 'calcom');
+    assert.equal(row.rows[0].calcom_uid, 'bk-uid-1');
+    assert.equal(row.rows[0].customer, 'Ada Lovelace');
+    assert.equal(row.rows[0].status, 'Confirmed');
+    const bookAudit = await db.query(
+      `SELECT detail FROM audit_log WHERE action = 'calendar.book' AND business_id = $1 ORDER BY id DESC LIMIT 1`,
+      [businessId]
+    );
+    const bookDetail = typeof bookAudit.rows[0].detail === 'string'
+      ? JSON.parse(bookAudit.rows[0].detail) : bookAudit.rows[0].detail;
+    assert.equal(bookDetail.uid, 'bk-uid-1');
+    assert.equal(bookDetail.provider, 'calcom');
+    assert.equal(JSON.stringify(bookDetail).includes('Ada'), false);
+    assert.equal(JSON.stringify(bookDetail).includes('ada@'), false);
+    assert.equal(httpCalls.some((call) => call.url.includes('googleapis.com')), false);
+
+    const postsBefore = calcomBookingPosts;
+    const slotsBefore = httpCalls.filter((call) => new URL(call.url).pathname === '/v2/slots').length;
+    calcomSlotTaken = true;
+    const taken = await request('POST', '/webhooks/vapi/tools', {
+      headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+      body: toolBody('c3', 'book_appointment', {
+        startDateTime: '2026-10-06T10:00:00-04:00',
+        name: 'Grace Hopper',
+        phone: '7815550199',
+        email: 'grace@example.test',
+        service: 'demo'
+      })
+    });
+    const takenResult = JSON.parse(taken.json.results[0].result);
+    assert.equal(takenResult.slotTaken, true);
+    assert.equal(takenResult.booked, false);
+    assert.equal(takenResult.conflict, true);
+    assert.equal(calcomBookingPosts, postsBefore + 1);
+    assert.ok(httpCalls.filter((call) => new URL(call.url).pathname === '/v2/slots').length > slotsBefore);
+    const stillOne = await db.query(
+      `SELECT count(*)::int AS n FROM bookings WHERE business_id = $1 AND calcom_uid = 'bk-uid-1'`,
+      [businessId]
+    );
+    assert.equal(stillOne.rows[0].n, 1);
+
+    const unsigned = await request('POST', '/webhooks/calcom', {
+      body: { triggerEvent: 'BOOKING_CANCELLED', payload: { uid: 'bk-uid-1' } }
+    });
+    assert.equal(unsigned.status, 401);
+
+    function signed(body) {
+      const raw = JSON.stringify(body);
+      const signature = crypto.createHmac('sha256', 'test-calcom-webhook').update(raw).digest('hex');
+      return request('POST', '/webhooks/calcom', {
+        body,
+        headers: { 'X-Cal-Signature-256': signature }
+      });
+    }
+    const cancelled = await signed({
+      triggerEvent: 'BOOKING_CANCELLED',
+      createdAt: '2026-10-06T14:05:00.000Z',
+      payload: {
+        uid: 'bk-uid-1',
+        eventTypeId: 12345,
+        attendees: [{ name: 'Ada Lovelace', email: 'ada@example.test', timeZone: 'America/New_York' }],
+        metadata: { businessId: String(businessId), phone: '7815550100', business: 'Harbor Cal' }
+      }
+    });
+    assert.equal(cancelled.status, 200, cancelled.text);
+    assert.equal(cancelled.json.ok, true);
+    const cancelledRow = await db.query('SELECT status FROM bookings WHERE id = $1', [bookedResult.bookingId]);
+    assert.equal(cancelledRow.rows[0].status, 'Cancelled');
+    const hookAudit = await db.query(
+      `SELECT detail FROM audit_log WHERE action = 'calendar.calcom_webhook' AND business_id = $1 ORDER BY id DESC LIMIT 1`,
+      [businessId]
+    );
+    const hookDetail = typeof hookAudit.rows[0].detail === 'string'
+      ? JSON.parse(hookAudit.rows[0].detail) : hookAudit.rows[0].detail;
+    assert.equal(hookDetail.trigger, 'BOOKING_CANCELLED');
+    assert.equal(hookDetail.uid, 'bk-uid-1');
+    assert.equal(JSON.stringify(hookDetail).includes('Ada'), false);
+
+    const createdHook = await signed({
+      triggerEvent: 'BOOKING_CREATED',
+      createdAt: '2026-10-07T15:00:00.000Z',
+      payload: {
+        uid: 'bk-uid-2',
+        title: '20 min demo',
+        startTime: '2026-10-07T15:00:00.000Z',
+        endTime: '2026-10-07T15:20:00.000Z',
+        eventTypeId: 12345,
+        attendees: [{ name: 'Grace Hopper', email: 'grace@example.test', timeZone: 'America/New_York' }],
+        metadata: { businessId: String(businessId), phone: '7815550199', business: 'Harbor Cal' }
+      }
+    });
+    assert.equal(createdHook.status, 200, createdHook.text);
+    const createdRow = await db.query(
+      `SELECT source, customer, status FROM bookings WHERE business_id = $1 AND calcom_uid = 'bk-uid-2'`,
+      [businessId]
+    );
+    assert.equal(createdRow.rows[0].source, 'calcom');
+    assert.equal(createdRow.rows[0].customer, 'Grace Hopper');
+    assert.equal(createdRow.rows[0].status, 'Confirmed');
+
+    const moved = await signed({
+      triggerEvent: 'BOOKING_RESCHEDULED',
+      createdAt: '2026-10-07T16:00:00.000Z',
+      payload: {
+        uid: 'bk-uid-3',
+        rescheduleUid: 'bk-uid-2',
+        title: '20 min demo',
+        startTime: '2026-10-08T15:00:00.000Z',
+        endTime: '2026-10-08T15:20:00.000Z',
+        eventTypeId: 12345,
+        attendees: [{ name: 'Grace Hopper', email: 'grace@example.test' }],
+        metadata: { businessId: String(businessId) }
+      }
+    });
+    assert.equal(moved.status, 200, moved.text);
+    const movedRow = await db.query(
+      `SELECT calcom_uid, status FROM bookings WHERE business_id = $1 AND customer = 'Grace Hopper'`,
+      [businessId]
+    );
+    assert.equal(movedRow.rows.length, 1);
+    assert.equal(movedRow.rows[0].calcom_uid, 'bk-uid-3');
+    assert.equal(movedRow.rows[0].status, 'Confirmed');
+
+    const ignored = await signed({ triggerEvent: 'MEETING_ENDED', payload: { uid: 'nope' } });
+    assert.equal(ignored.status, 200, ignored.text);
+    assert.equal(ignored.json.ignored, true);
+    const unknown = await signed({
+      triggerEvent: 'BOOKING_CREATED',
+      payload: { uid: 'bk-other', metadata: { businessId: '999999' }, attendees: [{ name: 'Nobody' }] }
+    });
+    assert.equal(unknown.status, 200, unknown.text);
+    assert.equal(unknown.json.ignored, true);
+
+    const removed = await request('DELETE', '/api/businesses/' + slug + '/calcom', { cookie });
+    assert.equal(removed.status, 200, removed.text);
+    assert.equal(removed.json.calcom.keySaved, false);
+    assert.equal(removed.json.calcom.connected, false);
+    assert.equal(removed.json.active, '');
+    assert.equal(removed.json.warning, 'Using the shared demo calendar');
+    const restored = httpCalls.filter((call) => call.method === 'PATCH' && call.url.includes('/assistant/')).pop();
+    assert.deepEqual(JSON.parse(restored.opts.body).model.toolIds, ['tool-check', 'tool-book']);
   });
 });

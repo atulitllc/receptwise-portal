@@ -1,10 +1,11 @@
 'use strict';
-// Per-business Google Calendar: OAuth, calendar choice, and the Vapi tool webhook.
+// Per-business calendar: Google OAuth or Cal.com, plus the Vapi tool webhook.
 const crypto = require('crypto');
 const db = require('./db');
 const config = require('./config');
 const cryptoBox = require('./cryptoBox');
 const google = require('./integrations/googleCalendar');
+const calcom = require('./integrations/calcom');
 const { NotConfiguredError, UpstreamError } = require('./integrations/errors');
 const audit = require('./audit');
 const businesses = require('./businesses');
@@ -71,9 +72,58 @@ function isConnected(row) {
   return Boolean(row && row.external_id && readToken(row));
 }
 
+async function loadCalRow(businessId) {
+  const { rows } = await db.query(
+    'SELECT * FROM integrations WHERE business_id = $1 AND provider = $2',
+    [businessId, 'calcom']
+  );
+  return rows[0] || null;
+}
+
+function readCalKey(row) {
+  if (!row || !row.token_enc) return '';
+  try {
+    const plain = cryptoBox.decrypt(row.token_enc);
+    return plain && plain.length >= 8 ? plain : '';
+  } catch (e) {
+    return '';
+  }
+}
+
+function profileCalendar(biz) {
+  const calendar = biz && biz.profile && biz.profile.calendar;
+  return calendar && typeof calendar === 'object' ? calendar : {};
+}
+
+function eventTypeIdOf(biz, row) {
+  const fromProfile = String(profileCalendar(biz).calcomEventTypeId || '').trim();
+  if (fromProfile) return fromProfile;
+  return String((metaOf(row).eventTypeId || '')).trim();
+}
+
+function calcomReady(biz, row) {
+  if (!row) return false;
+  if (!readCalKey(row)) return false;
+  return /^\d+$/.test(eventTypeIdOf(biz, row));
+}
+
+async function calendarMode(biz) {
+  if (!biz || !toolsUrl()) return '';
+  const choice = profileCalendar(biz).provider || '';
+  if (choice === 'calcom') {
+    const row = await loadCalRow(biz.id);
+    return calcomReady(biz, row) ? 'calcom' : '';
+  }
+  if (choice === 'google' || choice === '') {
+    const row = await loadRow(biz.id);
+    if (isConnected(row)) return 'google';
+  }
+  return '';
+}
+
 async function hasOwnCalendar(businessId) {
-  const row = await loadRow(businessId);
-  return isConnected(row) && Boolean(toolsUrl());
+  const { rows } = await db.query('SELECT * FROM businesses WHERE id = $1', [businessId]);
+  return Boolean(await calendarMode(rows[0]));
 }
 
 function publicView(row, extra) {
@@ -125,9 +175,33 @@ async function accessTokenFor(row) {
   return token.access_token;
 }
 
+function calcomPublic(biz, row) {
+  const meta = metaOf(row);
+  const eventTypeId = eventTypeIdOf(biz, row);
+  const keySaved = Boolean(readCalKey(row));
+  const ready = calcomReady(biz, row);
+  return {
+    keySaved,
+    eventTypeId,
+    eventTypeTitle: meta.eventTypeTitle || '',
+    lengthInMinutes: meta.lengthInMinutes || null,
+    connected: ready
+  };
+}
+
 async function status(biz) {
   const row = await loadRow(biz.id);
   const view = publicView(row);
+  const calRow = await loadCalRow(biz.id);
+  const cal = calcomPublic(biz, calRow);
+  const mode = await calendarMode(biz);
+  if (mode) {
+    view.warning = '';
+    view.sharedDemo = false;
+  }
+  view.provider = profileCalendar(biz).provider || (view.connected ? 'google' : '');
+  view.active = mode;
+  view.calcom = cal;
   if (!view.authorized) return Object.assign(view, { calendars: [] });
   try {
     const access = await accessTokenFor(row);
@@ -335,8 +409,14 @@ async function syncAssistant(biz) {
   );
   const assistant = rows[0];
   if (!assistant || !assistant.vapi_assistant_id) return { assistantUpdated: false };
-  const own = await hasOwnCalendar(biz.id);
-  const payload = vapi.assistantPayload(biz, { serverUrl: webhookUrl(), ownCalendar: own, toolsUrl: toolsUrl() });
+  const mode = await calendarMode(biz);
+  const own = Boolean(mode);
+  const payload = vapi.assistantPayload(biz, {
+    serverUrl: webhookUrl(),
+    ownCalendar: own,
+    calendarProvider: mode,
+    toolsUrl: toolsUrl()
+  });
   let currentModel = null;
   try {
     const live = await vapi.getAssistant(assistant.vapi_assistant_id);
@@ -486,7 +566,7 @@ async function checkAvailability(biz, row, args) {
 
 async function existingBooking(businessId, start, customer) {
   const { rows } = await db.query(
-    `SELECT id, google_event_id FROM bookings
+    `SELECT id, google_event_id, calcom_uid FROM bookings
      WHERE business_id = $1
        AND starts_at IS NOT DISTINCT FROM $2::timestamptz
        AND lower(coalesce(customer, '')) = lower($3)
@@ -587,21 +667,345 @@ async function bookAppointment(biz, row, args, vapiCallId) {
   }, range);
 }
 
+function requestedRange(biz, args) {
+  const timeZone = businesses.tzFromLabel(biz.timezone);
+  const start = time.parseWhen(args.startDateTime || args.start || args.start_time, timeZone);
+  if (!start) return { timeZone, error: 'Send startDateTime with an offset, for example 2026-10-06T10:00:00-04:00.' };
+  let end = time.parseWhen(args.endDateTime || args.end || args.end_time, timeZone);
+  if (!end) end = time.addMinutes(start, 30);
+  if (end <= start) return { timeZone, error: 'endDateTime must be after startDateTime.' };
+  return { timeZone, start, end };
+}
+
+function flattenSlots(slots, timeZone) {
+  return (slots || []).map((slot) => {
+    const start = time.parseWhen(slot.start, timeZone);
+    const end = slot.end ? time.parseWhen(slot.end, timeZone) : null;
+    if (!start) return null;
+    return { start, end: end || time.addMinutes(start, 30), local: describeRange(start, end || time.addMinutes(start, 30), timeZone) };
+  }).filter(Boolean);
+}
+
+function slotMatches(slots, start) {
+  return slots.some((slot) => Math.abs(slot.start.getTime() - start.getTime()) < 60000);
+}
+
+async function calcomSlots(apiKey, eventTypeId, start, end, timeZone) {
+  const slots = await calcom.getSlots(apiKey, {
+    eventTypeId,
+    start: start.toISOString(),
+    end: end.toISOString(),
+    timeZone
+  });
+  return flattenSlots(slots, timeZone);
+}
+
+async function checkCalcom(biz, row, args) {
+  const range = requestedRange(biz, args);
+  if (range.error) return { ok: false, error: range.error };
+  const apiKey = readCalKey(row);
+  const eventTypeId = eventTypeIdOf(biz, row);
+  const slots = await calcomSlots(apiKey, eventTypeId, range.start, range.end, range.timeZone);
+  const free = slotMatches(slots, range.start);
+  return Object.assign({
+    ok: true,
+    free,
+    slots: slots.map((slot) => slot.local)
+  }, describeRange(range.start, range.end, range.timeZone));
+}
+
+async function bookCalcom(biz, row, args, vapiCallId) {
+  const name = time.clip(args.name || args.customerName || args.customer, 80);
+  const phone = time.clip(args.phone || args.customerPhone || args.phoneNumber, 40);
+  const email = callerEmail(args);
+  const service = time.clip(args.service || args.summary, 80) || 'appointment';
+  if (!name || !phone || !email) {
+    return { ok: false, booked: false, error: 'name, phone, and email are required before booking.' };
+  }
+  const length = Number(metaOf(row).lengthInMinutes) || 0;
+  const range = requestedRange(biz, length ? Object.assign({}, args, { endDateTime: '' }) : args);
+  if (range.error) return { ok: false, booked: false, error: range.error };
+  const end = length ? time.addMinutes(range.start, length) : range.end;
+  const described = describeRange(range.start, end, range.timeZone);
+  const existing = await existingBooking(biz.id, range.start, name);
+  if (existing && existing.calcom_uid) {
+    return Object.assign({
+      ok: true,
+      booked: true,
+      alreadyBooked: true,
+      bookingId: Number(existing.id),
+      uid: existing.calcom_uid
+    }, described);
+  }
+  const apiKey = readCalKey(row);
+  const eventTypeId = Number(eventTypeIdOf(biz, row));
+  const open = await calcomSlots(apiKey, eventTypeId, range.start, end, range.timeZone);
+  if (!slotMatches(open, range.start)) {
+    return Object.assign({
+      ok: false,
+      booked: false,
+      free: false,
+      conflict: true,
+      slots: open.map((slot) => slot.local)
+    }, described);
+  }
+  const phoneE164 = vapi.toE164(phone);
+  const attendee = { name, email, timeZone: range.timeZone, language: 'en' };
+  if (phoneE164) attendee.phoneNumber = phoneE164;
+  const body = {
+    eventTypeId,
+    start: range.start.toISOString(),
+    attendee,
+    metadata: {
+      business: time.clip(biz.name, 500),
+      phone: time.clip(phone, 500),
+      businessId: String(biz.id)
+    }
+  };
+  let booked;
+  try {
+    booked = await calcom.createBooking(apiKey, body);
+  } catch (err) {
+    if (!calcom.isSlotTaken(err)) throw err;
+    const again = await calcomSlots(apiKey, eventTypeId, range.start, end, range.timeZone);
+    return Object.assign({
+      ok: false,
+      booked: false,
+      free: false,
+      conflict: true,
+      slotTaken: true,
+      slots: again.map((slot) => slot.local)
+    }, described);
+  }
+  const uid = booked && booked.uid ? String(booked.uid) : '';
+  const confirmedStart = booked && booked.start ? time.parseWhen(booked.start, range.timeZone) : range.start;
+  const confirmedEnd = booked && booked.end ? time.parseWhen(booked.end, range.timeZone) : end;
+  const confirmed = describeRange(confirmedStart || range.start, confirmedEnd || end, range.timeZone);
+  let callId = null;
+  if (vapiCallId) {
+    const found = await db.query('SELECT id FROM calls WHERE vapi_call_id = $1', [vapiCallId]);
+    if (found.rows[0]) callId = found.rows[0].id;
+  }
+  let bookingId;
+  if (existing) {
+    const updated = await db.query(
+      `UPDATE bookings
+       SET ends_at = $2, phone = $3, email = $4, service = $5, calcom_uid = $6, timezone = $7,
+           source = 'calcom', call_id = coalesce(call_id, $8), status = 'Confirmed', updated_at = now()
+       WHERE id = $1
+       RETURNING id`,
+      [existing.id, (confirmedEnd || end).toISOString(), phone, email, service, uid, range.timeZone, callId]
+    );
+    bookingId = Number(updated.rows[0].id);
+  } else {
+    const inserted = await db.query(
+      `INSERT INTO bookings (business_id, call_id, starts_at, ends_at, customer, phone, email, service, source, status, calcom_uid, timezone)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'calcom', 'Confirmed', $9, $10)
+       RETURNING id`,
+      [biz.id, callId, (confirmedStart || range.start).toISOString(), (confirmedEnd || end).toISOString(), name, phone, email, service, uid, range.timeZone]
+    );
+    bookingId = Number(inserted.rows[0].id);
+  }
+  await audit.record(null, biz.id, 'calendar.book', { bookingId, uid, provider: 'calcom' });
+  return Object.assign({
+    ok: true,
+    booked: true,
+    bookingId,
+    uid,
+    service
+  }, confirmed);
+}
+
+async function requireCalKey(biz) {
+  const row = await loadCalRow(biz.id);
+  const apiKey = readCalKey(row);
+  if (!apiKey) {
+    const err = new Error('Paste a Cal.com API key first.');
+    err.status = 409;
+    throw err;
+  }
+  return { row, apiKey };
+}
+
+async function listCalcomEventTypes(biz) {
+  const { apiKey } = await requireCalKey(biz);
+  const eventTypes = await calcom.listEventTypes(apiKey);
+  return {
+    eventTypes: eventTypes.map((item) => ({
+      id: item.id,
+      title: item.title,
+      slug: item.slug,
+      lengthInMinutes: item.lengthInMinutes
+    }))
+  };
+}
+
+async function testCalcom(biz) {
+  const { row, apiKey } = await requireCalKey(biz);
+  const listed = await calcom.listEventTypes(apiKey);
+  const eventTypeId = eventTypeIdOf(biz, row);
+  let slotCount = null;
+  if (/^\d+$/.test(eventTypeId)) {
+    const timeZone = businesses.tzFromLabel(biz.timezone);
+    const start = new Date();
+    const end = time.addMinutes(start, 24 * 60);
+    const slots = await calcom.getSlots(apiKey, {
+      eventTypeId,
+      start: start.toISOString(),
+      end: end.toISOString(),
+      timeZone
+    });
+    slotCount = slots.length;
+  }
+  return {
+    ok: true,
+    eventTypeId,
+    slotCount,
+    eventTypes: listed.map((item) => ({
+      id: item.id,
+      title: item.title,
+      slug: item.slug,
+      lengthInMinutes: item.lengthInMinutes
+    }))
+  };
+}
+
+async function disconnectCalcom(biz, userId) {
+  await db.query(`DELETE FROM integrations WHERE business_id = $1 AND provider = 'calcom'`, [biz.id]);
+  const profile = Object.assign({}, biz.profile || {});
+  const calendar = Object.assign({}, profileCalendar(biz));
+  if (calendar.provider === 'calcom') calendar.calcomEventTypeId = '';
+  profile.calendar = calendar;
+  const { rows } = await db.query(
+    'UPDATE businesses SET profile = $2, updated_at = now() WHERE id = $1 RETURNING *',
+    [biz.id, profile]
+  );
+  await audit.record(userId, biz.id, 'calendar.disconnect', { provider: 'calcom' });
+  const assistant = await syncAssistant(rows[0] || biz);
+  const view = await status(rows[0] || biz);
+  return Object.assign(view, assistant);
+}
+
+function signaturesMatch(given, expected) {
+  const a = Buffer.from(String(given || ''));
+  const b = Buffer.from(String(expected || ''));
+  if (a.length !== b.length || a.length === 0) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+async function businessForCalcomPayload(payload) {
+  const meta = (payload && payload.metadata) || {};
+  const businessId = Number(meta.businessId || meta.receptwiseBusinessId);
+  if (businessId) {
+    const { rows } = await db.query('SELECT * FROM businesses WHERE id = $1', [businessId]);
+    if (rows[0]) return rows[0];
+  }
+  const eventTypeId = payload && payload.eventTypeId != null ? String(payload.eventTypeId) : '';
+  if (!eventTypeId) return null;
+  const { rows } = await db.query(
+    `SELECT b.* FROM businesses b
+     JOIN integrations i ON i.business_id = b.id AND i.provider = 'calcom'
+     WHERE i.meta->>'eventTypeId' = $1`,
+    [eventTypeId]
+  );
+  return rows.length === 1 ? rows[0] : null;
+}
+
+async function applyCalcomWebhook(biz, trigger, payload) {
+  const uid = time.clip(payload && payload.uid, 200);
+  const previous = time.clip(payload && payload.rescheduleUid, 200);
+  const start = payload && payload.startTime ? time.parseWhen(payload.startTime, 'UTC') : null;
+  const end = payload && payload.endTime ? time.parseWhen(payload.endTime, 'UTC') : null;
+  const attendee = (payload && payload.attendees && payload.attendees[0]) || {};
+  const name = time.clip(attendee.name, 80);
+  const email = time.cleanEmail(attendee.email);
+  const phone = time.clip(payload && payload.metadata && payload.metadata.phone, 40);
+  const service = time.clip((payload && (payload.eventTitle || payload.title)) || 'appointment', 80);
+  const timeZone = businesses.tzFromLabel(biz.timezone);
+  if (!uid) return { ok: true, ignored: true };
+  if (trigger === 'BOOKING_CANCELLED') {
+    await db.query(
+      `UPDATE bookings SET status = 'Cancelled', updated_at = now()
+       WHERE business_id = $1 AND calcom_uid = $2`,
+      [biz.id, uid]
+    );
+    await audit.record(null, biz.id, 'calendar.calcom_webhook', { trigger, uid });
+    return { ok: true };
+  }
+  const ids = [uid, previous].filter(Boolean);
+  const found = await db.query(
+    `SELECT id FROM bookings WHERE business_id = $1 AND calcom_uid = ANY($2::text[]) ORDER BY id LIMIT 1`,
+    [biz.id, ids]
+  );
+  if (found.rows[0]) {
+    await db.query(
+      `UPDATE bookings
+       SET calcom_uid = $2, starts_at = coalesce($3, starts_at), ends_at = coalesce($4, ends_at),
+           status = 'Confirmed', source = 'calcom', updated_at = now()
+       WHERE id = $1`,
+      [found.rows[0].id, uid, start ? start.toISOString() : null, end ? end.toISOString() : null]
+    );
+    await audit.record(null, biz.id, 'calendar.calcom_webhook', { trigger, uid, bookingId: Number(found.rows[0].id) });
+    return { ok: true, bookingId: Number(found.rows[0].id) };
+  }
+  if (trigger !== 'BOOKING_CREATED' && trigger !== 'BOOKING_RESCHEDULED') return { ok: true, ignored: true };
+  const inserted = await db.query(
+    `INSERT INTO bookings (business_id, starts_at, ends_at, customer, phone, email, service, source, status, calcom_uid, timezone)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, 'calcom', 'Confirmed', $8, $9)
+     RETURNING id`,
+    [biz.id, start ? start.toISOString() : null, end ? end.toISOString() : null, name, phone, email, service, uid, timeZone]
+  );
+  await audit.record(null, biz.id, 'calendar.calcom_webhook', { trigger, uid, bookingId: Number(inserted.rows[0].id) });
+  return { ok: true, bookingId: Number(inserted.rows[0].id) };
+}
+
+async function handleCalcomWebhook(req) {
+  const secret = config.calcom.webhookSecret;
+  if (!secret) {
+    const err = new Error('CALCOM_WEBHOOK_SECRET is not set.');
+    err.status = 503;
+    throw err;
+  }
+  const raw = req.rawBody || Buffer.from(JSON.stringify(req.body || {}));
+  const expected = crypto.createHmac('sha256', secret).update(raw).digest('hex');
+  const given = req.get('X-Cal-Signature-256') || '';
+  if (!signaturesMatch(given, expected)) {
+    const err = new Error('bad signature');
+    err.status = 401;
+    throw err;
+  }
+  const body = req.body || {};
+  const trigger = String(body.triggerEvent || '');
+  const payload = body.payload || {};
+  if (!['BOOKING_CREATED', 'BOOKING_CANCELLED', 'BOOKING_RESCHEDULED'].includes(trigger)) {
+    return { ok: true, ignored: true };
+  }
+  const biz = await businessForCalcomPayload(payload);
+  if (!biz) return { ok: true, ignored: true };
+  return applyCalcomWebhook(biz, trigger, payload);
+}
+
 async function runTool(biz, call, vapiCallId) {
   const name = String(call.name || '');
   if (name !== 'check_availability' && name !== 'book_appointment') {
     return { ok: false, error: 'Unknown tool.' };
   }
-  const row = await loadRow(biz.id);
-  if (!isConnected(row)) {
+  const mode = await calendarMode(biz);
+  if (!mode) {
     return { ok: false, error: 'This business does not have its own calendar connected.' };
   }
   try {
+    if (mode === 'calcom') {
+      const row = await loadCalRow(biz.id);
+      if (name === 'check_availability') return await checkCalcom(biz, row, call.args);
+      return await bookCalcom(biz, row, call.args, vapiCallId);
+    }
+    const row = await loadRow(biz.id);
     if (name === 'check_availability') return await checkAvailability(biz, row, call.args);
     return await bookAppointment(biz, row, call.args, vapiCallId);
   } catch (err) {
     const safe = err.code === 'UPSTREAM'
-      ? 'Google Calendar could not complete that request.'
+      ? (mode === 'calcom' ? 'Cal.com could not complete that request.' : 'Google Calendar could not complete that request.')
       : (err.message || 'Calendar request failed.');
     return { ok: false, error: safe };
   }
@@ -628,12 +1032,18 @@ module.exports = {
   redirectUri,
   toolsUrl,
   hasOwnCalendar,
+  calendarMode,
   status,
   begin,
   finish,
   selectCalendar,
   disconnect,
+  listCalcomEventTypes,
+  testCalcom,
+  disconnectCalcom,
+  handleCalcomWebhook,
   handleToolRequest,
+  syncAssistant,
   publicView,
   stripToolSecrets
 };

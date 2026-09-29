@@ -178,6 +178,16 @@ test('own calendar tools replace the shared tool ids', () => {
   assert.match(prompt, /Harbor Cafe appointment – \{service\} – \{caller name\} – \{phone\}/);
   assert.equal(prompt.includes('results come back in UTC'), false);
   assert.equal(prompt.includes('the booking tool'), false);
+  const calcom = vapi.assistantPayload(biz, {
+    ownCalendar: true,
+    calendarProvider: 'calcom',
+    toolsUrl: 'https://panel.example.test/webhooks/vapi/tools'
+  });
+  const calPrompt = calcom.model.messages[0].content;
+  assert.match(calPrompt, /chosen Cal.com event type/);
+  assert.match(calPrompt, /stores the business name and phone in the booking notes/);
+  assert.match(calPrompt, /Speak the confirmed local time from the tool result/);
+  assert.equal(calPrompt.includes('Harbor Cafe appointment'), false);
 });
 
 test('calendar times, titles, and the Google consent URL', () => {

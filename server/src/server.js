@@ -103,6 +103,13 @@ function createApp() {
     res.json(await businessCalendar.handleToolRequest(req.body || {}));
   }));
 
+  app.post('/webhooks/calcom', express.json({
+    limit: '1mb',
+    verify: (req, _res, buf) => { req.rawBody = buf; }
+  }), wrap(async (req, res) => {
+    res.json(await businessCalendar.handleCalcomWebhook(req));
+  }));
+
   app.get('/oauth/google/callback', wrap(async (req, res) => {
     const sendError = (slug, message) => {
       const text = String(message || 'Google Calendar connection failed.').slice(0, 300);
@@ -201,11 +208,22 @@ function createApp() {
   }));
   api.put('/businesses/:slug/calendar', withBiz, wrap(async (req, res) => {
     const saved = await calendarConnection.saveConnection(req.biz, req.body || {}, req.user.id);
+    const assistant = await businessCalendar.syncAssistant(saved.biz);
     res.json({
       calendar: saved.calendar,
       calcomKeySaved: saved.calcomKeySaved,
+      assistantUpdated: assistant.assistantUpdated,
       business: await businesses.toUi(saved.biz)
     });
+  }));
+  api.get('/businesses/:slug/calcom/event-types', withBiz, wrap(async (req, res) => {
+    res.json(await businessCalendar.listCalcomEventTypes(req.biz));
+  }));
+  api.post('/businesses/:slug/calcom/test', withBiz, wrap(async (req, res) => {
+    res.json(await businessCalendar.testCalcom(req.biz));
+  }));
+  api.delete('/businesses/:slug/calcom', withBiz, wrap(async (req, res) => {
+    res.json(await businessCalendar.disconnectCalcom(req.biz, req.user.id));
   }));
   api.get('/businesses/:slug/google-calendar', withBiz, wrap(async (req, res) => {
     res.json(await businessCalendar.status(req.biz));

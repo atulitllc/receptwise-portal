@@ -44,6 +44,10 @@ const config = {
     clientId: env.GOOGLE_OAUTH_CLIENT_ID || '',
     clientSecret: env.GOOGLE_OAUTH_CLIENT_SECRET || ''
   },
+  calcom: {
+    apiBase: (env.CALCOM_API_BASE || 'https://api.cal.com').replace(/\/+$/, ''),
+    webhookSecret: env.CALCOM_WEBHOOK_SECRET || ''
+  },
   userAgent: 'ReceptWise-Control-Panel/1.0',
   meta: {
     appId: env.META_APP_ID || '',

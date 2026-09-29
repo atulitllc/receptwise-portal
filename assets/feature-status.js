@@ -51,7 +51,7 @@
     calendar_connection: {
       label: "Calendar",
       status: "real",
-      note: "Connect Google Calendar on the Bookings tab and choose which calendar to use. Until one is chosen, the assistant uses the shared demo calendar and the page says so. The demo does not connect Google."
+      note: "On the Bookings tab, choose Google Calendar or Cal.com. Google uses OAuth. Cal.com uses an encrypted API key and an event type from GET /v2/event-types. Until one is connected, the assistant uses the shared demo calendar and the page says so. The demo does not connect either provider."
     },
     social: {
       label: "Social",

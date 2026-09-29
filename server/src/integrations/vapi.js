@@ -122,12 +122,15 @@ function buildVoice(provider, voiceId, model) {
   return voice;
 }
 
-function bookingInstructions(biz, tz, ownCalendar) {
+function bookingInstructions(biz, tz, ownCalendar, provider) {
   if (ownCalendar) {
+    const closing = provider === 'calcom'
+      ? 'Pass service, name, phone, and email to book_appointment. The server books the chosen Cal.com event type, sends the caller as the attendee, and stores the business name and phone in the booking notes. Speak the confirmed local time from the tool result.'
+      : 'Pass service, name, phone, and email to book_appointment. The server sets the event title to "' + biz.name + ' appointment – {service} – {caller name} – {phone}" and adds the caller email as the attendee.';
     return [
       'Booking: you can book appointments. Whenever a caller wants to book, schedule, or set up an appointment, you must use check_availability and then book_appointment. Never tell callers you can\'t book, and never turn a booking request into a callback request. Take a callback message only if the caller doesn\'t want to book a time. Collect the caller\'s name, phone number, service, and email. Confirm the day, the date, and the time before booking. Never say it\'s booked unless book_appointment confirmed it. Only book inside business hours. Do not double-book.',
       'Time zones: ' + offsetGuidance(tz) + ' check_availability and book_appointment results include local time in ' + tz + ' (startLocal, endLocal, startLabel, and endLabel). Speak those local times. Still send every startDateTime and endDateTime with the offset. Never send times without an offset or with Z.',
-      'Pass service, name, phone, and email to book_appointment. The server sets the event title to "' + biz.name + ' appointment – {service} – {caller name} – {phone}" and adds the caller email as the attendee.'
+      closing
     ].join('\n\n');
   }
   return [
@@ -146,7 +149,7 @@ function systemPrompt(biz, opts = {}) {
   const canTransfer = p.capabilities ? p.capabilities.transfer !== false : true;
   const canBook = p.capabilities ? p.capabilities.book !== false : true;
   const booking = canBook
-    ? bookingInstructions(biz, tz, Boolean(opts.ownCalendar))
+    ? bookingInstructions(biz, tz, Boolean(opts.ownCalendar), opts.calendarProvider || '')
     : 'Do not book appointments; take a message instead.';
   return [
     'You are the virtual receptionist for ' + biz.name + (biz.city ? ' in ' + biz.city : '') + '.',
@@ -230,7 +233,10 @@ function assistantPayload(biz, opts = {}) {
     provider: 'openai',
     model: config.vapi.model,
     temperature: 0.4,
-    messages: [{ role: 'system', content: systemPrompt(biz, { ownCalendar }) }],
+    messages: [{ role: 'system', content: systemPrompt(biz, {
+      ownCalendar,
+      calendarProvider: opts.calendarProvider || ''
+    }) }],
     tools
   };
   if (ownCalendar) {

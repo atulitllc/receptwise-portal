@@ -39,10 +39,12 @@ async function getPhoneRow(bizId) {
 // Create or update the Vapi assistant from the saved profile ("Publish" on the Receptionist tab).
 async function publishAssistant(biz, userId) {
   vapi.assertConfigured();
-  const ownCalendar = await businessCalendar.hasOwnCalendar(biz.id);
+  const calendarProvider = await businessCalendar.calendarMode(biz);
+  const ownCalendar = Boolean(calendarProvider);
   const payload = vapi.assistantPayload(biz, {
     serverUrl: webhookUrl(),
     ownCalendar,
+    calendarProvider,
     toolsUrl: businessCalendar.toolsUrl()
   });
   const existing = await getAssistantRow(biz.id);
