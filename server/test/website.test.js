@@ -467,6 +467,7 @@ test('an empty repository is seeded with the Contents API, then the full site is
       assert.equal(body.force, false);
       return json(200, { object: { sha: 'fullsha' } });
     }
+    if (method === 'POST' && target.endsWith('/git/refs')) return json(201, { ref: body.ref });
     return json(404, { message: 'unexpected ' + method + ' ' + target });
   };
   try {
