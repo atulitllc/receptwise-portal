@@ -230,6 +230,39 @@ test('a missing zone still returns the CNAME instruction', async () => {
   }
 });
 
+test('the apex and other receptwise.com names are never attached to Pages', async () => {
+  const previousToken = config.cloudflare.token;
+  const previousAccount = config.cloudflare.accountId;
+  const previousFetch = global.fetch;
+  config.cloudflare.token = 'cf-token';
+  config.cloudflare.accountId = 'account-1';
+  const calls = [];
+  global.fetch = async (url, opts = {}) => {
+    const target = new URL(String(url));
+    const method = opts.method || 'GET';
+    const body = opts.body && typeof opts.body === 'string' ? JSON.parse(opts.body) : null;
+    calls.push({ method, path: target.pathname, body });
+    if (method === 'GET' && target.pathname.endsWith('/rw-cafe-site')) return ok({ name: 'rw-cafe-site' });
+    if (method === 'POST' && target.pathname.endsWith('/deployments')) return ok({ id: 'dep-apex' });
+    return json(500, { success: false, errors: [{ message: 'unexpected ' + method + ' ' + target.pathname }] });
+  };
+  try {
+    const apex = await cloudflare.deploy({ project: 'cafe-site', files: { 'index.html': '<p>Hi</p>' }, domain: 'receptwise.com' });
+    assert.equal(apex.status, 'deployed');
+    assert.equal(apex.domainStatus, 'blocked');
+    assert.match(apex.error, /never attached to Pages/);
+    const sub = await cloudflare.deploy({ project: 'cafe-site', files: { 'index.html': '<p>Hi</p>' }, domain: 'www.receptwise.com' });
+    assert.equal(sub.domainStatus, 'blocked');
+    assert.equal(calls.some((call) => call.path.includes('/domains')), false);
+    assert.equal(calls.some((call) => call.path.includes('/dns_records')), false);
+    assert.equal(calls.some((call) => call.body && call.body.name === 'receptwise.com'), false);
+  } finally {
+    config.cloudflare.token = previousToken;
+    config.cloudflare.accountId = previousAccount;
+    global.fetch = previousFetch;
+  }
+});
+
 test('a Cloudflare API error is stored and does not throw', async () => {
   const previousToken = config.cloudflare.token;
   const previousAccount = config.cloudflare.accountId;

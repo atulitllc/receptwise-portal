@@ -73,6 +73,11 @@
       status: "in_progress",
       note: "Generate and Regenerate upload the same site to Cloudflare Pages with Direct Upload. It needs CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID. Without them the Website tab says Cloudflare not configured and GitHub still publishes."
     },
+    domains_hosting: {
+      label: "Domains & Hosting",
+      status: "real",
+      note: "The business overview Domains card checks the customer panel, attaches a website domain to that business's Cloudflare Pages project, and keeps the Render wildcard DNS-only. It needs CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_ZONE_ID, RENDER_API_KEY, and RENDER_SERVICE_ID. Without them the card says Not configured."
+    },
     outreach: {
       label: "Outreach",
       status: "mockup",

@@ -201,7 +201,8 @@ function status() {
     transferNumber: Boolean(config.transferToNumber),
     smsEnabled: config.smsEnabled,
     github: config.github.configured,
-    cloudflare: config.cloudflare.configured
+    cloudflare: config.cloudflare.configured,
+    domains: config.domainsConfigured()
   };
 }
 

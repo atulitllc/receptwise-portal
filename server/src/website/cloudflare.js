@@ -47,6 +47,26 @@ function customDomain(biz) {
   return hostnameOf(profile.domain || profile.customDomain || wizard.domain || '');
 }
 
+// receptwise.com is a proxied placeholder that redirects to www. Attaching it (or any name under it)
+// to Pages replaces the Render wildcard and breaks customer panels. Those names stay off Pages.
+function pagesBlockedReason(hostname) {
+  const raw = String(hostname || '').trim().toLowerCase()
+    .replace(/^[a-z][a-z0-9+.-]*:\/\//, '')
+    .split('/')[0]
+    .split('?')[0]
+    .replace(/:\d+$/, '')
+    .replace(/\.$/, '');
+  const host = hostnameOf(hostname) || raw;
+  if (!host || host === 'receptwise.com' || host.endsWith('.receptwise.com')) {
+    if (!host) return '';
+    if (host === 'receptwise.com') {
+      return 'receptwise.com stays a proxied placeholder that redirects to www and is never attached to Pages.';
+    }
+    return host + ' stays on the Render panel. Names under receptwise.com are never attached to Pages.';
+  }
+  return '';
+}
+
 function notConfigured() {
   return {
     status: 'not_configured',
@@ -214,6 +234,16 @@ async function readDomain(project, hostname) {
 }
 
 async function attachDomain(project, hostname) {
+  const blocked = pagesBlockedReason(hostname);
+  if (blocked) {
+    return {
+      domain: hostnameOf(hostname) || String(hostname || '').trim().toLowerCase(),
+      domainStatus: 'blocked',
+      dns: '',
+      domainError: blocked,
+      blocked: true
+    };
+  }
   let domainStatus = 'pending';
   let domainError = '';
   try {
@@ -293,6 +323,12 @@ module.exports = {
   hashFile,
   hostnameOf,
   customDomain,
+  pagesBlockedReason,
+  dnsInstruction,
+  findZone,
+  readDomain,
+  attachDomain,
+  cfRequest: cf,
   deploy,
   manifestAndParts,
   NOT_CONFIGURED

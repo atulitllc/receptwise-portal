@@ -70,6 +70,8 @@ Session cookie plus `X-RW-Client: portal` on every write. `GET /api/health` does
 | GET | `/api/businesses/:slug/website/preview?template=` | admin. Rendered Classic or Modern page for the preview frame |
 | POST | `/api/businesses/:slug/website/generate` | admin. New public GitHub repo. Body `{ "template": "classic" }` or `"modern"`. `409` with `GITHUB_TOKEN` when the token is missing |
 | POST | `/api/businesses/:slug/website/regenerate` | admin. New branch and pull request. Does not overwrite `main` |
+| GET | `/api/businesses/:slug/domains` | admin. Panel URL, health, Pages domain status, and Render wildcard. No Cloudflare or Render writes. `message` is `Not configured` when `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_ZONE_ID`, `RENDER_API_KEY`, or `RENDER_SERVICE_ID` is missing |
+| POST | `/api/businesses/:slug/domains/recheck` | admin. Body `{ "domain": "www.cafe.example" }` saves the website domain, attaches it to the Pages project, and repairs the DNS-only `*.receptwise.com` wildcard. Never attaches `receptwise.com` |
 
 Settings pushes `GET` the assistant, store that JSON in `assistant_backups`, then `PATCH` `firstMessage` and `model` with a `<!-- receptwise:managed -->` block replaced in the system prompt. Tool ids already on the assistant are left in place.
 

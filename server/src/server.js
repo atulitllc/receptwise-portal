@@ -22,6 +22,7 @@ const calendarConnection = require('./calendarConnection');
 const businessCalendar = require('./businessCalendar');
 const voices = require('./voices');
 const websites = require('./website/service');
+const domains = require('./domains');
 const appointments = require('./appointments');
 const privacy = require('./privacy');
 const phoneForwarding = require('./phoneForwarding');
@@ -387,6 +388,12 @@ function createApp() {
   api.post('/businesses/:slug/website/generate', auth.requireAdmin, wrap(loadBiz), wrap(async (req, res) => {
     const result = await websites.generate(req.biz, (req.body || {}).template, req.user.id);
     res.status(201).json(Object.assign({ ok: true }, result));
+  }));
+  api.get('/businesses/:slug/domains', auth.requireAdmin, wrap(loadBiz), wrap(async (req, res) => {
+    res.json(await domains.status(req.biz));
+  }));
+  api.post('/businesses/:slug/domains/recheck', auth.requireAdmin, wrap(loadBiz), wrap(async (req, res) => {
+    res.json(await domains.recheck(req.biz, req.body || {}, req.user));
   }));
   api.post('/businesses/:slug/website/regenerate', auth.requireAdmin, wrap(loadBiz), wrap(async (req, res) => {
     const result = await websites.regenerate(req.biz, req.user.id, (req.body || {}).template);

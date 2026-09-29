@@ -62,9 +62,10 @@ CORS allows `https://www.receptwise.com`, `https://receptwise.com`, `https://rec
 | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `TOKEN_ENCRYPTION_KEY`, and `APP_BASE_URL` | Each business can connect its own Google Calendar. The assistant then checks availability and books on that calendar. |
 | A Cal.com API key pasted on the Bookings tab, plus `TOKEN_ENCRYPTION_KEY` and `APP_BASE_URL` | Each business can use Cal.com instead. The key is stored encrypted. The owner picks an event type, and the assistant books that event type. |
 | `GITHUB_TOKEN` (and optional `GITHUB_ORG` or `GITHUB_OWNER`, default `atulitllc`) | On the Website tab, an admin generates a public one-page site in a new GitHub repository. The account can be a user or an organization. Regenerate opens a pull request. The panel does not host the site. |
-| `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` | The same Generate and Regenerate action also uploads those files to Cloudflare Pages (Direct Upload, production branch `main`). A custom domain on the business is attached when one is saved. |
+| `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` | The same Generate and Regenerate action also uploads those files to Cloudflare Pages (Direct Upload, production branch `main`). A custom domain on the business is attached when one is saved. `receptwise.com` and any name under it are never attached to Pages. |
+| `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_ZONE_ID`, `RENDER_API_KEY`, and `RENDER_SERVICE_ID` | The business overview Domains card shows the customer panel URL, checks that host, attaches the business's own website domain to its Pages project, and keeps `*.receptwise.com` pointed at Render with DNS only. If any of these is missing the card says **Not configured**. |
 
-Without those keys the panel stays honest: phone says **Not connected**, settings save locally and are not pushed, integrations say **Needs Meta app setup**, and Trello says **Not connected**. Without `GITHUB_TOKEN`, the Website tab says **Needs GITHUB_TOKEN on Render** and does not create a repository. Without `CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_ACCOUNT_ID`, the Website tab says **Cloudflare not configured** and the GitHub publish still runs. Recording a handle does not mark the account connected. A pasted Trello key is stored encrypted and is not sent back to the browser. LinkedIn, X, TikTok, and YouTube stay **Coming soon**. Texting stays off (`SMS_ENABLED=false`).
+Without those keys the panel stays honest: phone says **Not connected**, settings save locally and are not pushed, integrations say **Needs Meta app setup**, and Trello says **Not connected**. Without `GITHUB_TOKEN`, the Website tab says **Needs GITHUB_TOKEN on Render** and does not create a repository. Without `CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_ACCOUNT_ID`, the Website tab says **Cloudflare not configured** and the GitHub publish still runs. Without `CLOUDFLARE_ZONE_ID`, `RENDER_API_KEY`, or `RENDER_SERVICE_ID`, the Domains card says **Not configured** and does not call Cloudflare or Render. Recording a handle does not mark the account connected. A pasted Trello key is stored encrypted and is not sent back to the browser. LinkedIn, X, TikTok, and YouTube stay **Coming soon**. Texting stays off (`SMS_ENABLED=false`).
 
 ## What still needs setup
 
@@ -177,8 +178,21 @@ The in-app SQL file does not restore sign-in. The admin created from `ADMIN_EMAI
 | `GITHUB_TOKEN` | yes | Creates public repos, commits the site, and opens pull requests. Classic `repo` scope, or a fine-grained token with Contents, Pull requests, and Administration on the org. Pages permission is optional. |
 | `GITHUB_ORG` | no | GitHub user or organization that owns new site repos. Default `atulitllc`. If that login is the token's own user, repos are created with `POST /user/repos`. |
 | `GITHUB_OWNER` | no | Optional override of `GITHUB_ORG`. Same meaning: the repo owner, user or organization. |
-| `CLOUDFLARE_API_TOKEN` | no | Uploads the generated site to Cloudflare Pages. Create an API token with Account → Cloudflare Pages → Edit. To create the CNAME when the domain's zone is in this account, also grant Zone → Zone → Read and Zone → DNS → Edit. |
-| `CLOUDFLARE_ACCOUNT_ID` | no | Cloudflare account id. Both this and `CLOUDFLARE_API_TOKEN` must be set. If either is blank, Cloudflare is skipped. |
+| `CLOUDFLARE_API_TOKEN` | no | Uploads the generated site to Cloudflare Pages and runs the Domains card. Token scopes: Account → Cloudflare Pages → Edit, Zone → Zone → Read, and Zone → DNS → Edit. Include the `receptwise.com` zone. A customer domain is created automatically only when that domain's zone is also covered by the token. |
+| `CLOUDFLARE_ACCOUNT_ID` | no | Cloudflare account id. Pages upload runs when this and `CLOUDFLARE_API_TOKEN` are both set. The Domains card also needs the zone id and the Render key and service id. |
+| `CLOUDFLARE_ZONE_ID` | no | Zone id for `receptwise.com`. Required for the Domains card, which keeps the `*.receptwise.com` CNAME pointed at Render and DNS-only. The apex is left alone. |
+| `RENDER_API_KEY` | no | Render API key that can read this web service and add a custom domain. Required for the Domains card. |
+| `RENDER_SERVICE_ID` | no | This web service id (`srv-…`). The Domains card adds `*.receptwise.com` there when it is missing. It never adds the apex. |
+
+## Domains and hosting
+
+On a business overview, an admin sees a Domains card.
+
+- The customer panel address is `https://<slug>.receptwise.com`. The server fetches it and shows **OK**, or the error text when the page is a Cloudflare error such as **Cloudflare 1000**.
+- The website domain (the business's own site, not a `receptwise.com` name) is attached to that business's Cloudflare Pages project, the same project Generate uses. When the domain's zone is in this Cloudflare account, the CNAME is created. Otherwise the card lists the CNAME and any verification TXT the customer must add.
+- Re-check reads verification and SSL, and repairs `*.receptwise.com`: the name is added on the Render service if it is missing, and the Cloudflare CNAME stays DNS-only and pointed at the `onrender.com` host. `receptwise.com` itself is never attached to Pages and is never sent to Render. `www` stays the proxied redirect target. Reserved names `panel`, `www`, `api`, and `sphere-admin` are not given their own records.
+
+If any of `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_ZONE_ID`, `RENDER_API_KEY`, or `RENDER_SERVICE_ID` is missing, the card says **Not configured**.
 
 ## How to create the Google Calendar OAuth client
 

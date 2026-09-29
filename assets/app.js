@@ -27,7 +27,7 @@
 
   // Keys in assets/feature-status.js. Tab dots and the bar under the tabs read this.
   var TAB_FEATURES = {
-    overview: ["phone_number", "number_search", "test_call", "calendar_connection", "email_domain", "reviews", "social", "website_generator", "billing", "texting"],
+    overview: ["phone_number", "number_search", "test_call", "calendar_connection", "email_domain", "reviews", "social", "website_generator", "domains_hosting", "billing", "texting"],
     receptionist: ["receptionist", "voice_dropdown", "test_call", "call_log"],
     bookings: ["bookings", "calendar_connection"],
     reviews: ["reviews"],
@@ -1738,7 +1738,56 @@
       '</div></section><section class="card"><div class="card-h"><h2>Activity</h2></div><div class="card-b">' + activity +
       '</div></section><section class="card"><div class="card-h"><h2>Business</h2></div><div class="card-b"><dl class="kvs">' + facts.map(function (row) {
         return "<dt>" + esc(row[0]) + "</dt><dd>" + esc(row[1]) + "</dd>";
-      }).join("") + "</dl></div></section>" + supportCard(b) + "</div></div>" + phonePanel(b);
+      }).join("") + "</dl></div></section>" + domainsCard(b) + supportCard(b) + "</div></div>" + phonePanel(b);
+  }
+
+  function domainsCard(b) {
+    if (!liveAdmin()) return "";
+    return '<section class="card" id="domains-card"><div class="card-h"><h2>Domains</h2><div>' + badge("domains_hosting") +
+      '<button class="btn btn-sm" type="button" data-action="recheck-domains" data-id="' + esc(b.id) + '">Re-check</button></div></div>' +
+      '<div class="card-b" id="domains-body"><p class="help">Checking the panel…</p></div></section>';
+  }
+
+  var domainsSeq = 0;
+  function paintDomains(data) {
+    var node = document.getElementById("domains-body");
+    if (!node || !data) return;
+    var panel = data.panel || {};
+    var site = data.website || {};
+    var renderInfo = data.render || {};
+    var health = panel.health || {};
+    var html = "";
+    if (!data.configured || data.message === "Not configured") html += "<p class='banner warn'>Not configured</p>";
+    if (panel.url) html += "<p><strong>Customer panel</strong><br><a href='" + esc(panel.url) + "' target='_blank' rel='noopener'>" + esc(panel.url) + "</a></p>";
+    if (panel.reservedNote) html += "<p class='banner warn'>" + esc(panel.reservedNote) + "</p>";
+    html += "<p class='banner " + (health.ok ? "ok" : "bad") + "'>" + esc(health.detail || "Not checked") + "</p>";
+    html += "<div class='field'><label for='domains-host'>Website domain</label><input class='ctrl' id='domains-host' value='" + esc(site.domain || "") + "' placeholder='www.cafe.example'></div>";
+    if (site.message) html += "<p>" + esc(site.message) + "</p>";
+    if (site.verification || site.ssl) {
+      html += "<dl class='kvs'><dt>Verification</dt><dd>" + esc(site.verification || "—") + "</dd><dt>SSL</dt><dd>" + esc(site.ssl || "—") + "</dd></dl>";
+    }
+    if (site.records && site.records.length) {
+      html += site.records.map(function (rec) {
+        var line = rec.type + " " + rec.name + " → " + rec.content + (rec.proxied === false ? " (DNS only)" : "");
+        return "<p class='help'><code>" + esc(line) + "</code></p>";
+      }).join("");
+    }
+    if (site.dns) html += "<p class='help'>" + esc(site.dns) + "</p>";
+    if (renderInfo.message) html += "<p class='help'>Render: " + esc(renderInfo.message) + "</p>";
+    node.innerHTML = html;
+  }
+
+  function loadDomains(b) {
+    if (!liveAdmin() || !b) return;
+    var seq = ++domainsSeq;
+    api("GET", "api/businesses/" + encodeURIComponent(b.id) + "/domains").then(function (data) {
+      if (seq !== domainsSeq) return;
+      paintDomains(data);
+    }).catch(function (err) {
+      if (seq !== domainsSeq) return;
+      var node = document.getElementById("domains-body");
+      if (node) node.innerHTML = "<p class='banner bad'>" + esc((err && err.message) || "Could not load domains.") + "</p>";
+    });
   }
 
   function supportCard(b) {
@@ -2399,6 +2448,7 @@
       '<button class="btn btn-primary" type="button" data-action="send-steps" data-id="' + esc(b.id) + '">Send owner their steps</button></div></section>' +
       '<nav class="tabs">' + tabs + "</nav>" + featureBar(TAB_FEATURES[tab]) + body + legal();
     if (tab === "website") loadSitePreview(b);
+    if (tab === "overview") loadDomains(b);
   }
 
   function noteCalendarReturn() {
@@ -3606,6 +3656,24 @@
         toast(data.synced + " calls checked.");
         currentRender();
       }).catch(function (err) { el.disabled = false; liveFail(err); });
+    },
+    "recheck-domains": function (el) {
+      var input = document.getElementById("domains-host");
+      var body = {};
+      if (input) body.domain = input.value.trim();
+      var node = document.getElementById("domains-body");
+      if (node) node.innerHTML = "<p class='help'>Checking…</p>";
+      el.disabled = true;
+      api("POST", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/domains/recheck", body).then(function (data) {
+        el.disabled = false;
+        if (data.business) replaceBiz(data.business);
+        paintDomains(data);
+        toast("Domains re-checked.");
+      }).catch(function (err) {
+        el.disabled = false;
+        liveFail(err);
+        loadDomains(findBiz(el.dataset.id));
+      });
     },
     "generate-website": function (el) {
       var b = findBiz(el.dataset.id);
