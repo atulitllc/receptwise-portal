@@ -64,6 +64,22 @@ global.fetch = async (url, opts = {}) => {
   }
   if (target.includes('AvailablePhoneNumbers')) {
     const area = params.get('AreaCode') || '503';
+    if (area === '999') return jsonRes(200, { available_phone_numbers: [] });
+    if (area === '781') {
+      const pageSize = Number(params.get('PageSize') || 10);
+      const numbers = [];
+      for (let i = 0; i < 12; i++) {
+        const line = String(2000000 + i);
+        const national = area + line;
+        numbers.push({
+          phone_number: '+1' + national,
+          friendly_name: '(' + area + ') ' + line.slice(0, 3) + '-' + line.slice(3),
+          locality: 'Waltham',
+          region: 'MA'
+        });
+      }
+      return jsonRes(200, { available_phone_numbers: numbers.slice(0, pageSize) });
+    }
     return jsonRes(200, {
       available_phone_numbers: [{
         phone_number: '+1' + area + '5550199',
@@ -850,5 +866,69 @@ describe('control panel API', () => {
     assert.equal(testBody.assistantId, 'asst-new-harbor');
     assert.equal(testBody.phoneNumberId, 'pn-new-harbor');
     assert.equal(testBody.customer.number, '+16175550144');
+  });
+
+  it('lets an admin search available numbers by area code without buying', async () => {
+    const anon = await request('GET', '/api/numbers/search?areaCode=781');
+    assert.equal(anon.status, 401);
+
+    const team = await request('POST', '/api/users', {
+      cookie,
+      body: { email: 'search-team@receptwise.example', name: 'Search Team', password: 'team-password-10', role: 'team' }
+    });
+    assert.equal(team.status, 201, team.text);
+    const teamLogin = await request('POST', '/api/auth/login', {
+      body: { email: 'search-team@receptwise.example', password: 'team-password-10' }
+    });
+    assert.equal(teamLogin.status, 200, teamLogin.text);
+    const denied = await request('GET', '/api/numbers/search?areaCode=781', { cookie: cookieFrom(teamLogin.setCookie) });
+    assert.equal(denied.status, 403);
+
+    const bad = await request('GET', '/api/numbers/search?areaCode=78', { cookie });
+    assert.equal(bad.status, 400);
+
+    const before = httpCalls.length;
+    const res = await request('GET', '/api/numbers/search?areaCode=781', { cookie });
+    assert.equal(res.status, 200, res.text);
+    assert.equal(res.json.numbers.length, 10);
+    assert.equal(res.json.numbers[0].e164, '+17812000000');
+    assert.equal(res.json.numbers[0].friendly, '(781) 200-0000');
+    assert.equal(res.json.numbers[0].locality, 'Waltham');
+    const calls = httpCalls.slice(before);
+    const searchCall = calls.find((c) => c.url.includes('AvailablePhoneNumbers'));
+    assert.ok(searchCall);
+    assert.equal(searchCall.method, 'GET');
+    assert.equal(new URL(searchCall.url).searchParams.get('AreaCode'), '781');
+    assert.equal(new URL(searchCall.url).searchParams.get('PageSize'), '10');
+    assert.equal(new URL(searchCall.url).searchParams.get('VoiceEnabled'), 'true');
+    assert.equal(calls.some((c) => c.method === 'POST' && c.url.includes('IncomingPhoneNumbers')), false);
+
+    const empty = await request('GET', '/api/numbers/search?areaCode=999', { cookie });
+    assert.equal(empty.status, 200, empty.text);
+    assert.deepEqual(empty.json.numbers, []);
+  });
+
+  it('provisions the e164 the admin picked and does not search first', async () => {
+    const created = await request('POST', '/api/businesses', {
+      cookie,
+      body: { name: 'Waltham Books', category: 'Retail', city: 'Waltham, MA', timezone: 'Eastern Time' }
+    });
+    assert.equal(created.status, 201, created.text);
+    const slug = created.json.business.id;
+    httpCalls.length = 0;
+    const chosen = '+17812000999';
+    const bought = await request('POST', '/api/businesses/' + slug + '/numbers/provision', {
+      cookie,
+      body: { e164: chosen }
+    });
+    assert.equal(bought.status, 201, bought.text);
+    assert.equal(bought.json.e164, chosen);
+    assert.equal(bought.json.pretty, '(781) 200-0999');
+    assert.equal(bought.json.business.phone.aiNumber, '(781) 200-0999');
+    assert.equal(httpCalls.some((c) => c.url.includes('AvailablePhoneNumbers')), false);
+    const twilioBuy = httpCalls.find((c) => c.method === 'POST' && c.url.includes('IncomingPhoneNumbers.json'));
+    assert.ok(twilioBuy);
+    assert.equal(new URLSearchParams(twilioBuy.opts.body).get('PhoneNumber'), chosen);
+    assert.equal(httpCalls.filter((c) => c.method === 'POST' && c.url.includes('IncomingPhoneNumbers.json')).length, 1);
   });
 });

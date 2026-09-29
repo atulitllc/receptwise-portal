@@ -82,7 +82,11 @@
       forwardType: "missed",
       businessNumber: "",
       areaCode: window.RW_LIVE ? "781" : "415",
-      chosenNumber: window.RW_LIVE ? "(781) 555-0148" : "(415) 555-0148",
+      chosenNumber: "",
+      chosenE164: "",
+      numberOptions: [],
+      numberStatus: "idle",
+      numberError: "",
       lookupNote: "",
       clientDone: false,
       testStatus: "idle",
@@ -146,6 +150,25 @@
   // Live mode: the Render server injects window.RW_LIVE (signed-in user + integration status)
   // and real businesses into data.js. On GitHub Pages RW_LIVE is undefined and the demo runs as before.
   var LIVE = !!window.RW_LIVE;
+  var numberPick = { bizId: "", areaCode: "", status: "idle", options: [], error: "", chosenE164: "" };
+
+  function isAdmin() {
+    return !!(window.RW_LIVE && window.RW_LIVE.user && window.RW_LIVE.user.role === "admin");
+  }
+
+  function missingNumberKeys() {
+    var ints = (window.RW_LIVE && window.RW_LIVE.integrations) || {};
+    var missing = [];
+    if (!ints.twilio) missing.push("TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN");
+    if (!ints.vapi) missing.push("VAPI_API_KEY");
+    return missing;
+  }
+
+  function emptyNumberCopy(area) {
+    var nearby = ["781", "339", "617"].filter(function (code) { return code !== String(area || ""); });
+    if (nearby.length < 2) nearby = ["339", "617"];
+    return "No numbers available for " + area + ", try a nearby area code like " + nearby[0] + " or " + nearby[1];
+  }
 
   function api(method, url, body) {
     return fetch(url, {
@@ -292,16 +315,12 @@
     return plans[1] || plans[0];
   }
 
-  function candidates(area) {
-    var a = String(area || "").replace(/\D/g, "").slice(0, 3);
-    if (a.length < 3) a = "415";
-    return ["(" + a + ") 555-0148", "(" + a + ") 555-0162", "(" + a + ") 555-0190"];
-  }
-
   function forwardingHelp(carrier, forwardType, aiNumber) {
     var n = digits(aiNumber);
     var missing = n.length < 10;
-    if (missing) n = "4155550148";
+    if (missing) {
+      return { lines: [], off: [], note: "Choose an AI number before sending these codes.", warn: "", number: "", missing: true };
+    }
     var lines = [];
     var off = [];
     var note = "Dial this from the business phone itself, then place the test call.";
@@ -353,7 +372,7 @@
   }
 
   function codeBlock(help, alt) {
-    if (LIVE && help.missing) return '<div class="note calm">Forwarding codes appear here once the AI number is set up.</div>';
+    if (help.missing) return '<div class="note calm">Forwarding codes appear here once an AI number is chosen.</div>';
     var html = '<div class="code-card"><strong>Dial from the business phone</strong>';
     html += '<p class="help">AI number used in these codes: ' + esc(help.number) + "</p>";
     help.lines.forEach(function (line) {
@@ -690,12 +709,37 @@
     });
   }
 
-  function syncNumber() {
+  function syncAreaCode() {
     var area = String(wizard.areaCode || "").replace(/\D/g, "").slice(0, 3);
-    if (area.length < 3) return;
     wizard.areaCode = area;
-    var list = candidates(area);
-    if (digits(wizard.chosenNumber).slice(0, 3) !== area) wizard.chosenNumber = list[0];
+    var listed = wizard.numberOptions && wizard.numberOptions[0] ? digits(wizard.numberOptions[0].e164).slice(0, 3) : "";
+    if (listed && area && listed !== area) {
+      wizard.numberOptions = [];
+      wizard.numberStatus = "idle";
+      wizard.numberError = "";
+      wizard.chosenE164 = "";
+      wizard.chosenNumber = "";
+      return;
+    }
+    var chosenArea = digits(wizard.chosenE164 || wizard.chosenNumber).slice(0, 3);
+    if (chosenArea && area && chosenArea !== area) {
+      wizard.chosenE164 = "";
+      wizard.chosenNumber = "";
+    }
+  }
+
+  function numberResultBlock(state, pickAction, bizId) {
+    if (state.status === "loading") return '<p class="help">Looking up numbers for ' + esc(state.areaCode) + "…</p>";
+    if (state.status === "error") return '<p class="error">' + esc(state.error || "Number search failed.") + "</p>";
+    if (state.status === "empty") return '<p class="help">' + esc(emptyNumberCopy(state.areaCode)) + "</p>";
+    if (!state.options || !state.options.length) return '<p class="help">Enter an area code and choose Show numbers.</p>';
+    return '<div class="field"><label>Available numbers</label><div class="choice-grid">' + state.options.map(function (num) {
+      var title = num.friendly || pretty(digits(num.e164)) || num.e164;
+      var where = [num.locality, num.region].filter(Boolean).join(", ") || "Local voice";
+      var on = state.chosenE164 === num.e164 ? " on" : "";
+      return '<button class="choice' + on + '" type="button" data-action="' + pickAction + '" data-field="chosenE164" data-value="' + esc(num.e164) + '" data-label="' + esc(title) + '"' +
+        (bizId ? ' data-id="' + esc(bizId) + '"' : "") + "><b>" + esc(title) + "</b><span>" + esc(where) + " · " + esc(num.e164) + "</span></button>";
+    }).join("") + "</div></div>";
   }
 
   function ensureGreeting() {
@@ -728,7 +772,12 @@
       var name = created ? created.name : wizard.name;
       return '<h2>' + esc(name) + ' is in the panel</h2><p class="sub">These steps are simulated in the prototype. The business stays in this browser until you close the tab.</p>' +
         '<div class="banner ok" style="margin-top:12px">Welcome note queued for the owner, with one link per step they still have to do.</div><ul>' +
-        "<li>Receptionist created, with the virtual-assistant disclosure in the greeting</li><li>Number " + esc(wizard.chosenNumber) + " attached</li>" +
+        "<li>Receptionist created, with the virtual-assistant disclosure in the greeting</li><li>" +
+        (LIVE
+          ? (wizard.chosenNumber
+            ? esc(wizard.chosenNumber) + " is saved. Buy and connect on Overview purchases it (about $1.15 a month). Nothing has been bought yet."
+            : "No AI number chosen yet. Search on Overview, then Buy and connect.")
+          : "Number search works in the live control panel.") + "</li>" +
         "<li>Booking page started</li><li>Texting registration held until the final company tax ID is on file</li>" +
         "<li>Email sender drafted</li><li>Website draft started</li><li>Billing customer created" + (wizard.pilot ? " · pilot, setup fee waived" : "") + "</li></ul>" +
         '<div class="head-actions"><a class="btn btn-primary" href="client.html?id=' + encodeURIComponent(wizard.createdId) + '">Open the business</a>' +
@@ -763,18 +812,34 @@
         '<label class="setting-row"><span><strong>Pilot business</strong><div class="help">Setup fee of $299 is waived, and the first 30 days are $0.</div></span><input data-field="pilot" type="checkbox"' + (wizard.pilot ? " checked" : "") + "></label>" +
         '<p class="help">Size tiers are the working proposal: Solo to Starter, Small to Growth, Growing to Pro. Setup is $299 unless this is a pilot.</p>';
     } else if (wizard.step === 2) {
-      var numbers = candidates(wizard.areaCode);
+      var numberKeys = LIVE ? missingNumberKeys() : [];
       body = '<div class="choice-grid">' +
         choice("phoneMode", "new", "New number", "Callers use a number we buy. Nothing to forward.") +
         choice("phoneMode", "forward", "Forward the current number", "The number on the door stays. Calls roll to the receptionist.") +
         choice("phoneMode", "port", "Move the number to us", "Porting takes days. Forwarding is the usual start.") +
         "</div>" +
         '<div class="field"><label>Area code</label><div class="inline">' + input("areaCode", wizard.areaCode, "415") +
-        '<button class="btn" type="button" data-action="show-numbers">Show numbers</button></div><div class="help">Used to list local numbers.</div></div>' +
-        (LIVE ? '<div class="note calm">Live mode: these numbers are examples. The real number is bought from the business page (Overview > AI number) after the business is created.</div>' : "") +
-        '<div class="field"><label>AI receptionist number</label><div class="choice-grid">' + numbers.map(function (num) {
-          return choice("chosenNumber", num, num, "Local · voice");
-        }).join("") + "</div></div>";
+        ((!LIVE || (isAdmin() && !numberKeys.length))
+          ? '<button class="btn" type="button" data-action="show-numbers"' + (wizard.numberStatus === "loading" ? " disabled" : "") + ">Show numbers</button>"
+          : "") +
+        "</div>" +
+        '<div class="help">Used to list local numbers.</div></div>';
+      if (!LIVE) {
+        body += '<div class="note calm">Number search works in the live control panel.</div>';
+      } else if (numberKeys.length) {
+        body += "<p class='banner warn'>Not connected yet. Add " + esc(numberKeys.join(" and ")) + " on the server, then come back.</p>";
+      } else if (!isAdmin()) {
+        body += '<div class="note">Admins search available numbers. You can continue, and an admin can buy one from Overview.</div>';
+      } else {
+        body += '<div class="note calm">Searching does not buy a number. It is purchased only when you choose Buy and connect on the business Overview, and a local number costs about $1.15 a month.</div>' +
+          numberResultBlock({
+            status: wizard.numberStatus,
+            error: wizard.numberError,
+            areaCode: wizard.areaCode,
+            options: wizard.numberOptions,
+            chosenE164: wizard.chosenE164
+          }, "pick", "");
+      }
       if (wizard.phoneMode === "forward") {
         body += field("Current business number", input("businessNumber", wizard.businessNumber, "(503) 555-0172")) +
           '<div class="grid-2"><div class="field"><label>Phone company</label><select class="ctrl" data-field="carrier">' +
@@ -793,7 +858,7 @@
           field("Account number", input("taxId", wizard.taxId, "From a recent bill")) +
           '<div class="field"><label>Recent bill</label><input class="ctrl" type="file" data-action="bill-file"></div>';
       } else {
-        body += '<div class="note calm">Callers will use ' + esc(wizard.chosenNumber || "the number you pick") + ". Update the website, Google listing, and window once the test call passes.</div>";
+        body += '<div class="note calm">Callers will use ' + esc(wizard.chosenNumber || "the number you pick") + ". Nothing is bought until Buy and connect. Update the website, Google listing, and window once the test call passes.</div>";
       }
     } else if (wizard.step === 3) {
       var target = wizard.phoneMode === "forward" ? (wizard.businessNumber || "the business number") : wizard.chosenNumber;
@@ -870,7 +935,12 @@
         ["Type", wizard.category || "Not set"],
         ["Tier and plan", wizard.tier + " · " + wizard.plan + " · " + money(wizard.pilot ? 0 : (plan ? plan.price : 0)) + (wizard.pilot ? " pilot" : "/mo")],
         ["Setup fee", wizard.pilot ? "$0 · waived" : "$299"],
-        ["Phone", wizard.phoneMode === "new" ? "New number " + wizard.chosenNumber : wizard.phoneMode === "port" ? "Port " + (wizard.businessNumber || "") : "Forward " + (wizard.businessNumber || "current number") + " to " + wizard.chosenNumber],
+        ["Phone", (function () {
+          var chosen = wizard.chosenNumber || (LIVE ? "not chosen yet" : "search on the live control panel");
+          if (wizard.phoneMode === "new") return "New number " + chosen;
+          if (wizard.phoneMode === "port") return "Port " + (wizard.businessNumber || "");
+          return "Forward " + (wizard.businessNumber || "current number") + " to " + chosen;
+        })()],
         ["Test call", wizard.testStatus === "ok" ? "Confirmed" : wizard.testStatus === "miss" ? "Not working" : "Not run"],
         ["Calendar", wizard.calendar],
         ["Voice", wizard.voice + (wizard.spanish ? " · English and Spanish" : " · English")],
@@ -939,7 +1009,7 @@
 
   function buildBusiness() {
     ensureGreeting();
-    syncNumber();
+    syncAreaCode();
     var plan = planByName(wizard.plan);
     var id = slug(wizard.name.trim());
     var textReady = wizard.legalName.trim() && wizard.taxId.trim();
@@ -948,7 +1018,9 @@
     var forwardDetail = "Waiting on the client to dial the code.";
     if (wizard.phoneMode === "new") {
       forwardStatus = "connected";
-      forwardDetail = "Not used. Callers use the new number " + wizard.chosenNumber + ".";
+      forwardDetail = wizard.chosenNumber
+        ? "Not used. Callers use the new number " + wizard.chosenNumber + "."
+        : "Not used. Callers will use the new number once it is bought.";
     } else if (wizard.phoneMode === "port") {
       forwardDetail = "Port packet started. Forwarding is still the faster path if they want calls live this week.";
     } else if (wizard.testStatus === "ok") {
@@ -994,7 +1066,8 @@
         carrier: wizard.carrier,
         forwardType: wizard.forwardType,
         businessNumber: wizard.businessNumber,
-        aiNumber: wizard.chosenNumber,
+        requestedE164: wizard.chosenE164 || "",
+        aiNumber: wizard.chosenNumber || "",
         tests: wizard.testStatus === "idle" ? [] : [{ when: "Just now", result: wizard.testStatus === "ok" ? "Confirmed" : "Not working", note: wizard.testNote || "Run from the add-business wizard." }]
       },
       greeting: wizard.greeting,
@@ -1018,7 +1091,9 @@
       suppressed: 0,
       activity: [{ time: "Just now", text: "Added in the control panel." }],
       checklist: makeChecklist({
-        number: { status: "connected", detail: wizard.chosenNumber + " is attached to the receptionist.", owner: "Team" },
+        number: wizard.chosenE164
+          ? { status: "pending", detail: wizard.chosenNumber + " is selected. Buy and connect on Overview purchases it for about $1.15 a month.", owner: "Team" }
+          : { status: "pending", detail: LIVE ? "No AI number yet. Search on Overview, then Buy and connect." : "Number search works in the live control panel.", owner: "Team" },
         test: { status: testStatus, detail: testStatus === "connected" ? "Greeting matched." : testStatus === "action" ? "Test call did not match." : "Test call has not been run.", owner: "Team" },
         forwarding: { status: forwardStatus, detail: forwardDetail, owner: wizard.phoneMode === "forward" ? "Client" : "Team", next: forwardStatus !== "connected" },
         calendar: { status: "pending", detail: wizard.calendar === "cal" ? "cal.com page drafted. Connect a calendar before going live." : "Sign-in link is ready to send.", owner: "Client" },
@@ -1089,7 +1164,10 @@
     if (item.key === "gbp" || item.key === "social") return '<button class="btn btn-sm" type="button" data-action="send-link" data-id="' + id + '" data-kind="social">Send connect link</button>';
     if (item.key === "website") return '<button class="btn btn-sm" type="button" data-action="check-domain" data-id="' + id + '">Check domain</button>';
     if (item.key === "billing") return '<button class="btn btn-sm" type="button" data-action="payment-link" data-id="' + id + '">Send payment link</button>';
-    if (item.key === "number") return '<button class="btn btn-sm" type="button" data-action="call-receptionist" data-id="' + id + '">Call the number</button>';
+    if (item.key === "number") {
+      if (LIVE && !(b.phone && b.phone.aiNumber)) return aiNumberStep(b);
+      return '<button class="btn btn-sm" type="button" data-action="call-receptionist" data-id="' + id + '">Call the number</button>';
+    }
     return "";
   }
 
@@ -1412,6 +1490,7 @@
     pick: function (el) {
       readWizard();
       wizard[el.dataset.field] = el.dataset.value;
+      if (el.dataset.field === "chosenE164") wizard.chosenNumber = el.dataset.label || el.dataset.value || "";
       if (el.dataset.field === "tier") {
         wizard.plan = { Solo: "Starter", Small: "Growth", Growing: "Pro" }[el.dataset.value] || wizard.plan;
       }
@@ -1421,8 +1500,8 @@
     },
     "show-numbers": function () {
       readWizard();
-      syncNumber();
-      toast("Numbers updated for area code " + wizard.areaCode + ".");
+      syncAreaCode();
+      toast("Number search works in the live control panel.");
       renderWizard();
     },
     "lookup-carrier": function () {
@@ -1436,7 +1515,11 @@
     },
     "send-forward-instructions": function () {
       readWizard();
-      syncNumber();
+      syncAreaCode();
+      if (digits(wizard.chosenNumber).length < 10) {
+        toast("Choose an AI number before sending forwarding codes.");
+        return;
+      }
       var text = instructionText(wizard.carrier, wizard.forwardType, wizard.chosenNumber, wizard.name || "this business");
       openModal("Instructions for the client", "<p>This is the message we would text. They dial it from the business phone.</p><pre class='code' style='white-space:pre-wrap'>" + esc(text) + "</pre>",
         '<button class="btn" type="button" data-action="close-modal">Close</button><button class="btn btn-primary" type="button" data-action="copy-code" data-code="' + esc(text) + '">Copy message</button>');
@@ -1488,11 +1571,11 @@
     },
     next: function () {
       readWizard();
-      syncNumber();
+      syncAreaCode();
       wizard.error = "";
       if (wizard.step === 0 && !wizard.name.trim()) wizard.error = "Enter the business name.";
       else if (wizard.step === 0 && !wizard.category) wizard.error = "Choose a business type.";
-      else if (wizard.step === 2 && !wizard.chosenNumber) wizard.error = "Choose the AI receptionist number.";
+      else if (wizard.step === 2 && LIVE && wizard.numberOptions && wizard.numberOptions.length && !wizard.chosenE164) wizard.error = "Pick one of the available numbers. It is not bought until Buy and connect.";
       else if (wizard.step === 2 && wizard.phoneMode === "forward" && digits(wizard.businessNumber).length < 10) wizard.error = "Enter the 10-digit business number to forward.";
       if (wizard.error) { renderWizard(); return; }
       if (wizard.step === 1 && wizard.multi) {
@@ -1852,24 +1935,50 @@
     }
   };
 
+  function ensureNumberPick(b) {
+    if (!b) return;
+    if (numberPick.bizId === b.id) return;
+    var requested = (b.phone && b.phone.requestedE164) || "";
+    var area = digits(requested).slice(0, 3) || "781";
+    numberPick = {
+      bizId: b.id,
+      areaCode: area,
+      status: requested ? "ready" : "idle",
+      options: requested ? [{ e164: requested, friendly: pretty(digits(requested)) || requested, locality: "Saved choice", region: "" }] : [],
+      error: "",
+      chosenE164: requested
+    };
+  }
+
+  function refreshNumbers(b) {
+    if (currentRender) currentRender();
+    var back = document.getElementById("modal-back");
+    if (back && back.classList.contains("open") && b) numberModal(b);
+  }
+
+  function aiNumberStep(b) {
+    ensureNumberPick(b);
+    var missing = missingNumberKeys();
+    if (missing.length) {
+      return "<p class='banner warn'>Not connected yet. Add " + esc(missing.join(" and ")) + " on the server, then come back.</p>";
+    }
+    if (!isAdmin()) return '<p class="help">Admins only.</p>';
+    var loading = numberPick.status === "loading";
+    return '<div class="number-search"><p class="help">Searching does not buy a number. It is purchased only when you choose Buy and connect, and a local number costs about $1.15 a month. Texting stays off.</p>' +
+      '<div class="field"><label>Area code</label><div class="inline"><input class="ctrl" data-number-area value="' + esc(numberPick.areaCode || "") + '" placeholder="781">' +
+      '<button class="btn" type="button" data-action="show-biz-numbers" data-id="' + esc(b.id) + '"' + (loading ? " disabled" : "") + ">Show numbers</button></div></div>" +
+      numberResultBlock(numberPick, "pick-biz-number", b.id) +
+      '<button class="btn btn-primary" type="button" data-action="live-provision" data-id="' + esc(b.id) + '"' + (loading ? " disabled" : "") + ">Buy and connect</button></div>";
+  }
+
   function numberModal(b) {
-    var ints = (window.RW_LIVE && window.RW_LIVE.integrations) || {};
-    var admin = window.RW_LIVE && window.RW_LIVE.user && window.RW_LIVE.user.role === "admin";
     if (b.phone && b.phone.aiNumber) {
       openModal("Receptionist test call", "<p>The receptionist will call you from <strong>" + esc(b.phone.aiNumber) + "</strong>. Answer to hear the greeting.</p>" +
         '<div class="field"><label for="test-to">Your phone</label><input class="ctrl" id="test-to" placeholder="(617) 555-0100"></div>',
         '<button class="btn" type="button" data-action="close-modal">Cancel</button><button class="btn btn-primary" type="button" data-action="live-test-call" data-id="' + esc(b.id) + '">Call me</button>');
       return;
     }
-    var missing = [];
-    if (!ints.twilio) missing.push("TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN");
-    if (!ints.vapi) missing.push("VAPI_API_KEY");
-    openModal("Get an AI number", missing.length
-      ? "<p class='banner warn'>Not connected yet. Add " + esc(missing.join(" and ")) + " on the server, then come back.</p>"
-      : "<p>Buys a local voice number from Twilio ($1.15/mo), connects it to this receptionist, and publishes the greeting. Texting stays off.</p>" +
-        '<div class="field"><label for="area-code">Area code</label><input class="ctrl" id="area-code" placeholder="781" maxlength="3"></div>',
-      '<button class="btn" type="button" data-action="close-modal">Close</button>' +
-      (missing.length ? "" : admin ? '<button class="btn btn-primary" type="button" data-action="live-provision" data-id="' + esc(b.id) + '">Buy and connect</button>' : "<span class='help'>Admins only.</span>"));
+    openModal("Get an AI number", aiNumberStep(b), '<button class="btn" type="button" data-action="close-modal">Close</button>');
   }
 
   var liveActions = {
@@ -1942,14 +2051,100 @@
       var b = findBiz(el.dataset.id);
       if (b) numberModal(b);
     },
+    "show-numbers": function () {
+      readWizard();
+      syncAreaCode();
+      if (!isAdmin()) {
+        wizard.numberStatus = "error";
+        wizard.numberError = "Admins only.";
+        renderWizard();
+        return;
+      }
+      var missing = missingNumberKeys();
+      if (missing.length) {
+        wizard.numberStatus = "error";
+        wizard.numberError = "Not connected yet. Add " + missing.join(" and ") + ".";
+        renderWizard();
+        return;
+      }
+      if (String(wizard.areaCode || "").length !== 3) {
+        wizard.numberStatus = "error";
+        wizard.numberError = "Enter a 3-digit area code.";
+        renderWizard();
+        return;
+      }
+      wizard.numberStatus = "loading";
+      wizard.numberError = "";
+      wizard.numberOptions = [];
+      renderWizard();
+      api("GET", "api/numbers/search?areaCode=" + encodeURIComponent(wizard.areaCode)).then(function (data) {
+        var list = data.numbers || [];
+        wizard.numberOptions = list;
+        wizard.numberStatus = list.length ? "ready" : "empty";
+        if (wizard.chosenE164 && !list.some(function (n) { return n.e164 === wizard.chosenE164; })) {
+          wizard.chosenE164 = "";
+          wizard.chosenNumber = "";
+        }
+        renderWizard();
+      }).catch(function (err) {
+        wizard.numberStatus = "error";
+        wizard.numberError = (err && err.message) || "Number search failed.";
+        wizard.numberOptions = [];
+        renderWizard();
+      });
+    },
+    "show-biz-numbers": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      ensureNumberPick(b);
+      var root = el.closest(".number-search");
+      var box = root ? root.querySelector("[data-number-area]") : null;
+      var area = String((box && box.value) || "").replace(/\D/g, "").slice(0, 3);
+      numberPick.areaCode = area;
+      if (area.length !== 3) {
+        numberPick.status = "error";
+        numberPick.error = "Enter a 3-digit area code.";
+        refreshNumbers(b);
+        return;
+      }
+      numberPick.status = "loading";
+      numberPick.error = "";
+      numberPick.options = [];
+      refreshNumbers(b);
+      api("GET", "api/numbers/search?areaCode=" + encodeURIComponent(area)).then(function (data) {
+        var list = data.numbers || [];
+        numberPick.options = list;
+        numberPick.status = list.length ? "ready" : "empty";
+        if (numberPick.chosenE164 && !list.some(function (n) { return n.e164 === numberPick.chosenE164; })) numberPick.chosenE164 = "";
+        refreshNumbers(b);
+      }).catch(function (err) {
+        numberPick.status = "error";
+        numberPick.error = (err && err.message) || "Number search failed.";
+        numberPick.options = [];
+        refreshNumbers(b);
+      });
+    },
+    "pick-biz-number": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      ensureNumberPick(b);
+      numberPick.chosenE164 = el.dataset.value || "";
+      refreshNumbers(b);
+    },
     "live-provision": function (el) {
-      var box = document.getElementById("area-code");
-      var area = box ? box.value.replace(/\D/g, "").slice(0, 3) : "";
+      var b = findBiz(el.dataset.id);
+      ensureNumberPick(b);
+      var chosen = numberPick.bizId === el.dataset.id ? numberPick.chosenE164 : "";
+      if (!chosen) {
+        toast("Pick a number first. Searching does not buy one.");
+        return;
+      }
       el.disabled = true;
-      api("POST", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/numbers/provision", area ? { areaCode: area } : {}).then(function (data) {
+      api("POST", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/numbers/provision", { e164: chosen }).then(function (data) {
         replaceBiz(data.business);
         closeModal();
-        toast(data.pretty + " is live.");
+        numberPick = { bizId: "", areaCode: "", status: "idle", options: [], error: "", chosenE164: "" };
+        toast((data.pretty || chosen) + " is live.");
         currentRender();
       }).catch(function (err) { el.disabled = false; liveFail(err); });
     },

@@ -118,6 +118,13 @@ function createApp() {
 
   api.get('/integrations/status', auth.requireUser, (_req, res) => res.json(provisioning.status()));
 
+  // Search only. Buying stays on POST /businesses/:slug/numbers/provision.
+  api.get('/numbers/search', auth.requireAdmin, wrap(async (req, res) => {
+    const areaCode = String(req.query.areaCode || '').replace(/\D/g, '').slice(0, 3);
+    if (!/^[2-9]\d{2}$/.test(areaCode)) return res.status(400).json({ error: 'Enter a 3-digit area code.' });
+    res.json({ numbers: await provisioning.searchNumbers(areaCode) });
+  }));
+
   api.get('/businesses', auth.requireUser, wrap(async (_req, res) => res.json({ businesses: await businesses.listUi() })));
   api.post('/businesses', auth.requireUser, wrap(async (req, res) => {
     const biz = await businesses.createBusiness(req.body || {}, req.user.id);
