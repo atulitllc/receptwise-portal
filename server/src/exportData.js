@@ -144,7 +144,7 @@ function toSql(data) {
     sql += insert('calls', ['id', 'business_id', 'vapi_call_id', 'direction', 'from_number', 'to_number', 'status', 'started_at', 'ended_at', 'duration_sec', 'ended_reason', 'outcome', 'summary', 'caller_name', 'caller_email', 'caller_business', 'call_type', 'booking_confirmed', 'booked_start', 'answered', 'structured', 'recording_url', 'created_at'], call);
   });
   data.bookings.forEach((booking) => {
-    sql += insert('bookings', ['id', 'business_id', 'call_id', 'starts_at', 'customer', 'service', 'source', 'status', 'google_event_id', 'created_at'], booking);
+    sql += insert('bookings', ['id', 'business_id', 'call_id', 'starts_at', 'ends_at', 'customer', 'phone', 'email', 'service', 'source', 'status', 'google_event_id', 'timezone', 'created_at', 'updated_at'], booking);
   });
   data.activity.forEach((item) => {
     sql += insert('audit_log', ['id', 'created_at', 'action', 'detail', 'business_id'], {

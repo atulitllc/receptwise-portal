@@ -122,8 +122,23 @@ function buildVoice(provider, voiceId, model) {
   return voice;
 }
 
+function bookingInstructions(biz, tz, ownCalendar) {
+  if (ownCalendar) {
+    return [
+      'Booking: you can book appointments. Whenever a caller wants to book, schedule, or set up an appointment, you must use check_availability and then book_appointment. Never tell callers you can\'t book, and never turn a booking request into a callback request. Take a callback message only if the caller doesn\'t want to book a time. Collect the caller\'s name, phone number, service, and email. Confirm the day, the date, and the time before booking. Never say it\'s booked unless book_appointment confirmed it. Only book inside business hours. Do not double-book.',
+      'Time zones: ' + offsetGuidance(tz) + ' check_availability and book_appointment results include local time in ' + tz + ' (startLocal, endLocal, startLabel, and endLabel). Speak those local times. Still send every startDateTime and endDateTime with the offset. Never send times without an offset or with Z.',
+      'Pass service, name, phone, and email to book_appointment. The server sets the event title to "' + biz.name + ' appointment – {service} – {caller name} – {phone}" and adds the caller email as the attendee.'
+    ].join('\n\n');
+  }
+  return [
+    'Booking: you can book appointments. Whenever a caller wants to book, schedule, or set up an appointment, you must use check_availability and then the booking tool. Never tell callers you can\'t book, and never turn a booking request into a callback request. Take a callback message only if the caller doesn\'t want to book a time. Collect the caller\'s name, phone number, service, and email. Confirm the day, the date, and the time before booking. Never say it\'s booked unless the booking tool confirmed it. Only book inside business hours. Do not double-book.',
+    'Time zones: ' + offsetGuidance(tz) + ' check_availability results come back in UTC. Convert them to ' + tz + ' local time before comparing or speaking.',
+    'The booking event title (summary) must be "' + biz.name + ' appointment – {service} – {caller name} – {phone}" with real values for the service, caller name, and phone. attendees = [caller email].'
+  ].join('\n\n');
+}
+
 // Builds the receptionist's system prompt from the business profile stored in Postgres.
-function systemPrompt(biz) {
+function systemPrompt(biz, opts = {}) {
   const p = biz.profile || {};
   const tz = biz.timezone || 'America/New_York';
   const services = list(p.services, (s) => '- ' + [s.name, s.length, s.price].filter(Boolean).join(' · '));
@@ -131,11 +146,7 @@ function systemPrompt(biz) {
   const canTransfer = p.capabilities ? p.capabilities.transfer !== false : true;
   const canBook = p.capabilities ? p.capabilities.book !== false : true;
   const booking = canBook
-    ? [
-      'Booking: you can book appointments. Whenever a caller wants to book, schedule, or set up an appointment, you must use check_availability and then the booking tool. Never tell callers you can\'t book, and never turn a booking request into a callback request. Take a callback message only if the caller doesn\'t want to book a time. Collect the caller\'s name, phone number, service, and email. Confirm the day, the date, and the time before booking. Never say it\'s booked unless the booking tool confirmed it. Only book inside business hours. Do not double-book.',
-      'Time zones: ' + offsetGuidance(tz) + ' check_availability results come back in UTC. Convert them to ' + tz + ' local time before comparing or speaking.',
-      'The booking event title (summary) must be "' + biz.name + ' appointment – {service} – {caller name} – {phone}" with real values for the service, caller name, and phone. attendees = [caller email].'
-    ].join('\n\n')
+    ? bookingInstructions(biz, tz, Boolean(opts.ownCalendar))
     : 'Do not book appointments; take a message instead.';
   return [
     'You are the virtual receptionist for ' + biz.name + (biz.city ? ' in ' + biz.city : '') + '.',
@@ -158,9 +169,55 @@ function systemPrompt(biz) {
   ].filter(Boolean).join('\n\n');
 }
 
+function calendarFunctionTool(name, description, properties, required, toolsUrl) {
+  const tool = {
+    type: 'function',
+    function: {
+      name,
+      description,
+      parameters: { type: 'object', properties, required }
+    },
+    server: { url: toolsUrl }
+  };
+  if (config.vapi.webhookSecret) tool.server.headers = { 'X-Vapi-Secret': config.vapi.webhookSecret };
+  return tool;
+}
+
+function ownCalendarTools(toolsUrl) {
+  return [
+    calendarFunctionTool(
+      'check_availability',
+      'Check whether a time range is free on this business calendar. Results include local time in the business time zone.',
+      {
+        startDateTime: { type: 'string', description: 'Range start as ISO 8601 with a numeric offset, never Z. Example: 2026-10-06T10:00:00-04:00.' },
+        endDateTime: { type: 'string', description: 'Range end as ISO 8601 with a numeric offset, never Z. Defaults to 30 minutes after the start when omitted.' }
+      },
+      ['startDateTime'],
+      toolsUrl
+    ),
+    calendarFunctionTool(
+      'book_appointment',
+      'Book a confirmed appointment on this business calendar after check_availability says the time is free. The server writes the event title and checks for conflicts again.',
+      {
+        startDateTime: { type: 'string', description: 'Appointment start as ISO 8601 with a numeric offset, never Z.' },
+        endDateTime: { type: 'string', description: 'Appointment end as ISO 8601 with a numeric offset, never Z. Defaults to 30 minutes after the start when omitted.' },
+        name: { type: 'string', description: 'Caller name.' },
+        phone: { type: 'string', description: 'Caller phone number.' },
+        email: { type: 'string', description: 'Caller email. This becomes the calendar attendee.' },
+        service: { type: 'string', description: 'Service being booked. Defaults to appointment.' }
+      },
+      ['startDateTime', 'name', 'phone', 'email'],
+      toolsUrl
+    )
+  ];
+}
+
 function assistantPayload(biz, opts = {}) {
   const p = biz.profile || {};
   const transferTo = toE164(p.transfer) || toE164(config.transferToNumber);
+  const canBook = !p.capabilities || p.capabilities.book !== false;
+  const toolsUrl = opts.toolsUrl || (config.appBaseUrl ? config.appBaseUrl + '/webhooks/vapi/tools' : '');
+  const ownCalendar = Boolean(opts.ownCalendar) && Boolean(toolsUrl) && canBook;
   const tools = [];
   if (transferTo && (!p.capabilities || p.capabilities.transfer !== false)) {
     tools.push({
@@ -168,14 +225,18 @@ function assistantPayload(biz, opts = {}) {
       destinations: [{ type: 'number', number: transferTo, message: 'One moment, I\'ll connect you now.', description: 'A person at ' + biz.name }]
     });
   }
+  if (ownCalendar) tools.push.apply(tools, ownCalendarTools(toolsUrl));
   const model = {
     provider: 'openai',
     model: config.vapi.model,
     temperature: 0.4,
-    messages: [{ role: 'system', content: systemPrompt(biz) }],
+    messages: [{ role: 'system', content: systemPrompt(biz, { ownCalendar }) }],
     tools
   };
-  if (config.vapi.calendarToolIds.length && (!p.capabilities || p.capabilities.book !== false)) {
+  if (ownCalendar) {
+    // Empty tool ids clear the shared dashboard calendar tools on a full assistant replace.
+    model.toolIds = [];
+  } else if (config.vapi.calendarToolIds.length && canBook) {
     model.toolIds = config.vapi.calendarToolIds;
   }
   const payload = {
@@ -245,5 +306,5 @@ function listCalls({ assistantId, limit = 50 } = {}) {
 module.exports = {
   assertConfigured, assistantPayload, systemPrompt, createAssistant, getAssistant, updateAssistant,
   listPhoneNumbers, getPhoneNumber, importTwilioNumber, attachAssistantToNumber, placeTestCall, listCalls, toE164,
-  utcOffset, buildVoice
+  utcOffset, buildVoice, ownCalendarTools
 };

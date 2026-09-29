@@ -11,7 +11,7 @@ node --env-file=.env src/index.js
 npm test
 ```
 
-`npm test` covers the receptionist settings payload (mocked Vapi PATCH), webhook persistence, dashboard metrics, and Trello cards (mocked Trello HTTP). It needs the Postgres URL in `TEST_DATABASE_URL` or `postgres://rw:rwlocal@127.0.0.1:5432/rw_test`.
+`npm test` covers the receptionist settings payload (mocked Vapi PATCH), webhook persistence, dashboard metrics, Trello cards (mocked Trello HTTP), and per-business Google Calendar (mocked Google HTTP). It needs the Postgres URL in `TEST_DATABASE_URL` or `postgres://rw:rwlocal@127.0.0.1:5432/rw_test`.
 
 Migrations in `migrations/` run on boot. The first admin is created from `ADMIN_EMAIL` / `ADMIN_PASSWORD` when `users` is empty. Add later teammates with `npm run create-user -- email "Name" team` (it prompts for the password).
 
@@ -38,9 +38,15 @@ Session cookie plus `X-RW-Client: portal` on every write. `GET /api/health` does
 | GET | `/api/businesses/:slug/trello/boards` | open boards |
 | GET | `/api/businesses/:slug/trello/boards/:boardId/lists` | open lists |
 | PUT | `/api/businesses/:slug/trello` | board, list, and per-event card rules |
+| GET | `/api/businesses/:slug/google-calendar` | connection status and calendar list. Refresh tokens are never included. |
+| POST | `/api/businesses/:slug/google-calendar/start` | Google OAuth URL. `409` with `missing` when the client id, secret, encryption key, or `APP_BASE_URL` is unset |
+| PUT | `/api/businesses/:slug/google-calendar` | body `{ "calendarId" }`. Chooses the calendar and points the assistant at this server's tools |
+| DELETE | `/api/businesses/:slug/google-calendar` | disconnects the calendar and falls back to the shared demo tools |
+| GET | `/oauth/google/callback` | Google redirect. No session. Stores the refresh token encrypted. |
 | GET | `/api/integrations/meta/start?business=slug` | Facebook Login for Business |
 | GET | `/api/integrations/meta/callback` | OAuth return. Tokens are encrypted. |
 | POST | `/webhooks/vapi` | `X-Vapi-Secret`. Stores end-of-call reports and opens Trello cards when a list is saved. |
+| POST | `/webhooks/vapi/tools` | `X-Vapi-Secret`. `check_availability` and `book_appointment` for a business's own calendar. |
 | POST | `/api/businesses/:slug/assistant/publish` | full assistant publish (existing path) |
 | POST | `/api/businesses/:slug/calls/sync` | backfill one business |
 | GET | `/api/businesses/:slug/website/preview?template=` | admin. Rendered Classic or Modern page for the preview frame |

@@ -99,6 +99,7 @@
   var extraCache = null;
   var currentRender = function () {};
   var integrationByBiz = {};
+  var calendarByBiz = {};
 
   function defaultWizard() {
     return {
@@ -1655,16 +1656,61 @@
       "</span></div><div class='card-b'>" + calls + "</div></section></div>";
   }
 
+  function ensureCalendar(b) {
+    if (!LIVE || !b || !b.id || calendarByBiz[b.id]) return;
+    calendarByBiz[b.id] = { pending: true };
+    api("GET", "api/businesses/" + encodeURIComponent(b.id) + "/google-calendar").then(function (data) {
+      calendarByBiz[b.id] = data || { failed: true };
+      if ((document.body.dataset.page || "") === "client" && currentTab() === "bookings") currentRender();
+    }).catch(function () {
+      calendarByBiz[b.id] = { failed: true };
+      if ((document.body.dataset.page || "") === "client" && currentTab() === "bookings") currentRender();
+    });
+  }
+
+  function calendarSection(b) {
+    var head = '<section class="card" id="google-calendar" style="margin-bottom:12px"><div class="card-h"><h2>Calendar</h2>' + badge("calendar_connection") + '</div><div class="card-b">';
+    if (!LIVE) {
+      return head +
+        '<p class="banner warn">Using the shared demo calendar</p>' +
+        '<p class="help">Google Calendar is not configured. This demo does not connect Google.</p>' +
+        '<button class="btn" type="button" disabled>Connect Google Calendar</button></div></section>';
+    }
+    ensureCalendar(b);
+    var cal = calendarByBiz[b.id];
+    if (!cal || cal.pending) return head + '<p class="help">Loading calendar…</p></div></section>';
+    if (cal.failed) return head + '<p class="banner bad">Could not load calendar status.</p></div></section>';
+    var warn = cal.warning ? '<p class="banner warn">' + esc(cal.warning) + "</p>" : "";
+    if (!cal.configured) {
+      var missing = (cal.missing || []).join(", ");
+      return head + warn +
+        '<p class="help">Google Calendar is not configured' + (missing ? " (" + esc(missing) + ")" : "") + ".</p>" +
+        '<button class="btn" type="button" disabled>Connect Google Calendar</button></div></section>';
+    }
+    if (cal.connected) {
+      var name = cal.calendarName || cal.calendarId || "calendar";
+      return head + '<p class="banner ok">Connected · ' + esc(name) + (cal.email ? " · " + esc(cal.email) : "") + "</p>" +
+        '<button class="btn" type="button" data-action="calendar-disconnect" data-id="' + esc(b.id) + '">Disconnect</button></div></section>';
+    }
+    var options = (cal.calendars || []).map(function (item) {
+      return '<option value="' + esc(item.id) + '">' + esc(item.summary || item.id) + (item.primary ? " (primary)" : "") + "</option>";
+    }).join("");
+    var pick = cal.authorized
+      ? (options
+        ? '<div class="field"><label for="calendar-choice">Calendar</label><select class="ctrl" id="calendar-choice">' + options + "</select></div>" +
+          '<button class="btn btn-primary" type="button" data-action="calendar-save" data-id="' + esc(b.id) + '">Use this calendar</button>'
+        : '<p class="help">' + esc(cal.calendarsError || "No calendars were returned. Reconnect Google Calendar.") + "</p>")
+      : "";
+    return head + warn +
+      '<button class="btn btn-primary" type="button" data-action="calendar-connect" data-id="' + esc(b.id) + '">' +
+      (cal.authorized ? "Reconnect Google Calendar" : "Connect Google Calendar") + "</button>" + pick + "</div></section>";
+  }
+
   function tabBookings(b) {
     var rows = (b.bookings || []).map(function (booking) {
       return "<tr><td>" + esc(booking.when) + "</td><td>" + esc(booking.customer) + "</td><td>" + esc(booking.service) + "</td><td>" + esc(booking.source) + "</td><td>" + esc(booking.status) + "</td></tr>";
     }).join("");
-    var calendarActions = calendarSignIn(b)
-      ? '<div class="head-actions" style="margin-bottom:12px">' + badge("calendar_connection") +
-        '<button class="btn btn-primary" type="button" data-action="booking-test" data-id="' + esc(b.id) + '">Run booking test</button>' +
-        '<button class="btn" type="button" data-action="send-link" data-id="' + esc(b.id) + '" data-kind="calendar">Send calendar link</button></div>'
-      : '<p class="help" style="margin-bottom:12px">' + badge("calendar_connection") + esc(calendarDescribe(window.RWCalendarStep ? window.RWCalendarStep.choiceValue((b.calendar && b.calendar.provider) || "none") : "none").checklist) + "</p>";
-    return calendarActions +
+    return calendarSection(b) +
       '<section class="card"><div class="card-h"><h2>Upcoming</h2>' + badge("bookings") + '</div><div class="table-wrap"><table class="data"><thead><tr><th>When</th><th>Customer</th><th>Service</th><th>Source</th><th>Status</th></tr></thead><tbody>' +
       (rows || '<tr><td colspan="5"><div class="empty">No upcoming bookings.</div></td></tr>') + "</tbody></table></div></section>";
   }
@@ -1863,6 +1909,7 @@
     }
     if (title) title.textContent = b.name;
     document.title = b.name + " · ReceptWise";
+    noteCalendarReturn();
     var tab = currentTab();
     var tabs = TABS.map(function (item) {
       return '<a class="tab' + (item[0] === tab ? " on" : "") + '" href="#' + item[0] + '">' + esc(item[1]) + statusMarks(TAB_FEATURES[item[0]]) + "</a>";
@@ -1884,6 +1931,20 @@
       '<button class="btn btn-primary" type="button" data-action="send-steps" data-id="' + esc(b.id) + '">Send owner their steps</button></div></section>' +
       '<nav class="tabs">' + tabs + "</nav>" + featureBar(TAB_FEATURES[tab]) + body + legal();
     if (tab === "website") loadSitePreview(b);
+  }
+
+  function noteCalendarReturn() {
+    if (!LIVE) return;
+    var params = new URLSearchParams(location.search);
+    var flag = params.get("calendar");
+    if (!flag) return;
+    if (flag === "connected") toast("Google account connected. Choose which calendar to use.");
+    else if (flag === "error") toast(params.get("message") || "Google Calendar connection failed.");
+    params.delete("calendar");
+    params.delete("message");
+    var id = params.get("id");
+    if (id) delete calendarByBiz[id];
+    history.replaceState(null, "", location.pathname + (params.toString() ? "?" + params.toString() : "") + location.hash);
   }
 
   function renderBilling(view) {
@@ -2538,6 +2599,28 @@
   }
 
   var liveActions = {
+    "calendar-connect": function (el) {
+      api("POST", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/google-calendar/start").then(function (data) {
+        if (data && data.url) location.href = data.url;
+        else toast("Google Calendar did not return a sign-in link.");
+      }).catch(liveFail);
+    },
+    "calendar-save": function (el) {
+      var choice = document.getElementById("calendar-choice");
+      if (!choice || !choice.value) { toast("Choose a calendar."); return; }
+      api("PUT", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/google-calendar", { calendarId: choice.value }).then(function (data) {
+        calendarByBiz[el.dataset.id] = data;
+        toast(data.calendarName ? "Using " + data.calendarName + "." : "Calendar saved.");
+        if (currentRender) currentRender();
+      }).catch(liveFail);
+    },
+    "calendar-disconnect": function (el) {
+      api("DELETE", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/google-calendar").then(function (data) {
+        calendarByBiz[el.dataset.id] = data;
+        toast("Google Calendar disconnected.");
+        if (currentRender) currentRender();
+      }).catch(liveFail);
+    },
     "sign-out": function () {
       api("POST", "api/auth/logout").catch(function () {}).then(function () { location.href = "index.html"; });
     },

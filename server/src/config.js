@@ -40,6 +40,10 @@ const config = {
   transferToNumber: env.TRANSFER_TO_NUMBER || '',
   // Encrypts OAuth tokens at rest. Integrations refuse to store tokens when this is blank.
   tokenKey: env.TOKEN_ENCRYPTION_KEY || '',
+  google: {
+    clientId: env.GOOGLE_OAUTH_CLIENT_ID || '',
+    clientSecret: env.GOOGLE_OAUTH_CLIENT_SECRET || ''
+  },
   userAgent: 'ReceptWise-Control-Panel/1.0',
   meta: {
     appId: env.META_APP_ID || '',

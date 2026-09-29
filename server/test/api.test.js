@@ -14,6 +14,8 @@ process.env.TWILIO_ACCOUNT_SID = 'AC11111111111111111111111111111111';
 process.env.TWILIO_AUTH_TOKEN = 'test-twilio-token';
 process.env.TOKEN_ENCRYPTION_KEY = 'test-token-key';
 process.env.APP_BASE_URL = 'https://panel.example.test';
+process.env.GOOGLE_OAUTH_CLIENT_ID = 'google-client-id';
+process.env.GOOGLE_OAUTH_CLIENT_SECRET = 'google-client-secret';
 process.env.NODE_ENV = 'test';
 process.env.SMS_ENABLED = 'false';
 process.env.VAPI_ASSISTANT_ID = 'c3c8899c-e42d-494b-bf47-3af37f942341';
@@ -31,6 +33,8 @@ const PHONE_ID = process.env.VAPI_PHONE_NUMBER_ID;
 const httpCalls = [];
 const trelloCards = {};
 let trelloSeq = 0;
+let googleBusy = [];
+let googleEventPosts = 0;
 
 function jsonRes(status, body) {
   return {
@@ -121,6 +125,38 @@ global.fetch = async (url, opts = {}) => {
   if (target.includes('/call')) return jsonRes(200, []);
   if (target.includes('api.twilio.com')) {
     return jsonRes(200, { incoming_phone_numbers: [{ sid: 'PN123', phone_number: '+17817057179', status: 'in-use' }] });
+  }
+  if (target.includes('oauth2.googleapis.com/token')) {
+    const form = new URLSearchParams(opts.body);
+    if (form.get('grant_type') === 'refresh_token') {
+      return jsonRes(200, { access_token: 'ya29.test', expires_in: 3600, token_type: 'Bearer' });
+    }
+    return jsonRes(200, {
+      access_token: 'ya29.test',
+      refresh_token: 'refresh-test',
+      expires_in: 3600,
+      token_type: 'Bearer'
+    });
+  }
+  if (target.includes('/calendar/v3/users/me/calendarList')) {
+    return jsonRes(200, {
+      items: [
+        { id: 'owner@example.test', summary: 'owner@example.test', primary: true, accessRole: 'owner' },
+        { id: 'team-cal', summary: 'Team calendar', accessRole: 'writer' }
+      ]
+    });
+  }
+  if (path.endsWith('/freeBusy') && method === 'POST') {
+    const body = JSON.parse(opts.body);
+    const id = body.items && body.items[0] && body.items[0].id;
+    const calendars = {};
+    calendars[id || 'team-cal'] = { busy: googleBusy.slice() };
+    return jsonRes(200, { calendars });
+  }
+  if (method === 'POST' && /\/calendars\/[^/]+\/events$/.test(path)) {
+    googleEventPosts += 1;
+    const body = JSON.parse(opts.body);
+    return jsonRes(200, { id: 'evt-' + googleEventPosts, summary: body.summary, attendees: body.attendees });
   }
   if (target.includes('api.trello.com')) {
     const u = new URL(target);
@@ -234,7 +270,7 @@ describe('control panel API', () => {
     assert.equal(res.json.phone_number.status, 'real');
     assert.equal(res.json.number_search.status, 'real');
     assert.equal(res.json.voice_dropdown.status, 'real');
-    assert.equal(res.json.calendar_connection.status, 'in_progress');
+    assert.equal(res.json.calendar_connection.status, 'real');
     assert.equal(res.json.receptionist.status, 'real');
     assert.equal(res.json.website_generator.status, 'in_progress');
     assert.equal(res.json.website, undefined);
@@ -1212,5 +1248,226 @@ describe('control panel API', () => {
     await db.query(sql);
     const twice = await db.query(`SELECT profile->>'voice' AS voice FROM businesses WHERE slug = $1`, [created.json.business.id]);
     assert.equal(twice.rows[0].voice, 'nora');
+  });
+
+  it('connects a business calendar and books on that calendar only', async () => {
+    googleBusy = [];
+    googleEventPosts = 0;
+    const before = await request('GET', '/api/businesses/receptwise/google-calendar', { cookie });
+    assert.equal(before.status, 200, before.text);
+    assert.equal(before.json.configured, true);
+    assert.equal(before.json.connected, false);
+    assert.equal(before.json.warning, 'Using the shared demo calendar');
+    assert.equal(JSON.stringify(before.json).includes('refresh'), false);
+    assert.equal(JSON.stringify(before.json).includes('token'), false);
+
+    const start = await request('POST', '/api/businesses/receptwise/google-calendar/start', { cookie });
+    assert.equal(start.status, 200, start.text);
+    const authUrl = new URL(start.json.url);
+    assert.equal(authUrl.origin + authUrl.pathname, 'https://accounts.google.com/o/oauth2/v2/auth');
+    assert.equal(authUrl.searchParams.get('access_type'), 'offline');
+    assert.equal(authUrl.searchParams.get('prompt'), 'consent');
+    assert.equal(authUrl.searchParams.get('redirect_uri'), 'https://panel.example.test/oauth/google/callback');
+    assert.match(authUrl.searchParams.get('scope'), /calendar\.events/);
+    assert.match(authUrl.searchParams.get('scope'), /calendar\.readonly/);
+    const state = authUrl.searchParams.get('state');
+
+    const callback = await request('GET', '/oauth/google/callback?code=auth-code&state=' + encodeURIComponent(state), {
+      headers: { 'X-RW-Client': '' }
+    });
+    assert.equal(callback.status, 302, callback.text);
+    assert.match(callback.headers.location, /client\.html\?id=receptwise&calendar=connected#bookings/);
+
+    const saved = await db.query(
+      `SELECT token_enc, external_id, status FROM integrations WHERE provider = 'google_calendar'`
+    );
+    assert.equal(saved.rows.length, 1);
+    assert.equal(saved.rows[0].status, 'authorized');
+    assert.equal(saved.rows[0].token_enc.includes('refresh-test'), false);
+    const cryptoBox = require('../src/cryptoBox');
+    assert.equal(JSON.parse(cryptoBox.decrypt(saved.rows[0].token_enc)).refreshToken, 'refresh-test');
+
+    const listed = await request('GET', '/api/businesses/receptwise/google-calendar', { cookie });
+    assert.equal(listed.status, 200, listed.text);
+    assert.equal(listed.json.authorized, true);
+    assert.equal(listed.json.connected, false);
+    assert.equal(listed.json.warning, 'Using the shared demo calendar');
+    assert.equal(listed.json.email, 'owner@example.test');
+    assert.equal(listed.json.calendars.length, 2);
+    assert.equal(JSON.stringify(listed.json).includes('refresh-test'), false);
+    assert.equal(JSON.stringify(listed.json).includes('ya29'), false);
+
+    const rejected = await request('PUT', '/api/businesses/receptwise/google-calendar', {
+      cookie,
+      body: { calendarId: 'not-a-calendar' }
+    });
+    assert.equal(rejected.status, 400);
+
+    httpCalls.length = 0;
+    const chosen = await request('PUT', '/api/businesses/receptwise/google-calendar', {
+      cookie,
+      body: { calendarId: 'team-cal' }
+    });
+    assert.equal(chosen.status, 200, chosen.text);
+    assert.equal(chosen.json.connected, true);
+    assert.equal(chosen.json.calendarName, 'Team calendar');
+    assert.equal(chosen.json.warning, '');
+    assert.equal(chosen.json.assistantUpdated, true);
+    assert.equal(JSON.stringify(chosen.json).includes('refresh-test'), false);
+    const patch = httpCalls.find((call) => call.method === 'PATCH' && call.url.includes('/assistant/'));
+    assert.ok(patch, 'expected an assistant update');
+    const model = JSON.parse(patch.opts.body).model;
+    assert.deepEqual(model.toolIds, []);
+    const names = model.tools.map((tool) => tool.function && tool.function.name).filter(Boolean);
+    assert.deepEqual(names, ['check_availability', 'book_appointment']);
+    assert.equal(model.tools.find((tool) => tool.function && tool.function.name === 'book_appointment').server.url,
+      'https://panel.example.test/webhooks/vapi/tools');
+    const storedAssistant = await db.query(
+      `SELECT config FROM assistants a JOIN businesses b ON b.id = a.business_id WHERE b.slug = 'receptwise'`
+    );
+    const storedConfig = typeof storedAssistant.rows[0].config === 'string'
+      ? JSON.parse(storedAssistant.rows[0].config) : storedAssistant.rows[0].config;
+    assert.equal(JSON.stringify(storedConfig).includes('test-webhook-secret'), false);
+
+    const biz = await db.query(`SELECT id FROM businesses WHERE slug = 'receptwise'`);
+    const businessId = Number(biz.rows[0].id);
+    const toolBody = (toolCallId, name, args) => ({
+      message: {
+        type: 'tool-calls',
+        call: {
+          id: 'call-live-book',
+          assistant: { metadata: { receptwiseBusinessId: String(businessId) } }
+        },
+        toolCallList: [{ id: toolCallId, name, arguments: args }]
+      }
+    });
+    const denied = await request('POST', '/webhooks/vapi/tools', {
+      body: toolBody('t0', 'check_availability', { startDateTime: '2026-10-06T10:00:00-04:00' }),
+      headers: { 'X-Vapi-Secret': 'wrong' }
+    });
+    assert.equal(denied.status, 401);
+
+    const free = await request('POST', '/webhooks/vapi/tools', {
+      headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+      body: toolBody('t1', 'check_availability', { startDateTime: '2026-11-02T09:30:00' })
+    });
+    assert.equal(free.status, 200, free.text);
+    const freeResult = JSON.parse(free.json.results[0].result);
+    assert.equal(freeResult.free, true);
+    assert.equal(freeResult.timeZone, 'America/New_York');
+    assert.equal(freeResult.startLocal, '2026-11-02T09:30:00-05:00');
+    assert.match(freeResult.startLabel, /9:30/);
+
+    const booked = await request('POST', '/webhooks/vapi/tools', {
+      headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+      body: toolBody('t2', 'book_appointment', {
+        startDateTime: '2026-10-06T10:00:00-04:00',
+        name: 'Ada Lovelace',
+        phone: '7815550100',
+        email: 'ada@example.test',
+        service: 'intro'
+      })
+    });
+    assert.equal(booked.status, 200, booked.text);
+    const bookedResult = JSON.parse(booked.json.results[0].result);
+    assert.equal(bookedResult.booked, true);
+    assert.equal(bookedResult.eventId, 'evt-1');
+    assert.equal(bookedResult.startLocal, '2026-10-06T10:00:00-04:00');
+    assert.equal(bookedResult.endLocal, '2026-10-06T10:30:00-04:00');
+    assert.match(bookedResult.startLabel, /10:00/);
+    const eventCall = httpCalls.filter((call) => call.method === 'POST' && /\/events$/.test(new URL(call.url).pathname)).pop();
+    const event = JSON.parse(eventCall.opts.body);
+    assert.equal(event.summary, 'ReceptWise appointment – intro – Ada Lovelace – 7815550100');
+    assert.deepEqual(event.attendees, [{ email: 'ada@example.test' }]);
+    assert.equal(event.start.timeZone, 'America/New_York');
+    assert.equal(new URL(eventCall.url).searchParams.get('sendUpdates'), 'none');
+    const row = await db.query(`SELECT customer, email, google_event_id, source FROM bookings WHERE id = $1`, [bookedResult.bookingId]);
+    assert.equal(row.rows[0].customer, 'Ada Lovelace');
+    assert.equal(row.rows[0].google_event_id, 'evt-1');
+    const auditRow = await db.query(
+      `SELECT detail FROM audit_log WHERE action = 'calendar.book' ORDER BY id DESC LIMIT 1`
+    );
+    const detail = typeof auditRow.rows[0].detail === 'string' ? JSON.parse(auditRow.rows[0].detail) : auditRow.rows[0].detail;
+    assert.equal(detail.bookingId, bookedResult.bookingId);
+    assert.equal(detail.eventId, 'evt-1');
+    assert.equal(JSON.stringify(detail).includes('Ada'), false);
+    assert.equal(JSON.stringify(detail).includes('ada@'), false);
+
+    const again = await request('POST', '/webhooks/vapi/tools', {
+      headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+      body: toolBody('t3', 'book_appointment', {
+        startDateTime: '2026-10-06T10:00:00-04:00',
+        name: 'Ada Lovelace',
+        phone: '7815550100',
+        email: 'ada@example.test',
+        service: 'intro'
+      })
+    });
+    const againResult = JSON.parse(again.json.results[0].result);
+    assert.equal(againResult.alreadyBooked, true);
+    assert.equal(googleEventPosts, 1);
+
+    googleBusy = [{ start: '2026-10-06T15:00:00Z', end: '2026-10-06T16:00:00Z' }];
+    const conflict = await request('POST', '/webhooks/vapi/tools', {
+      headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+      body: toolBody('t4', 'book_appointment', {
+        startDateTime: '2026-10-06T11:00:00-04:00',
+        name: 'Grace Hopper',
+        phone: '7815550199',
+        email: 'grace@example.test',
+        service: 'intro'
+      })
+    });
+    const conflictResult = JSON.parse(conflict.json.results[0].result);
+    assert.equal(conflictResult.conflict, true);
+    assert.equal(conflictResult.booked, false);
+    assert.equal(googleEventPosts, 1);
+    assert.ok(conflictResult.busy[0].startLocal);
+
+    const echoed = await request('POST', '/webhooks/vapi', {
+      headers: { 'X-Vapi-Secret': 'test-webhook-secret' },
+      body: {
+        message: {
+          type: 'end-of-call-report',
+          endedReason: 'customer-ended-call',
+          call: {
+            id: 'call-echo-book',
+            assistantId: ASSISTANT,
+            status: 'ended',
+            customer: { number: '+17815550100' }
+          },
+          artifact: {
+            messages: [{
+              toolCalls: [{
+                function: {
+                  name: 'book_appointment',
+                  arguments: JSON.stringify({
+                    startDateTime: '2026-10-06T10:00:00-04:00',
+                    name: 'Ada Lovelace',
+                    service: 'intro'
+                  })
+                }
+              }]
+            }]
+          }
+        }
+      }
+    });
+    assert.equal(echoed.status, 200, echoed.text);
+    const copies = await db.query(
+      `SELECT count(*)::int AS n FROM bookings
+       WHERE business_id = $1 AND lower(customer) = 'ada lovelace' AND google_event_id = 'evt-1'`,
+      [businessId]
+    );
+    assert.equal(copies.rows[0].n, 1);
+
+    httpCalls.length = 0;
+    const gone = await request('DELETE', '/api/businesses/receptwise/google-calendar', { cookie });
+    assert.equal(gone.status, 200, gone.text);
+    assert.equal(gone.json.connected, false);
+    assert.equal(gone.json.warning, 'Using the shared demo calendar');
+    const restored = JSON.parse(httpCalls.find((call) => call.method === 'PATCH' && call.url.includes('/assistant/')).opts.body);
+    assert.deepEqual(restored.model.toolIds, ['tool-check', 'tool-book']);
+    assert.equal(restored.model.tools.some((tool) => tool.function && tool.function.name === 'book_appointment'), false);
   });
 });

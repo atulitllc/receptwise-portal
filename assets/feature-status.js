@@ -50,8 +50,8 @@
     },
     calendar_connection: {
       label: "Calendar",
-      status: "in_progress",
-      note: "Per-business Google or Cal.com connect is being built. Sign-in and booking test are still placeholders."
+      status: "real",
+      note: "Connect Google Calendar on the Bookings tab and choose which calendar to use. Until one is chosen, the assistant uses the shared demo calendar and the page says so. The demo does not connect Google."
     },
     social: {
       label: "Social",

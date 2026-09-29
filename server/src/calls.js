@@ -158,10 +158,27 @@ async function upsertCall(call, report) {
   }
   if (businessId && bookings.length) {
     for (const b of bookings) {
+      if (b.startsAt) {
+        const linked = await db.query(
+          `UPDATE bookings
+           SET call_id = coalesce(call_id, $2), updated_at = now()
+           WHERE business_id = $1
+             AND starts_at IS NOT DISTINCT FROM $3::timestamptz
+             AND lower(coalesce(customer, '')) = lower(coalesce($4, ''))
+           RETURNING id`,
+          [businessId, row.id, b.startsAt, b.customer || '']
+        );
+        if (linked.rows.length) continue;
+      }
       await db.query(
         `INSERT INTO bookings (business_id, call_id, starts_at, customer, service, source, status)
          SELECT $1, $2, $3, $4, $5, 'Phone', 'Confirmed'
-         WHERE NOT EXISTS (SELECT 1 FROM bookings WHERE call_id = $2 AND starts_at IS NOT DISTINCT FROM $3::timestamptz)`,
+         WHERE NOT EXISTS (
+           SELECT 1 FROM bookings
+           WHERE business_id = $1
+             AND starts_at IS NOT DISTINCT FROM $3::timestamptz
+             AND lower(coalesce(customer, '')) = lower(coalesce($4, ''))
+         )`,
         [businessId, row.id, b.startsAt, b.customer, b.service]
       );
     }

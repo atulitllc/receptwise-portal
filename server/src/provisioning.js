@@ -8,6 +8,7 @@ const vapi = require('./integrations/vapi');
 const businesses = require('./businesses');
 const calls = require('./calls');
 const audit = require('./audit');
+const businessCalendar = require('./businessCalendar');
 
 function webhookUrl() {
   return config.appBaseUrl ? config.appBaseUrl + '/webhooks/vapi' : '';
@@ -17,6 +18,12 @@ function webhookUrl() {
 function configForStorage(payload) {
   const copy = JSON.parse(JSON.stringify(payload));
   if (copy.server && copy.server.headers) delete copy.server.headers;
+  const tools = copy.model && copy.model.tools;
+  if (Array.isArray(tools)) {
+    tools.forEach((tool) => {
+      if (tool.server && tool.server.headers) delete tool.server.headers;
+    });
+  }
   return copy;
 }
 
@@ -32,7 +39,12 @@ async function getPhoneRow(bizId) {
 // Create or update the Vapi assistant from the saved profile ("Publish" on the Receptionist tab).
 async function publishAssistant(biz, userId) {
   vapi.assertConfigured();
-  const payload = vapi.assistantPayload(biz, { serverUrl: webhookUrl() });
+  const ownCalendar = await businessCalendar.hasOwnCalendar(biz.id);
+  const payload = vapi.assistantPayload(biz, {
+    serverUrl: webhookUrl(),
+    ownCalendar,
+    toolsUrl: businessCalendar.toolsUrl()
+  });
   const existing = await getAssistantRow(biz.id);
   let result;
   if (existing && existing.vapi_assistant_id) {
@@ -62,7 +74,13 @@ async function publishAssistant(biz, userId) {
   }
   await db.query('INSERT INTO audit_log (user_id, business_id, action, detail) VALUES ($1,$2,$3,$4)',
     [userId || null, biz.id, 'assistant.publish', { assistantId: result.id }]);
-  return { assistantId: result.id, voiceSet: Boolean(payload.voice), calendarTools: config.vapi.calendarToolIds.length };
+  const functionTools = (payload.model.tools || []).filter((tool) => tool.type === 'function').length;
+  return {
+    assistantId: result.id,
+    voiceSet: Boolean(payload.voice),
+    calendarTools: ownCalendar ? functionTools : config.vapi.calendarToolIds.length,
+    ownCalendar
+  };
 }
 
 // Lists available local numbers. Never purchases.

@@ -35,6 +35,7 @@ The company that owns the product is **[Placeholder]** in the footer and on the 
 | `VAPI_WEBHOOK_SECRET` plus the Vapi server URL | End-of-call reports are stored (summary, caller, outcome, recording, bookings from `structuredData`). |
 | `META_APP_ID`, `META_APP_SECRET`, `TOKEN_ENCRYPTION_KEY`, and a public `APP_BASE_URL` | Facebook Login for Business stores the Page and Instagram tokens encrypted. The page shows the account name. |
 | `TRELLO_API_KEY`, `TRELLO_TOKEN`, or a key pasted on Integrations, plus `TOKEN_ENCRYPTION_KEY` for a pasted key | Test connection, choose a board and list, and open a card for each new booking and missed call. A booking card is updated when the booking changes. |
+| `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `TOKEN_ENCRYPTION_KEY`, and `APP_BASE_URL` | Each business can connect its own Google Calendar. The assistant then checks availability and books on that calendar. |
 | `GITHUB_TOKEN` (and optional `GITHUB_ORG`, default `atulitllc`) | On the Website tab, an admin generates a public one-page site in a new GitHub repository. Regenerate opens a pull request. The panel does not host the site. |
 
 Without those keys the panel stays honest: phone says **Not connected**, settings save locally and are not pushed, integrations say **Needs Meta app setup**, and Trello says **Not connected**. Without `GITHUB_TOKEN`, the Website tab says **Needs GITHUB_TOKEN on Render** and does not create a repository. Recording a handle does not mark the account connected. A pasted Trello key is stored encrypted and is not sent back to the browser. LinkedIn, X, TikTok, and YouTube stay **Coming soon**. Texting stays off (`SMS_ENABLED=false`).
@@ -43,7 +44,7 @@ Without those keys the panel stays honest: phone says **Not connected**, setting
 
 - **Meta app.** Create a Meta app, add Facebook Login for Business, and set the redirect URI to `https://<your-host>/api/integrations/meta/callback`. Then set `META_APP_ID`, `META_APP_SECRET`, and `TOKEN_ENCRYPTION_KEY`. Optional: `META_LOGIN_CONFIG_ID` if the login uses a saved configuration instead of the default scopes. Google Business Profile has no OAuth flow yet; you can only record the listing URL.
 - **Vapi server URL.** In the Vapi assistant, set the server URL to `https://<your-host>/webhooks/vapi` and send header `X-Vapi-Secret` with the same value as `VAPI_WEBHOOK_SECRET`. The free web service sleeps, so use **Sync from Vapi** after it wakes up.
-- **Calendar tools.** The pilot assistant already has `check_availability` and `book_demo`. `VAPI_CALENDAR_TOOL_IDS` is that pair. A later client needs its own tools; the settings push keeps whatever tool ids are already on that assistant.
+- **Google Calendar.** Each business connects its own calendar from the Bookings tab. Until a calendar is chosen, the assistant keeps using `VAPI_CALENDAR_TOOL_IDS` (the shared demo calendar) and the page says **Using the shared demo calendar**. Setup steps are below.
 - **Voice.** The live assistant already uses ElevenLabs. `VAPI_VOICE_ID` is only required when publishing a brand-new assistant from the business page.
 - **Trello.** Create a Power-Up API key and token (steps below), paste them on Integrations, or set `TRELLO_API_KEY` and `TRELLO_TOKEN`. Choose a board and a list. Cards are not created until that list is saved. Set `APP_BASE_URL` so each card links back to the call.
 
@@ -111,7 +112,7 @@ The in-app SQL file does not restore sign-in. The admin created from `ADMIN_EMAI
 | `DATABASE_URL` | yes | Postgres connection string (wired from the Blueprint database) |
 | `PORT` | no | Set by Render. The server binds `0.0.0.0:$PORT`. |
 | `RENDER_EXTERNAL_URL` | no | Set by Render. Used as the public base URL when `APP_BASE_URL` is empty. |
-| `APP_BASE_URL` | no | Optional custom origin, no trailing slash. Used for the Vapi webhook URL and the Meta redirect. |
+| `APP_BASE_URL` | no | Optional custom origin, no trailing slash. Used for the Vapi webhook URL, the Meta redirect, and the Google Calendar redirect (`/oauth/google/callback`). |
 | `SESSION_DAYS` | no | Session lifetime. Default 14. |
 | `ADMIN_EMAIL` | yes | First admin, created only when the users table is empty |
 | `ADMIN_PASSWORD` | yes | First admin password, 10+ characters |
@@ -128,7 +129,9 @@ The in-app SQL file does not restore sign-in. The admin created from `ADMIN_EMAI
 | `VAPI_VOICE_MODEL` | no | Default `eleven_flash_v2_5` |
 | `VAPI_MODEL` | no | Default `gpt-4.1` |
 | `VAPI_TRANSCRIBER_MODEL` | no | Default `nova-3` |
-| `VAPI_CALENDAR_TOOL_IDS` | no | Comma-separated Vapi tool ids |
+| `VAPI_CALENDAR_TOOL_IDS` | no | Shared demo calendar tools, used only when a business has not chosen its own calendar |
+| `GOOGLE_OAUTH_CLIENT_ID` | yes | Google OAuth client for per-business calendars. See below. |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | yes | Google OAuth client secret |
 | `VAPI_MAX_CALL_SECONDS` | no | Default 600 |
 | `VAPI_ASSISTANT_ID` | no | Pilot assistant id |
 | `VAPI_PHONE_NUMBER_ID` | no | Pilot Vapi phone number id |
@@ -145,6 +148,20 @@ The in-app SQL file does not restore sign-in. The admin created from `ADMIN_EMAI
 | `TRELLO_TOKEN` | yes | Trello token from the key's authorize link. Optional if a token is pasted per business. |
 | `GITHUB_TOKEN` | yes | Creates public repos, commits the site, and opens pull requests. Classic `repo` scope, or a fine-grained token with Contents, Pull requests, and Administration on the org. Pages permission is optional. |
 | `GITHUB_ORG` | no | GitHub organization for new site repos. Default `atulitllc`. |
+
+## How to create the Google Calendar OAuth client
+
+The Bookings tab shows **not configured** until these exist. The redirect URI has to match exactly.
+
+1. Open [Google Cloud Console](https://console.cloud.google.com/) and create or choose a project.
+2. **APIs & Services → Library**. Enable **Google Calendar API**.
+3. **APIs & Services → OAuth consent screen**. Choose External (or Internal for a Workspace org). Add the app name and support email. Add the scopes `https://www.googleapis.com/auth/calendar.events` and `https://www.googleapis.com/auth/calendar.readonly`. Add the Google accounts that will connect a calendar as test users while the app is in testing.
+4. **APIs & Services → Credentials → Create credentials → OAuth client ID**. Application type: **Web application**.
+5. Under **Authorized redirect URIs**, add `https://<your-host>/oauth/google/callback` (local example: `http://localhost:3000/oauth/google/callback`). This must be the same origin as `APP_BASE_URL`, with no trailing slash on the origin.
+6. Copy the client id and secret into `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`.
+7. Set `APP_BASE_URL` and `TOKEN_ENCRYPTION_KEY` (Render generates the encryption key). Restart the service.
+
+On the business Bookings tab, choose **Connect Google Calendar**, approve the consent screen, then pick the calendar. The refresh token is encrypted before it is stored and is not sent back to the browser. Disconnect removes it. While a calendar is connected, the assistant calls `check_availability` and `book_appointment` on this server (`/webhooks/vapi/tools`, header `X-Vapi-Secret`). Those tools use the chosen calendar only.
 
 ## How to get your Trello key and token
 
