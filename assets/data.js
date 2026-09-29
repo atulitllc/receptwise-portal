@@ -129,7 +129,7 @@
           ]
         },
         greeting: "Thanks for calling ReceptWise. I'm the virtual assistant, and this call may be recorded. I can explain what we do, book a free 20-minute demo, or connect you with the team.",
-        voice: "Juniper (warm)",
+        voice: "nora",
         languages: ["English"],
         transfer: "(415) 555-0142",
         capabilities: { book: true, reschedule: true, cancel: true, transfer: true, textLink: false },
@@ -239,7 +239,7 @@
           ]
         },
         greeting: "Thanks for calling Harbor & Rye. I'm the virtual assistant, and this call may be recorded. I can book a table, answer questions, or reach the host stand.",
-        voice: "Harbor (clear)",
+        voice: "nora",
         languages: ["English", "Spanish"],
         transfer: "(503) 555-0172",
         capabilities: { book: true, reschedule: true, cancel: true, transfer: true, textLink: false },
@@ -372,7 +372,7 @@
           ]
         },
         greeting: "Thanks for calling Northline Family Clinic. I'm the virtual assistant, and this call may be recorded. I can book a visit or transfer you to the front desk. I can't take medical details on this line.",
-        voice: "North (calm)",
+        voice: "nora",
         languages: ["English"],
         transfer: "(617) 555-0133",
         capabilities: { book: true, reschedule: true, cancel: true, transfer: true, textLink: false },
@@ -490,7 +490,7 @@
           ]
         },
         greeting: "Thanks for calling Maple Street Auto. I'm the virtual assistant, and this call may be recorded. I can book a visit or transfer you to the shop.",
-        voice: "Sol (bright)",
+        voice: "nora",
         languages: ["English", "Spanish"],
         transfer: "(312) 555-0188",
         capabilities: { book: true, reschedule: true, cancel: false, transfer: true, textLink: false },
@@ -604,7 +604,7 @@
           ]
         },
         greeting: "Thanks for calling Lumen Salon. I'm the virtual assistant, and this call may be recorded. I can book a cut or color, or reach Sofia.",
-        voice: "Juniper (warm)",
+        voice: "nora",
         languages: ["English"],
         transfer: "(206) 555-0120",
         capabilities: { book: true, reschedule: true, cancel: true, transfer: true, textLink: false },
@@ -720,7 +720,7 @@
           tests: []
         },
         greeting: "Thanks for calling BrightNest. I'm the virtual assistant, and this call may be recorded. I can book a furnace or plumbing visit, or reach the dispatcher.",
-        voice: "Harbor (clear)",
+        voice: "nora",
         languages: ["English", "Spanish"],
         transfer: "(720) 555-0199",
         capabilities: { book: true, reschedule: true, cancel: true, transfer: true, textLink: false },
@@ -817,7 +817,7 @@
           ]
         },
         greeting: "Thanks for calling Oak & Thread. I'm the virtual assistant, and this call may be recorded. I can share hours, book a styling visit, or reach the shop.",
-        voice: "Sol (bright)",
+        voice: "nora",
         languages: ["English"],
         transfer: "(512) 555-0155",
         capabilities: { book: true, reschedule: true, cancel: true, transfer: true, textLink: false },

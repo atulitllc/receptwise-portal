@@ -18,6 +18,7 @@ const meta = require('./integrations/meta');
 const trelloSync = require('./trelloSync');
 const exportData = require('./exportData');
 const calendarConnection = require('./calendarConnection');
+const voices = require('./voices');
 
 // The portal pages live at the repo root (also published as the GitHub Pages demo).
 const SITE_ROOT = path.join(__dirname, '..', '..');
@@ -118,6 +119,7 @@ function createApp() {
   }));
 
   api.get('/integrations/status', auth.requireUser, (_req, res) => res.json(provisioning.status()));
+  api.get('/voices', auth.requireUser, (_req, res) => res.json({ voices: voices.publicList() }));
 
   // Search only. Buying stays on POST /businesses/:slug/numbers/provision.
   api.get('/numbers/search', auth.requireAdmin, wrap(async (req, res) => {

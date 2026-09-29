@@ -2,6 +2,7 @@
 // Vapi REST (no SDK): assistants, imported Twilio numbers, outbound test calls, call listing.
 // Approved pilot stack: GPT-4.1 + voice from env (Cartesia Sonic-2 in production) + Deepgram Nova-3.
 const config = require('../config');
+const voices = require('../voices');
 const { NotConfiguredError, UpstreamError } = require('./errors');
 
 function assertConfigured() {
@@ -187,7 +188,10 @@ function assistantPayload(biz, opts = {}) {
     serverMessages: ['end-of-call-report', 'status-update'],
     metadata: { receptwiseBusinessId: String(biz.id), receptwiseSlug: biz.slug }
   };
-  const voice = buildVoice(config.vapi.voiceProvider, config.vapi.voiceId, config.vapi.voiceModel);
+  const chosen = voices.forPayload(p.voice);
+  const voice = chosen
+    ? buildVoice(chosen.provider, chosen.voiceId, chosen.model)
+    : buildVoice(config.vapi.voiceProvider, config.vapi.voiceId, config.vapi.voiceModel);
   if (voice) payload.voice = voice;
   if (opts.serverUrl) {
     payload.server = { url: opts.serverUrl };

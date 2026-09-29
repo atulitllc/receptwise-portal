@@ -101,7 +101,7 @@
       services: "",
       faqs: "",
       transfer: "",
-      voice: "Juniper (warm)",
+      voice: "nora",
       spanish: false,
       facebook: "",
       instagram: "",
@@ -120,6 +120,47 @@
       finished: false,
       saving: false
     };
+  }
+
+  function voiceList() {
+    return (window.RW_VOICES && window.RW_VOICES.length) ? window.RW_VOICES : [{ key: "nora", name: "Nora", description: "Female, American English, calm and natural. Default." }];
+  }
+
+  function voiceKey(value) {
+    var raw = String(value || "").trim().toLowerCase();
+    if (!raw || raw === "juniper (warm)" || raw === "harbor (clear)" || raw === "north (calm)" || raw === "sol (bright)" || raw === "juniper" || raw === "harbor" || raw === "north" || raw === "sol") return "nora";
+    var list = voiceList();
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].key === raw || String(list[i].name || "").toLowerCase() === raw) return list[i].key;
+    }
+    return "nora";
+  }
+
+  function voiceLabel(value) {
+    var key = voiceKey(value);
+    var list = voiceList();
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].key === key) return list[i].name + " — " + list[i].description;
+    }
+    return "Nora";
+  }
+
+  function voiceOptions(selected) {
+    var key = voiceKey(selected);
+    return voiceList().map(function (voice) {
+      return '<option value="' + esc(voice.key) + '"' + (voice.key === key ? " selected" : "") + ">" + esc(voice.name + " — " + voice.description) + "</option>";
+    }).join("");
+  }
+
+  function loadVoiceCatalog() {
+    if (!LIVE) return;
+    api("GET", "api/voices").then(function (data) {
+      if (!data || !data.voices || !data.voices.length) return;
+      var next = data.voices.map(function (voice) { return voice.key; }).join(",");
+      var prev = voiceList().map(function (voice) { return voice.key; }).join(",");
+      window.RW_VOICES = data.voices;
+      if (next !== prev && currentRender) currentRender();
+    }).catch(function () {});
   }
 
   function esc(value) {
@@ -977,9 +1018,7 @@
         field("FAQs", textarea("faqs", wizard.faqs, "Do you take walk-ins? Yes, when a chair is open."), "One question per line. You can also attach a text file.") +
         '<div class="field"><label>FAQ file</label><input class="ctrl" type="file" accept=".txt,.md,.csv,text/plain" data-action="faq-file"></div>' +
         '<div class="grid-2">' + field("Transfer-to number", input("transfer", wizard.transfer || wizard.ownerMobile, "(503) 555-0172")) +
-        field("Voice", '<select class="ctrl" data-field="voice">' + ["Juniper (warm)", "Harbor (clear)", "North (calm)", "Sol (bright)"].map(function (voice) {
-          return '<option' + (wizard.voice === voice ? " selected" : "") + ">" + esc(voice) + "</option>";
-        }).join("") + "</select>") + "</div>" +
+        field("Voice", '<select class="ctrl" data-field="voice">' + voiceOptions(wizard.voice) + "</select>", "Saved on this business. Publish uses this voice.") + "</div>" +
         '<label class="setting-row"><span><strong>Spanish as well as English</strong><div class="help">Optional. English is always on.</div></span><input data-field="spanish" type="checkbox"' + (wizard.spanish ? " checked" : "") + "></label>";
       if (wizard.category === "Clinic") body += '<div class="note">Do not collect symptoms, insurance numbers, or other health details on this line.</div>';
     } else if (wizard.step === 6) {
@@ -1023,7 +1062,7 @@
         })()],
         ["Test call", wizard.testStatus === "ok" ? "Confirmed" : wizard.testStatus === "miss" ? "Not working" : "Not run"],
         ["Calendar", calendarTitle(wizard.calendar)],
-        ["Voice", wizard.voice + (wizard.spanish ? " · English and Spanish" : " · English")],
+        ["Voice", voiceLabel(wizard.voice) + (wizard.spanish ? " · English and Spanish" : " · English")],
         ["Website", (wizard.siteChoice === "keep" ? "Keep " : "Build ") + (wizard.domain || wizard.website || "domain not set")],
         ["Texting", "Pending · held for the company tax ID"]
       ];
@@ -1500,9 +1539,7 @@
     }).join("") || '<div class="empty">No calls yet.</div>';
     return '<div class="split"><section class="card"><div class="card-h"><h2>Receptionist</h2><span class="pill neutral">Draft until you publish</span></div><div class="card-b">' +
       '<div class="field"><label>Greeting</label><textarea class="ctrl" id="greet">' + esc(b.greeting) + "</textarea></div>" +
-      '<div class="field"><label>Voice</label><select class="ctrl" id="voice">' + ["Juniper (warm)", "Harbor (clear)", "North (calm)", "Sol (bright)"].map(function (voice) {
-        return "<option" + (b.voice === voice ? " selected" : "") + ">" + esc(voice) + "</option>";
-      }).join("") + "</select></div>" +
+      '<div class="field"><label>Voice</label><select class="ctrl" id="voice">' + voiceOptions(b.voice) + '</select><div class="help">Saved on this business. Publish uses this voice.</div></div>' +
       '<p class="help">Languages: ' + esc((b.languages || ["English"]).join(", ")) + ". The assistant always offers a person.</p>" +
       capRow + '<p class="help">Texting a link stays off until registration is approved.</p>' +
       (LIVE ? '<p class="help"><a href="settings.html?id=' + encodeURIComponent(b.id) + '">Edit greeting, hours, and booking rules</a></p>' : '') +
@@ -3044,6 +3081,7 @@
     };
     if (page === "add") resumeDraft();
     currentRender();
+    loadVoiceCatalog();
     if (page === "add") window.addEventListener("pagehide", persistDraftOnLeave);
   }
 

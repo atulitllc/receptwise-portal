@@ -62,7 +62,7 @@ async function publishAssistant(biz, userId) {
   }
   await db.query('INSERT INTO audit_log (user_id, business_id, action, detail) VALUES ($1,$2,$3,$4)',
     [userId || null, biz.id, 'assistant.publish', { assistantId: result.id }]);
-  return { assistantId: result.id, voiceSet: Boolean(config.vapi.voiceId), calendarTools: config.vapi.calendarToolIds.length };
+  return { assistantId: result.id, voiceSet: Boolean(payload.voice), calendarTools: config.vapi.calendarToolIds.length };
 }
 
 // Lists available local numbers. Never purchases.

@@ -1155,4 +1155,50 @@ describe('control panel API', () => {
     assert.equal(messages.json.calendar.provider, 'none');
     assert.equal(Object.hasOwn(messages.json.calendar, 'calcomEventTypeId'), false);
   });
+
+  it('lists the voice catalog and publishes the voice saved on the business', async () => {
+    const fs = require('fs');
+    const path = require('path');
+    const anon = await request('GET', '/api/voices');
+    assert.equal(anon.status, 401);
+
+    const catalog = await request('GET', '/api/voices', { cookie });
+    assert.equal(catalog.status, 200, catalog.text);
+    const keys = catalog.json.voices.map((voice) => voice.key);
+    assert.deepEqual(keys, ['nora', 'sarah', 'jessica', 'laura', 'lily']);
+    assert.equal(catalog.json.voices[0].isDefault, true);
+    assert.match(catalog.json.voices[0].description, /calm and natural/);
+    assert.equal(JSON.stringify(catalog.json).includes('Juniper'), false);
+    assert.equal(keys.includes('andrew'), false);
+
+    const created = await request('POST', '/api/businesses', {
+      cookie,
+      body: { name: 'Voice Trial', category: 'Retail', voice: 'sarah' }
+    });
+    assert.equal(created.status, 201, created.text);
+    assert.equal(created.json.business.voice, 'sarah');
+    httpCalls.length = 0;
+    const published = await request('POST', '/api/businesses/' + created.json.business.id + '/assistant/publish', { cookie });
+    assert.equal(published.status, 200, published.text);
+    const assistant = JSON.parse(httpCalls.find((c) => c.method === 'POST' && new URL(c.url).pathname === '/assistant').opts.body);
+    assert.deepEqual(assistant.voice, {
+      provider: '11labs', voiceId: 'EXAVITQu4vr4xnSDxMaL', model: 'eleven_flash_v2_5'
+    });
+
+    const migrated = await request('PUT', '/api/businesses/' + created.json.business.id, {
+      cookie,
+      body: { voice: 'Sol (bright)' }
+    });
+    assert.equal(migrated.status, 200, migrated.text);
+    assert.equal(migrated.json.business.voice, 'nora');
+
+    await db.query(`UPDATE businesses SET profile = jsonb_set(profile, '{voice}', '"Harbor (clear)"') WHERE slug = $1`, [created.json.business.id]);
+    const sql = fs.readFileSync(path.join(__dirname, '../migrations/005_voice_catalog.sql'), 'utf8');
+    await db.query(sql);
+    const again = await db.query(`SELECT profile->>'voice' AS voice FROM businesses WHERE slug = $1`, [created.json.business.id]);
+    assert.equal(again.rows[0].voice, 'nora');
+    await db.query(sql);
+    const twice = await db.query(`SELECT profile->>'voice' AS voice FROM businesses WHERE slug = $1`, [created.json.business.id]);
+    assert.equal(twice.rows[0].voice, 'nora');
+  });
 });

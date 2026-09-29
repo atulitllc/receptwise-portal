@@ -3,6 +3,7 @@
 const db = require('./db');
 const config = require('./config');
 const calendarConnection = require('./calendarConnection');
+const voices = require('./voices');
 
 const STEPS = [
   ['number', 'AI number'],
@@ -109,7 +110,15 @@ function wizardFrom(input) {
   const raw = input && input.wizardStep != null ? input.wizardStep : src.step;
   const step = Number(raw);
   out.step = Number.isFinite(step) ? Math.max(0, Math.min(9, Math.floor(step))) : 0;
+  if (out.voice) out.voice = voices.storedKey(out.voice) || 'nora';
   return out;
+}
+
+function applyVoice(profile) {
+  if (!profile) return profile;
+  if (profile.voice) profile.voice = voices.storedKey(profile.voice) || 'nora';
+  if (profile.wizard && profile.wizard.voice) profile.wizard.voice = voices.storedKey(profile.wizard.voice) || 'nora';
+  return profile;
 }
 
 function assertDraftIdentity(input) {
@@ -138,6 +147,7 @@ async function createBusiness(input, userId, opts) {
   }
   const calendar = calendarConnection.calendarFromInput(input);
   if (calendar) profile.calendar = calendar;
+  applyVoice(profile);
   return db.tx(async (c) => {
     const slug = await uniqueSlug(c, slugify(input.slug || name));
     const { rows } = await c.query(
@@ -157,7 +167,7 @@ async function createBusiness(input, userId, opts) {
 async function updateBusiness(slug, input, userId) {
   const biz = await getBySlug(slug);
   if (!biz) return null;
-  const profile = Object.assign({}, biz.profile, pickProfile(input));
+  const profile = applyVoice(Object.assign({}, biz.profile, pickProfile(input)));
   const fields = {
     name: input.name !== undefined ? String(input.name).trim() || biz.name : biz.name,
     category: input.category !== undefined ? String(input.category) : biz.category,
@@ -192,6 +202,7 @@ async function updateDraft(biz, input, userId) {
   const profile = Object.assign({}, biz.profile || {}, pickProfile(input), { wizard, wizardStep: wizard.step });
   const calendar = calendarConnection.calendarFromInput(input);
   if (calendar) profile.calendar = calendar;
+  applyVoice(profile);
   const { rows } = await db.query(
     `UPDATE businesses SET name = $2, category = $3, city = $4, timezone = $5, pilot = $6, profile = $7, status = 'draft', updated_at = now()
      WHERE id = $1 RETURNING *`,
@@ -219,6 +230,7 @@ async function finishDraft(biz, input, userId) {
   const profile = Object.assign({}, biz.profile || {}, pickProfile(input), { wizard, wizardStep: 9 });
   const calendar = calendarConnection.calendarFromInput(input);
   if (calendar) profile.calendar = calendar;
+  applyVoice(profile);
   return db.tx(async (c) => {
     const { rows } = await c.query(
       `UPDATE businesses SET name = $2, category = $3, city = $4, timezone = $5, pilot = $6, profile = $7, status = 'setup', updated_at = now()
@@ -356,6 +368,7 @@ async function toUi(biz) {
     pilot: biz.pilot,
     wizardStep: Number(p.wizardStep != null ? p.wizardStep : (p.wizard && p.wizard.step) || 0),
     wizard: calendarConnection.scrubWizard(p.wizard),
+    voice: voices.storedKey(p.voice) || '',
     calendar: calendarConnection.calendarFromInput({ calendar: p.calendar }) || null,
     calcomKeySaved: Boolean(calcomKeySaved),
     setupProgress,
