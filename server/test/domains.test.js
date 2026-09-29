@@ -60,9 +60,12 @@ function site() {
 }
 
 test('panel address uses the subdomain when present and rejects reserved labels', () => {
-  assert.equal(domains.panelAddress('harbor-cafe'), 'https://harbor-cafe.receptwise.com');
+  assert.equal(domains.panelAddress('harbor-cafe'), 'https://harbor-cafe-admin.receptwise.com');
+  assert.equal(domains.panelAddress('sphere'), 'https://sphere-admin.receptwise.com');
+  assert.equal(domains.panelAddress('panel'), '');
+  assert.equal(domains.isPanelHost('sphere-admin'), true);
   assert.equal(domains.panelSlug({ subdomain: 'Sphere', slug: 'sphere-bakery' }), 'sphere');
-  assert.deepEqual(domains.RESERVED, ['panel', 'www', 'api', 'sphere-admin']);
+  assert.deepEqual(domains.RESERVED, ['panel', 'www', 'api']);
   assert.equal(domains.panelAddress('not a host'), '');
 });
 
@@ -84,7 +87,7 @@ test('missing env says Not configured and does not call Cloudflare or Render', a
     assert.equal(result.message, 'Not configured');
     assert.equal(result.website.message, 'Not configured');
     assert.equal(result.render.message, 'Not configured');
-    assert.equal(result.panel.url, 'https://harbor-cafe.receptwise.com');
+    assert.equal(result.panel.url, 'https://harbor-cafe-admin.receptwise.com');
     assert.equal(result.panel.health.ok, true);
     assert.equal(result.panel.health.detail, 'OK');
     assert.equal(calls.some((url) => url.includes('api.cloudflare.com') || url.includes('api.render.com')), false);
@@ -273,7 +276,7 @@ test('a customer domain outside our account lists the records and does not write
   }
 });
 
-test('a business without a custom domain is attached at {slug}-site.receptwise.com, DNS only', async () => {
+test('a business without a custom domain is attached at {slug}.receptwise.com, DNS only', async () => {
   const saved = saveConfig();
   enable();
   const calls = [];
@@ -292,21 +295,21 @@ test('a business without a custom domain is attached at {slug}-site.receptwise.c
     if (method === 'GET' && target.pathname.endsWith('/dns_records') && target.searchParams.get('name') === '*.receptwise.com') {
       return cf([{ id: 'wild-1', type: 'CNAME', name: '*.receptwise.com', content: 'receptwise-portal.onrender.com', proxied: false }]);
     }
-    if (method === 'GET' && target.pathname.endsWith('/dns_records') && target.searchParams.get('name') === 'sphere-site.receptwise.com') {
-      return cf([{ id: 'site-1', type: 'CNAME', name: 'sphere-site.receptwise.com', content: 'old.pages.dev', proxied: true }]);
+    if (method === 'GET' && target.pathname.endsWith('/dns_records') && target.searchParams.get('name') === 'sphere.receptwise.com') {
+      return cf([{ id: 'site-1', type: 'CNAME', name: 'sphere.receptwise.com', content: 'old.pages.dev', proxied: true }]);
     }
     if (method === 'PATCH' && target.pathname.endsWith('/dns_records/site-1')) {
       assert.equal(body.proxied, false);
-      assert.equal(body.name, 'sphere-site.receptwise.com');
+      assert.equal(body.name, 'sphere.receptwise.com');
       assert.equal(body.content, 'rw-cafe-site.pages.dev');
       return cf({ id: 'site-1', proxied: false });
     }
     if (method === 'POST' && target.pathname.endsWith('/pages/projects/rw-cafe-site/domains')) {
-      assert.equal(body.name, 'sphere-site.receptwise.com');
+      assert.equal(body.name, 'sphere.receptwise.com');
       return cf({ name: body.name, status: 'active' });
     }
-    if (method === 'GET' && target.pathname.endsWith('/domains/sphere-site.receptwise.com')) {
-      return cf({ name: 'sphere-site.receptwise.com', status: 'active', verification_data: { status: 'active' }, validation_data: { status: 'active' } });
+    if (method === 'GET' && target.pathname.endsWith('/domains/sphere.receptwise.com')) {
+      return cf({ name: 'sphere.receptwise.com', status: 'active', verification_data: { status: 'active' }, validation_data: { status: 'active' } });
     }
     return json(500, { success: false, errors: [{ message: 'unexpected ' + method + ' ' + target.pathname }] });
   };
@@ -318,17 +321,18 @@ test('a business without a custom domain is attached at {slug}-site.receptwise.c
       profile: { domain: '', siteHost: 'hosted' }
     });
     const result = await domains.collect(business, site(), { write: true });
-    assert.equal(result.website.hostedHostname, 'sphere-site.receptwise.com');
-    assert.equal(result.website.hostedUrl, 'https://sphere-site.receptwise.com');
-    assert.equal(result.website.domain, 'sphere-site.receptwise.com');
+    assert.equal(result.website.hostedHostname, 'sphere.receptwise.com');
+    assert.equal(result.website.hostedUrl, 'https://sphere.receptwise.com');
+    assert.equal(result.website.domain, 'sphere.receptwise.com');
     assert.equal(result.website.siteHost, 'hosted');
     assert.notEqual(result.website.domain, result.panel.url.replace('https://', ''));
-    assert.equal(result.panel.url, 'https://sphere.receptwise.com');
+    assert.equal(result.panel.url, 'https://sphere-admin.receptwise.com');
     assert.equal(result.website.records[0].proxied, false);
     assert.equal(result.website.records[0].content, 'rw-cafe-site.pages.dev');
     assert.match(result.website.dns, /DNS only/);
     assert.equal(calls.some((call) => call.body && call.body.name === 'receptwise.com'), false);
-    assert.equal(calls.some((call) => call.body && call.body.name === 'sphere.receptwise.com'), false);
+    assert.equal(calls.some((call) => call.body && call.body.name === 'sphere-admin.receptwise.com'), false);
+    assert.ok(calls.some((call) => call.body && call.body.name === 'sphere.receptwise.com' && call.body.proxied === false));
     assert.equal(calls.some((call) => call.body && call.body.proxied === true), false);
     const reserved = await domains.collect(biz({
       slug: 'panel',

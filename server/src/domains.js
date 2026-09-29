@@ -9,7 +9,12 @@ const cloudflare = require('./website/cloudflare');
 
 const ROOT = 'receptwise.com';
 const WILDCARD = '*.' + ROOT;
-const RESERVED = new Set(['panel', 'www', 'api', 'sphere-admin']);
+const RESERVED = new Set(['panel', 'www', 'api']);
+
+function isPanelHost(slug) {
+  const s = String(slug || '').trim().toLowerCase();
+  return RESERVED.has(s) || (s.length > 6 && s.endsWith('-admin'));
+}
 const HEALTH_MS = 8000;
 
 function hostingConfigured() {
@@ -21,8 +26,12 @@ function panelSlug(biz) {
 }
 
 function panelAddress(slug) {
-  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(slug || '')) return '';
-  return 'https://' + slug + '.' + ROOT;
+  const s = String(slug || '').trim().toLowerCase();
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(s)) return '';
+  if (isPanelHost(s)) return '';
+  const label = s + '-admin';
+  if (label.length > 63) return '';
+  return 'https://' + label + '.' + ROOT;
 }
 
 function projectFor(site) {
@@ -298,7 +307,7 @@ async function collect(biz, site, opts) {
   const write = Boolean(opts && opts.write);
   const slug = panelSlug(biz);
   const url = panelAddress(slug);
-  const reserved = RESERVED.has(slug);
+  const reserved = isPanelHost(slug);
   const health = url ? await checkHealth(url) : { ok: false, detail: 'No panel address.' };
   const panel = {
     slug,
@@ -379,7 +388,8 @@ async function recheck(biz, body, user) {
 }
 
 module.exports = {
-  RESERVED: ['panel', 'www', 'api', 'sphere-admin'],
+  RESERVED: ['panel', 'www', 'api'],
+  isPanelHost,
   hostingConfigured,
   panelSlug,
   panelAddress,

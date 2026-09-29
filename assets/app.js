@@ -2344,13 +2344,13 @@
   function hostedSiteUrl(b) {
     if (b && b.hostedUrl) return b.hostedUrl;
     var source = (b && b.subdomain) || (b && b.slug) || (b && b.id) || (b && b.name) || "";
-    var slug = String(source).toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 58).replace(/-+$/g, "");
-    if (!slug || slug === "panel" || slug === "www" || slug === "api") {
-      var fromName = String((b && b.name) || "").toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 58).replace(/-+$/g, "");
+    var slug = String(source).toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 57).replace(/-+$/g, "");
+    if (!slug || slug === "panel" || slug === "www" || slug === "api" || /-admin$/.test(slug)) {
+      var fromName = String((b && b.name) || "").toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 57).replace(/-+$/g, "");
       slug = fromName;
     }
-    if (!slug || slug === "panel" || slug === "www" || slug === "api") return "";
-    return "https://" + slug + "-site.receptwise.com";
+    if (!slug || slug === "panel" || slug === "www" || slug === "api" || /-admin$/.test(slug)) return "";
+    return "https://" + slug + ".receptwise.com";
   }
 
   function domainDraft(b) {
@@ -2376,7 +2376,7 @@
   function siteHostChoices(b) {
     var mode = chosenSiteHost(b);
     var hosted = hostedSiteUrl(b);
-    var panel = (b && (b.panelUrl || (b.subdomain ? "https://" + b.subdomain + ".receptwise.com" : ""))) || "";
+    var panel = (b && (b.panelUrl || (b.subdomain ? "https://" + b.subdomain + "-admin.receptwise.com" : ""))) || "";
     function one(id, title, detail) {
       var on = mode === id ? " on" : "";
       return '<button class="choice' + on + '" type="button" data-action="pick-site-host" data-id="' + esc(b.id) + '" data-host="' + id + '" aria-pressed="' + (mode === id ? "true" : "false") + '"><b>' +
@@ -2704,14 +2704,15 @@
 
   function panelAddress(b) {
     if (!b || !b.subdomain) return "";
-    var url = b.panelUrl || ("https://" + b.subdomain + ".receptwise.com");
+    var url = b.panelUrl || ("https://" + b.subdomain + "-admin.receptwise.com");
+    var site = b.hostedUrl || ("https://" + b.subdomain + ".receptwise.com");
     var link = '<a href="' + esc(url) + '">' + esc(url) + "</a>";
     if (isAdmin()) {
       return '<form class="subdomain-row" data-action="save-subdomain" data-id="' + esc(b.id) + '">' +
         '<label for="panel-subdomain">Customer panel</label><span>https://</span>' +
-        '<input class="ctrl" id="panel-subdomain" name="subdomain" value="' + esc(b.subdomain) + '" maxlength="63" autocomplete="off" spellcheck="false">' +
-        "<span>.receptwise.com</span><button class='btn' type='submit'>Save</button></form>" +
-        '<p class="help">Customer panel: ' + link + "</p>";
+        '<input class="ctrl" id="panel-subdomain" name="subdomain" value="' + esc(b.subdomain) + '" maxlength="57" autocomplete="off" spellcheck="false">' +
+        "<span>-admin.receptwise.com</span><button class='btn' type='submit'>Save</button></form>" +
+        '<p class="help">Customer panel: ' + link + ". Public site: " + esc(site) + ".</p>";
     }
     return '<p class="help">Customer panel: ' + link + "</p>";
   }

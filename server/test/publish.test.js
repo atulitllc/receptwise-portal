@@ -155,7 +155,7 @@ test('generate publishes GitHub and Cloudflare from the same files', async () =>
   }
 });
 
-test('a business with no custom domain is published at {slug}-site.receptwise.com', async () => {
+test('a business with no custom domain is published at {slug}.receptwise.com', async () => {
   await db.migrate();
   const previousFetch = global.fetch;
   const previousToken = config.github.token;
@@ -171,10 +171,10 @@ test('a business with no custom domain is published at {slug}-site.receptwise.co
   const biz = await makeBiz('Sphere Host ' + Date.now(), '');
   try {
     const created = await websites.generate(biz, 'classic', null);
-    const hosted = biz.subdomain + '-site.receptwise.com';
+    const hosted = biz.subdomain + '.receptwise.com';
     assert.equal(created.cloudflare.status, 'deployed');
     assert.equal(created.cloudflare.domain, hosted);
-    assert.notEqual(created.cloudflare.domain, biz.subdomain + '.receptwise.com');
+    assert.notEqual(created.cloudflare.domain, biz.subdomain + '-admin.receptwise.com');
     assert.match(created.cloudflare.dns, /DNS only/);
     const attach = seen.calls.find((call) => call.method === 'POST' && call.path.endsWith('/domains'));
     assert.equal(attach.body.name, hosted);

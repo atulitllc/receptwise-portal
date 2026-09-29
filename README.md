@@ -75,15 +75,19 @@ Without those keys the panel stays honest: phone says **Not connected**, setting
 - **Voice.** The live assistant already uses ElevenLabs. `VAPI_VOICE_ID` is only required when publishing a brand-new assistant from the business page.
 - **Trello.** Create a Power-Up API key and token (steps below), paste them on Integrations, or set `TRELLO_API_KEY` and `TRELLO_TOKEN`. Choose a board and a list. Cards are not created until that list is saved. Set `APP_BASE_URL` so each card links back to the call.
 
-Pilot client 1 is seeded as ReceptWise (Malden, MA) and linked to assistant `c3c8899c-e42d-494b-bf47-3af37f942341` and number `+1 781-705-7179` (`60a44606-c827-4f01-b381-852e247a8003`). Override those with `VAPI_ASSISTANT_ID`, `VAPI_PHONE_NUMBER_ID`, and `PILOT_PHONE_E164` if they change. Its customer panel is `https://receptwise.receptwise.com`.
+Pilot client 1 is seeded as ReceptWise (Malden, MA) and linked to assistant `c3c8899c-e42d-494b-bf47-3af37f942341` and number `+1 781-705-7179` (`60a44606-c827-4f01-b381-852e247a8003`). Override those with `VAPI_ASSISTANT_ID`, `VAPI_PHONE_NUMBER_ID`, and `PILOT_PHONE_E164` if they change. Its customer panel is `https://receptwise-admin.receptwise.com`. Its public site host is `https://receptwise.receptwise.com`.
 
 ## Customer panels
 
-`*.receptwise.com` already points at this service. `panel.receptwise.com` is the main control panel and behaves as it does today. `www` and `api` are reserved the same way. The Render hostname (`*.onrender.com`) is also the full panel. `receptwise.com` itself is not a customer panel. A request whose Host is exactly `receptwise.com` or `receptwise.com:<port>` answers 301 to `https://www.receptwise.com` plus the original path and query. `www`, `panel`, `api`, and business subdomains are not redirected.
+`*.receptwise.com` already points at this service. `panel.receptwise.com` is the main control panel and behaves as it does today. `www` and `api` are reserved the same way. The Render hostname (`*.onrender.com`) is also the full panel. `receptwise.com` itself is not a customer panel. A request whose Host is exactly `receptwise.com` or `receptwise.com:<port>` answers 301 to `https://www.receptwise.com` plus the original path and query. `www`, `panel`, `api`, public site hosts, and customer panel hosts are not redirected.
 
-Any other single label is a customer panel: `https://<slug>.receptwise.com`. The slug is a unique `subdomain` on the business. A new business gets one from its name (lowercase letters, numbers, and hyphens). An admin can change it on the business page, which also shows the URL. Reserved names and duplicates are rejected. Renaming a business does not change the address. ReceptWise uses `receptwise`. SPHERE, when that business is already in the database, uses `sphere`.
+The public website is `https://<slug>.receptwise.com`. The customer panel is `https://<slug>-admin.receptwise.com`. The slug is a unique `subdomain` on the business and does not include `-admin`. A new business gets one from its name (lowercase letters, numbers, and hyphens). An admin can change it on the business page, which shows both URLs. Reserved names (`panel`, `www`, `api`, and anything ending in `-admin`) and duplicates are rejected. Renaming a business does not change the address. ReceptWise uses `receptwise`. SPHERE uses `sphere`: the site is `https://sphere.receptwise.com` and the panel is `https://sphere-admin.receptwise.com`.
 
-On that host the sign-in page shows the business name, and every page and API response is that business only. There is no business switcher and no list of other businesses, including after an admin signs in. A customer account for that business opens its dashboard (`client.html`). Admins and team can still sign in. An unknown slug shows a not-found page instead of the main panel. The sign-in cookie is for that host only. The list of every business stays on `panel.receptwise.com` and the Render hostname.
+`APP_BASE_URL` is the platform origin, usually `https://panel.receptwise.com` or the Render URL. Calendar, Meta, and webhook callbacks use that one origin. They do not follow the customer panel host.
+
+On `<slug>-admin.receptwise.com` the sign-in page shows the business name, and every page and API response is that business only. There is no business switcher and no list of other businesses, including after an admin signs in. A customer account for that business opens its dashboard (`client.html`). Admins and team can still sign in. An unknown `<slug>-admin` host shows a not-found page instead of the main panel. The sign-in cookie is for that host only. The list of every business stays on `panel.receptwise.com` and the Render hostname.
+
+Previously `<slug>.receptwise.com` was the customer panel. It is now the public site. Panel bookmarks move to `<slug>-admin.receptwise.com`. Stored `subdomain` values stay the bare slug (`sphere` stays `sphere`). A specific DNS-only CNAME for `<slug>.receptwise.com` points at the Pages project and overrides the `*.receptwise.com` wildcard for that name only. The wildcard still carries `<slug>-admin.receptwise.com` to Render.
 
 ## Deploy on Render
 
@@ -147,7 +151,7 @@ The in-app SQL file does not restore sign-in. The admin created from `ADMIN_EMAI
 | `DATABASE_URL` | yes | Postgres connection string (wired from the Blueprint database) |
 | `PORT` | no | Set by Render. The server binds `0.0.0.0:$PORT`. |
 | `RENDER_EXTERNAL_URL` | no | Set by Render. Used as the public base URL when `APP_BASE_URL` is empty. |
-| `APP_BASE_URL` | no | Optional custom origin, no trailing slash. Used for the Vapi webhook URL, the Meta redirect, the Google Calendar redirect (`/oauth/google/callback`), and the Cal.com webhook (`/webhooks/calcom`). |
+| `APP_BASE_URL` | no | Platform origin, no trailing slash. Use `https://panel.receptwise.com` or the Render URL, not a customer site (`<slug>.receptwise.com`) or customer panel (`<slug>-admin.receptwise.com`). Used for the Vapi webhook URL, the Meta redirect, the Google Calendar redirect (`/oauth/google/callback`), and the Cal.com webhook (`/webhooks/calcom`). |
 | `SESSION_DAYS` | no | Session lifetime. Default 14. |
 | `ADMIN_EMAIL` | yes | First admin, created only when the users table is empty |
 | `ADMIN_PASSWORD` | yes | First admin password, 10+ characters |
@@ -196,9 +200,10 @@ The in-app SQL file does not restore sign-in. The admin created from `ADMIN_EMAI
 
 On a business overview, an admin sees a Domains card.
 
-- The customer panel address is `https://<slug>.receptwise.com`. The server fetches it and shows **OK**, or the error text when the page is a Cloudflare error such as **Cloudflare 1000**.
-- The website domain (the business's own site, not a `receptwise.com` name) is attached to that business's Cloudflare Pages project, the same project Generate uses. When the domain's zone is in this Cloudflare account, the CNAME is created. Otherwise the card lists the CNAME and any verification TXT the customer must add.
-- Re-check reads verification and SSL, and repairs `*.receptwise.com`: the name is added on the Render service if it is missing, and the Cloudflare CNAME stays DNS-only and pointed at the `onrender.com` host. `receptwise.com` itself is never attached to Pages and is never sent to Render. `www` stays the proxied redirect target. Reserved names `panel`, `www`, `api`, and `sphere-admin` are not given their own records.
+- The customer panel address is `https://<slug>-admin.receptwise.com`. The server fetches it and shows **OK**, or the error text when the page is a Cloudflare error such as **Cloudflare 1000**.
+- The public site can be `https://<slug>.receptwise.com` when the customer does not buy a domain. That name is a DNS-only CNAME to the Pages project. It is not orange-clouded. The customer panel host is never attached to Pages.
+- A custom website domain (the business's own site) is attached to that business's Cloudflare Pages project, the same project Generate uses. When the domain's zone is in this Cloudflare account, the CNAME is created. Otherwise the card lists the CNAME and any verification TXT the customer must add.
+- Re-check reads verification and SSL, and repairs `*.receptwise.com`: the name is added on the Render service if it is missing, and the Cloudflare CNAME stays DNS-only and pointed at the `onrender.com` host. `receptwise.com` itself is never attached to Pages and is never sent to Render. `www` stays the proxied redirect target. Reserved names `panel`, `www`, `api`, and every `<slug>-admin` host are not attached to Pages.
 
 If any of `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_ZONE_ID`, `RENDER_API_KEY`, or `RENDER_SERVICE_ID` is missing, the card says **Not configured**.
 

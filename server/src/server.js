@@ -119,7 +119,7 @@ function createApp() {
   app.set('trust proxy', 1);
   app.disable('x-powered-by');
   // receptwise.com is on this service as a DNS-only custom domain. Send it to www
-  // before any other route. www, panel, api, and <slug>.receptwise.com are not redirected.
+  // before any other route. www, panel, api, <slug>.receptwise.com, and <slug>-admin.receptwise.com are not redirected.
   app.use((req, res, next) => {
     const target = portalHost.apexRedirectTarget(req.headers.host, req.originalUrl);
     if (!target) return next();
@@ -198,7 +198,8 @@ function createApp() {
   // Public marketing form. Own body limit, no session and no X-RW-Client header.
   demoRequests.mountPublic(app, wrap);
 
-  // <slug>.receptwise.com is that business's panel. Reserved names and every other host stay the main panel.
+  // <slug>-admin.receptwise.com is that business's panel. <slug>.receptwise.com is the public site.
+  // panel, www, api, and every other host stay the main panel.
   app.use(wrap(async (req, res, next) => {
     if (req.path.startsWith('/webhooks')) return next();
     const host = portalHost.classifyHost(req.hostname);

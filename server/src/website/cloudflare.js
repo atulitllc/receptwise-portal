@@ -47,18 +47,22 @@ function customDomain(biz) {
   return hostnameOf(profile.domain || profile.customDomain || wizard.domain || '');
 }
 
-// Panel hosts are <slug>.receptwise.com. The public site is <slug>-site.receptwise.com.
-// panel, www, and api are reserved the same way as the customer panel.
+// The public site is <slug>.receptwise.com. The customer panel is <slug>-admin.receptwise.com.
+// panel, www, api, and any label ending in -admin are reserved and are never the public site.
 const SITE_ROOT = 'receptwise.com';
 const RESERVED_SITE_SLUGS = new Set(['panel', 'www', 'api']);
+
+function reservedSiteSlug(value) {
+  return RESERVED_SITE_SLUGS.has(value) || (value.length > 6 && value.endsWith('-admin'));
+}
 
 function fitSiteSlug(value) {
   const raw = String(value || '').trim().toLowerCase();
   if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(raw)) return '';
-  if (RESERVED_SITE_SLUGS.has(raw)) return '';
-  const cut = raw.slice(0, 58).replace(/-+$/g, '');
-  if (!cut || RESERVED_SITE_SLUGS.has(cut)) return '';
-  if (!/^[a-z0-9](?:[a-z0-9-]{0,56}[a-z0-9])?$/.test(cut)) return '';
+  if (reservedSiteSlug(raw)) return '';
+  const cut = raw.slice(0, 57).replace(/-+$/g, '');
+  if (!cut || reservedSiteSlug(cut)) return '';
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,55}[a-z0-9])?$/.test(cut)) return '';
   return cut;
 }
 
@@ -68,7 +72,7 @@ function slugifySiteName(name) {
     .replace(/&/g, ' and ')
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .slice(0, 58)
+    .slice(0, 57)
     .replace(/-+$/g, '');
   return fitSiteSlug(raw);
 }
@@ -86,7 +90,7 @@ function siteSlug(biz) {
 function hostedHostname(biz) {
   const slug = siteSlug(biz);
   if (!slug) return '';
-  return slug + '-site.' + SITE_ROOT;
+  return slug + '.' + SITE_ROOT;
 }
 
 function hostedUrl(biz) {
@@ -96,9 +100,9 @@ function hostedUrl(biz) {
 
 function isHostedSiteHostname(hostname) {
   const host = hostnameOf(hostname);
-  const match = host.match(/^([a-z0-9](?:[a-z0-9-]{0,56}[a-z0-9])?)-site\.receptwise\.com$/);
-  if (!match || RESERVED_SITE_SLUGS.has(match[1])) return false;
-  return (match[1] + '-site').length <= 63;
+  const match = host.match(/^([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\.receptwise\.com$/);
+  if (!match || reservedSiteSlug(match[1])) return false;
+  return (match[1] + '-admin').length <= 63;
 }
 
 function effectiveSiteHost(biz) {
@@ -115,8 +119,8 @@ function publishHostname(biz) {
   return hosted;
 }
 
-// The apex stays off Pages. A panel host such as sphere.receptwise.com stays off Pages.
-// The one exception is the public site hostname {slug}-site.receptwise.com.
+// The apex stays off Pages. Panel hosts such as panel.receptwise.com and sphere-admin.receptwise.com stay off Pages.
+// The public site hostname is the bare slug: sphere.receptwise.com.
 function pagesBlockedReason(hostname) {
   const raw = String(hostname || '').trim().toLowerCase()
     .replace(/^[a-z][a-z0-9+.-]*:\/\//, '')

@@ -231,25 +231,26 @@ test('a missing zone still returns the CNAME instruction', async () => {
 });
 
 test('hosted hostname uses the subdomain, then the slug, then the business name', () => {
-  assert.equal(cloudflare.hostedHostname({ subdomain: 'Sphere', slug: 'other', name: 'Other' }), 'sphere-site.receptwise.com');
-  assert.equal(cloudflare.hostedUrl({ subdomain: 'sphere' }), 'https://sphere-site.receptwise.com');
-  assert.notEqual(cloudflare.hostedHostname({ subdomain: 'sphere' }), 'sphere.receptwise.com');
-  assert.equal(cloudflare.hostedHostname({ slug: 'harbor-cafe', name: 'Other Name' }), 'harbor-cafe-site.receptwise.com');
-  assert.equal(cloudflare.hostedHostname({ name: 'SPHERE' }), 'sphere-site.receptwise.com');
-  assert.equal(cloudflare.hostedHostname({ name: 'Harbor & Rye' }), 'harbor-and-rye-site.receptwise.com');
-  assert.equal(cloudflare.siteSlug({ subdomain: 'a'.repeat(60) }).length, 58);
-  assert.equal(cloudflare.hostedHostname({ subdomain: 'panel', slug: 'cafe', name: 'Panel' }), 'cafe-site.receptwise.com');
+  assert.equal(cloudflare.hostedHostname({ subdomain: 'Sphere', slug: 'other', name: 'Other' }), 'sphere.receptwise.com');
+  assert.equal(cloudflare.hostedUrl({ subdomain: 'sphere' }), 'https://sphere.receptwise.com');
+  assert.notEqual(cloudflare.hostedHostname({ subdomain: 'sphere' }), 'sphere-admin.receptwise.com');
+  assert.equal(cloudflare.hostedHostname({ slug: 'harbor-cafe', name: 'Other Name' }), 'harbor-cafe.receptwise.com');
+  assert.equal(cloudflare.hostedHostname({ name: 'SPHERE' }), 'sphere.receptwise.com');
+  assert.equal(cloudflare.hostedHostname({ name: 'Harbor & Rye' }), 'harbor-and-rye.receptwise.com');
+  assert.equal(cloudflare.siteSlug({ subdomain: 'a'.repeat(60) }).length, 57);
+  assert.equal(cloudflare.hostedHostname({ subdomain: 'panel', slug: 'cafe', name: 'Panel' }), 'cafe.receptwise.com');
   assert.equal(cloudflare.hostedHostname({ subdomain: 'www', slug: 'www', name: 'Www' }), '');
   assert.equal(cloudflare.hostedHostname({ subdomain: 'api', slug: 'api', name: 'Api' }), '');
   assert.equal(cloudflare.hostedHostname({ subdomain: 'panel', slug: 'panel', name: 'Panel' }), '');
-  assert.equal(cloudflare.pagesBlockedReason('sphere.receptwise.com').length > 0, true);
-  assert.equal(cloudflare.pagesBlockedReason('panel-site.receptwise.com').length > 0, true);
-  assert.equal(cloudflare.pagesBlockedReason('www-site.receptwise.com').length > 0, true);
-  assert.equal(cloudflare.pagesBlockedReason('api-site.receptwise.com').length > 0, true);
-  assert.equal(cloudflare.pagesBlockedReason('sphere-site.receptwise.com'), '');
+  assert.equal(cloudflare.hostedHostname({ subdomain: 'sphere-admin', slug: 'sphere', name: 'SPHERE' }), 'sphere.receptwise.com');
+  assert.equal(cloudflare.pagesBlockedReason('sphere-admin.receptwise.com').length > 0, true);
+  assert.equal(cloudflare.pagesBlockedReason('panel.receptwise.com').length > 0, true);
+  assert.equal(cloudflare.pagesBlockedReason('www.receptwise.com').length > 0, true);
+  assert.equal(cloudflare.pagesBlockedReason('api.receptwise.com').length > 0, true);
+  assert.equal(cloudflare.pagesBlockedReason('sphere.receptwise.com'), '');
   assert.equal(cloudflare.publishHostname({ subdomain: 'sphere', profile: { domain: 'www.cafe.example' } }), 'www.cafe.example');
-  assert.equal(cloudflare.publishHostname({ subdomain: 'sphere', profile: { siteHost: 'hosted', domain: 'www.cafe.example' } }), 'sphere-site.receptwise.com');
-  assert.equal(cloudflare.publishHostname({ subdomain: 'sphere', profile: {} }), 'sphere-site.receptwise.com');
+  assert.equal(cloudflare.publishHostname({ subdomain: 'sphere', profile: { siteHost: 'hosted', domain: 'www.cafe.example' } }), 'sphere.receptwise.com');
+  assert.equal(cloudflare.publishHostname({ subdomain: 'sphere', profile: {} }), 'sphere.receptwise.com');
   assert.equal(cloudflare.effectiveSiteHost({ profile: { domain: 'cafe.example' } }), 'custom');
   assert.equal(cloudflare.effectiveSiteHost({ subdomain: 'sphere' }), 'hosted');
 });
@@ -268,7 +269,7 @@ test('a hosted receptwise.com name gets a DNS-only CNAME and the apex stays off 
     const method = opts.method || 'GET';
     const body = opts.body && typeof opts.body === 'string' ? JSON.parse(opts.body) : null;
     calls.push({ method, path: target.pathname, name: target.searchParams.get('name'), body });
-    if (method === 'GET' && target.pathname.endsWith('/pages/projects/rw-sphere-site')) return ok({ name: 'rw-sphere-site' });
+    if (method === 'GET' && target.pathname.endsWith('/pages/projects/rw-sphere')) return ok({ name: 'rw-sphere' });
     if (method === 'POST' && target.pathname.endsWith('/deployments')) return ok({ id: 'dep-hosted' });
     if (method === 'POST' && target.pathname.endsWith('/domains')) return ok({ name: body.name, status: 'pending' });
     if (method === 'GET' && target.pathname.endsWith('/dns_records')) return ok([]);
@@ -277,21 +278,24 @@ test('a hosted receptwise.com name gets a DNS-only CNAME and the apex stays off 
   };
   try {
     const result = await cloudflare.deploy({
-      project: 'sphere-site',
+      project: 'sphere',
       files: { 'index.html': '<p>Sphere</p>' },
-      domain: 'sphere-site.receptwise.com'
+      domain: 'sphere.receptwise.com'
     });
     assert.equal(result.status, 'deployed');
-    assert.equal(result.domain, 'sphere-site.receptwise.com');
+    assert.equal(result.domain, 'sphere.receptwise.com');
     assert.match(result.dns, /DNS only/);
     const dns = calls.find((call) => call.method === 'POST' && call.path.endsWith('/dns_records'));
     assert.equal(dns.body.type, 'CNAME');
-    assert.equal(dns.body.name, 'sphere-site.receptwise.com');
-    assert.equal(dns.body.content, 'rw-sphere-site.pages.dev');
+    assert.equal(dns.body.name, 'sphere.receptwise.com');
+    assert.equal(dns.body.content, 'rw-sphere.pages.dev');
     assert.equal(dns.body.proxied, false);
     assert.equal(calls.some((call) => call.body && call.body.name === 'receptwise.com'), false);
+    assert.equal(calls.some((call) => call.body && call.body.name === 'sphere-admin.receptwise.com'), false);
     assert.equal(calls.some((call) => call.body && call.body.proxied === true), false);
-    const apex = await cloudflare.deploy({ project: 'sphere-site', files: { 'index.html': '<p>Hi</p>' }, domain: 'receptwise.com' });
+    const panelHost = await cloudflare.deploy({ project: 'sphere', files: { 'index.html': '<p>Hi</p>' }, domain: 'sphere-admin.receptwise.com' });
+    assert.equal(panelHost.domainStatus, 'blocked');
+    const apex = await cloudflare.deploy({ project: 'sphere', files: { 'index.html': '<p>Hi</p>' }, domain: 'receptwise.com' });
     assert.equal(apex.domainStatus, 'blocked');
     assert.equal(calls.filter((call) => call.method === 'POST' && call.path.endsWith('/domains')).length, 1);
   } finally {
