@@ -17,6 +17,8 @@ const social = require('./social');
 const meta = require('./integrations/meta');
 const trelloSync = require('./trelloSync');
 const exportData = require('./exportData');
+const calendarConnection = require('./calendarConnection');
+const voices = require('./voices');
 const websites = require('./website/service');
 
 // The portal pages live at the repo root (also published as the GitHub Pages demo).
@@ -124,8 +126,20 @@ function createApp() {
   }));
 
   api.get('/integrations/status', auth.requireUser, (_req, res) => res.json(provisioning.status()));
+  api.get('/voices', auth.requireUser, (_req, res) => res.json({ voices: voices.publicList() }));
+
+  // Search only. Buying stays on POST /businesses/:slug/numbers/provision.
+  api.get('/numbers/search', auth.requireAdmin, wrap(async (req, res) => {
+    const areaCode = String(req.query.areaCode || '').replace(/\D/g, '').slice(0, 3);
+    if (!/^[2-9]\d{2}$/.test(areaCode)) return res.status(400).json({ error: 'Enter a 3-digit area code.' });
+    res.json({ numbers: await provisioning.searchNumbers(areaCode) });
+  }));
 
   api.get('/businesses', auth.requireUser, wrap(async (_req, res) => res.json({ businesses: await businesses.listUi() })));
+  api.post('/businesses/draft', auth.requireUser, wrap(async (req, res) => {
+    const biz = await businesses.createDraft(req.body || {}, req.user.id);
+    res.status(201).json({ business: await businesses.toUi(biz) });
+  }));
   api.post('/businesses', auth.requireUser, wrap(async (req, res) => {
     const biz = await businesses.createBusiness(req.body || {}, req.user.id);
     res.status(201).json({ business: await businesses.toUi(biz) });
@@ -143,6 +157,26 @@ function createApp() {
   api.put('/businesses/:slug', withBiz, wrap(async (req, res) => {
     const updated = await businesses.updateBusiness(req.params.slug, req.body || {}, req.user.id);
     res.json({ business: await businesses.toUi(updated) });
+  }));
+  api.put('/businesses/:slug/draft', withBiz, wrap(async (req, res) => {
+    const updated = await businesses.updateDraft(req.biz, req.body || {}, req.user.id);
+    res.json({ business: await businesses.toUi(updated) });
+  }));
+  api.post('/businesses/:slug/draft/finish', withBiz, wrap(async (req, res) => {
+    const updated = await businesses.finishDraft(req.biz, req.body || {}, req.user.id);
+    res.json({ business: await businesses.toUi(updated) });
+  }));
+  api.put('/businesses/:slug/calendar', withBiz, wrap(async (req, res) => {
+    const saved = await calendarConnection.saveConnection(req.biz, req.body || {}, req.user.id);
+    res.json({
+      calendar: saved.calendar,
+      calcomKeySaved: saved.calcomKeySaved,
+      business: await businesses.toUi(saved.biz)
+    });
+  }));
+  api.delete('/businesses/:slug', withBiz, wrap(async (req, res) => {
+    await businesses.deleteDraft(req.biz, req.user.id);
+    res.json({ ok: true });
   }));
   api.put('/businesses/:slug/setup/:step', withBiz, wrap(async (req, res) => {
     if (!businesses.STEP_KEYS.includes(req.params.step)) return res.status(400).json({ error: 'Unknown setup step.' });

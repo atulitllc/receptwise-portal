@@ -76,6 +76,7 @@
   var STATUS_LABEL = {
     live: "Live",
     setup: "In setup",
+    draft: "Setup incomplete",
     waiting: "Waiting on client",
     attention: "Needs attention",
     connected: "Connected",
@@ -121,17 +122,25 @@
       forwardType: "missed",
       businessNumber: "",
       areaCode: window.RW_LIVE ? "781" : "415",
-      chosenNumber: window.RW_LIVE ? "(781) 555-0148" : "(415) 555-0148",
+      chosenNumber: "",
+      chosenE164: "",
+      numberOptions: [],
+      numberStatus: "idle",
+      numberError: "",
       lookupNote: "",
       clientDone: false,
       testStatus: "idle",
       testNote: "",
       calendar: "google",
+      calcomEventTypeId: "",
+      calcomApiKey: "",
+      calcomKeySaved: false,
+      calcomDemoKey: false,
       greeting: "",
       services: "",
       faqs: "",
       transfer: "",
-      voice: "Juniper (warm)",
+      voice: "nora",
       spanish: false,
       facebook: "",
       instagram: "",
@@ -144,8 +153,53 @@
       sampleSms: "Your appointment is confirmed. Reply STOP to opt out.",
       consent: "Number collected at booking",
       error: "",
-      createdId: ""
+      createdId: "",
+      draftId: "",
+      saved: false,
+      finished: false,
+      saving: false
     };
+  }
+
+  function voiceList() {
+    return (window.RW_VOICES && window.RW_VOICES.length) ? window.RW_VOICES : [{ key: "nora", name: "Nora", description: "Female, American English, calm and natural. Default." }];
+  }
+
+  function voiceKey(value) {
+    var raw = String(value || "").trim().toLowerCase();
+    if (!raw || raw === "juniper (warm)" || raw === "harbor (clear)" || raw === "north (calm)" || raw === "sol (bright)" || raw === "juniper" || raw === "harbor" || raw === "north" || raw === "sol") return "nora";
+    var list = voiceList();
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].key === raw || String(list[i].name || "").toLowerCase() === raw) return list[i].key;
+    }
+    return "nora";
+  }
+
+  function voiceLabel(value) {
+    var key = voiceKey(value);
+    var list = voiceList();
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].key === key) return list[i].name + " — " + list[i].description;
+    }
+    return "Nora";
+  }
+
+  function voiceOptions(selected) {
+    var key = voiceKey(selected);
+    return voiceList().map(function (voice) {
+      return '<option value="' + esc(voice.key) + '"' + (voice.key === key ? " selected" : "") + ">" + esc(voice.name + " — " + voice.description) + "</option>";
+    }).join("");
+  }
+
+  function loadVoiceCatalog() {
+    if (!LIVE) return;
+    api("GET", "api/voices").then(function (data) {
+      if (!data || !data.voices || !data.voices.length) return;
+      var next = data.voices.map(function (voice) { return voice.key; }).join(",");
+      var prev = voiceList().map(function (voice) { return voice.key; }).join(",");
+      window.RW_VOICES = data.voices;
+      if (next !== prev && currentRender) currentRender();
+    }).catch(function () {});
   }
 
   function esc(value) {
@@ -185,6 +239,25 @@
   // Live mode: the Render server injects window.RW_LIVE (signed-in user + integration status)
   // and real businesses into data.js. On GitHub Pages RW_LIVE is undefined and the demo runs as before.
   var LIVE = !!window.RW_LIVE;
+  var numberPick = { bizId: "", areaCode: "", status: "idle", options: [], error: "", chosenE164: "" };
+
+  function isAdmin() {
+    return !!(window.RW_LIVE && window.RW_LIVE.user && window.RW_LIVE.user.role === "admin");
+  }
+
+  function missingNumberKeys() {
+    var ints = (window.RW_LIVE && window.RW_LIVE.integrations) || {};
+    var missing = [];
+    if (!ints.twilio) missing.push("TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN");
+    if (!ints.vapi) missing.push("VAPI_API_KEY");
+    return missing;
+  }
+
+  function emptyNumberCopy(area) {
+    var nearby = ["781", "339", "617"].filter(function (code) { return code !== String(area || ""); });
+    if (nearby.length < 2) nearby = ["339", "617"];
+    return "No numbers available for " + area + ", try a nearby area code like " + nearby[0] + " or " + nearby[1];
+  }
 
   function api(method, url, body) {
     return fetch(url, {
@@ -242,8 +315,70 @@
     return extraCache;
   }
 
+  function localGet(key) {
+    try { return localStorage.getItem(key); } catch (e) { return null; }
+  }
+
+  function localSet(key, value) {
+    try { localStorage.setItem(key, value); return true; }
+    catch (e) { toast("This browser blocked saving the draft."); return false; }
+  }
+
+  function draftRecords() {
+    try { return JSON.parse(localGet("rw_drafts") || "[]"); }
+    catch (e) { return []; }
+  }
+
+  function writeDraftRecords(list) {
+    localSet("rw_drafts", JSON.stringify(list));
+  }
+
+  function upsertDraftRecord(business) {
+    var list = draftRecords().filter(function (item) { return item.id !== business.id; });
+    list.push(business);
+    writeDraftRecords(list);
+  }
+
+  function removeDraftRecord(id) {
+    writeDraftRecords(draftRecords().filter(function (item) { return item.id !== id; }));
+  }
+
   function allBusinesses() {
-    return (window.RW_DATA.businesses || []).concat(createdList());
+    var list = (window.RW_DATA.businesses || []).concat(createdList());
+    if (!LIVE) {
+      draftRecords().forEach(function (draft) {
+        if (!list.some(function (item) { return item.id === draft.id; })) list.push(draft);
+      });
+    }
+    return list;
+  }
+
+  function draftActions(b) {
+    return '<a class="btn btn-sm btn-primary" href="add.html?draft=' + encodeURIComponent(b.id) + '">Resume setup</a> ' +
+      '<button class="btn btn-sm" type="button" data-action="delete-draft" data-id="' + esc(b.id) + '" data-name="' + esc(b.name) + '">Delete</button>';
+  }
+
+  function setupProgress(b) {
+    if (b && b.setupProgress && b.setupProgress.length) return b.setupProgress;
+    var phone = (b && b.phone) || {};
+    var test = checklistItem(b || {}, "test");
+    return [
+      { key: "details", label: "Details", done: !!(b && b.name && b.category), step: 0 },
+      { key: "receptionist", label: "Receptionist published", done: !!(b && b.assistantPublished), step: 5 },
+      { key: "number", label: "Number bought", done: !!(phone.aiNumber), step: 2 },
+      { key: "test", label: "Test call", done: test.status === "connected", step: 3 }
+    ];
+  }
+
+  function draftSetupCard(b) {
+    if (!b || b.status !== "draft") return "";
+    var rows = setupProgress(b).map(function (item) {
+      return '<div class="setting-row"><div><strong>' + esc(item.label) + '</strong><div class="help">' + (item.done ? "Done" : "Not done yet") + "</div></div>" +
+        '<a class="btn btn-sm" href="add.html?draft=' + encodeURIComponent(b.id) + "&step=" + encodeURIComponent(item.step) + '">Resume</a></div>';
+    }).join("");
+    return '<section class="card" style="margin-bottom:14px"><div class="card-h"><h2>Setup incomplete</h2>' +
+      '<a class="btn btn-sm btn-primary" href="add.html?draft=' + encodeURIComponent(b.id) + '">Resume setup</a></div><div class="card-b">' +
+      rows + '<button class="btn btn-sm" type="button" data-action="delete-draft" data-id="' + esc(b.id) + '" data-name="' + esc(b.name) + '">Delete draft</button></div></section>';
   }
 
   function findBiz(id) {
@@ -331,16 +466,12 @@
     return plans[1] || plans[0];
   }
 
-  function candidates(area) {
-    var a = String(area || "").replace(/\D/g, "").slice(0, 3);
-    if (a.length < 3) a = "415";
-    return ["(" + a + ") 555-0148", "(" + a + ") 555-0162", "(" + a + ") 555-0190"];
-  }
-
   function forwardingHelp(carrier, forwardType, aiNumber) {
     var n = digits(aiNumber);
     var missing = n.length < 10;
-    if (missing) n = "4155550148";
+    if (missing) {
+      return { lines: [], off: [], note: "Choose an AI number before sending these codes.", warn: "", number: "", missing: true };
+    }
     var lines = [];
     var off = [];
     var note = "Dial this from the business phone itself, then place the test call.";
@@ -392,7 +523,7 @@
   }
 
   function codeBlock(help, alt) {
-    if (LIVE && help.missing) return '<div class="note calm">Forwarding codes appear here once the AI number is set up.</div>';
+    if (help.missing) return '<div class="note calm">Forwarding codes appear here once an AI number is chosen.</div>';
     var html = '<div class="code-card"><strong>Dial from the business phone</strong>';
     html += '<p class="help">AI number used in these codes: ' + esc(help.number) + "</p>";
     help.lines.forEach(function (line) {
@@ -684,7 +815,7 @@
         "<div class='help'>" + (b.callsToday || 0) + " calls · " + (b.bookingsToday || 0) + " booked today</div></div></div></td>" +
         "<td>" + esc(b.plan) + "<div class='help'>" + esc(b.tier) + " · " + money(b.pilot ? 0 : b.price) + "</div></td>" +
         "<td>" + progress(b) + "</td><td>" + esc(phoneStatus(b)) + "</td><td>" + minuteCell(b) + "</td>" +
-        "<td>" + esc(next.text) + "<div class='help'>" + esc(next.owner) + "</div></td></tr>";
+        "<td>" + (b.status === "draft" ? draftActions(b) : esc(next.text) + "<div class='help'>" + esc(next.owner) + "</div>") + "</td></tr>";
     }).join("");
     var alerts = allAlerts().slice(0, 6).map(function (alert) {
       return '<a class="alert-row" href="client.html?id=' + encodeURIComponent(alert.id) + '"><strong>' + esc(alert.name) + "</strong><span>" + esc(alert.text) + "</span></a>";
@@ -763,13 +894,13 @@
       var next = nextAction(b);
       return "<tr><td><div class='who'>" + mark(b.name, b.category) + "<div><a href='client.html?id=" + encodeURIComponent(b.id) + "'>" + esc(b.name) +
         "</a><div class='help'>" + esc(b.city) + (b.pilot ? " · Pilot" : "") + "</div></div></div></td><td>" + esc(b.category) + "</td><td>" + esc(b.tier) +
-        "</td><td>" + esc(b.plan) + "</td><td>" + pill(b.status) + "</td><td>" + progress(b) + "</td><td>" + esc(next.text) +
-        "<div class='help'>" + esc(next.owner) + "</div></td></tr>";
+        "</td><td>" + esc(b.plan) + "</td><td>" + pill(b.status) + "</td><td>" + progress(b) + "</td><td>" +
+        (b.status === "draft" ? draftActions(b) : esc(next.text) + "<div class='help'>" + esc(next.owner) + "</div>") + "</td></tr>";
     }).join("");
     view.innerHTML = '<div class="page-head"><div><h1>Businesses</h1><p class="sub">' + list.length + " shown · pinned pilot stays at the top</p></div>" +
       '<a class="btn btn-primary" href="add.html">Add business</a></div>' +
       '<div class="filters"><div class="chips">' + chip("All", "") + chip("Needs attention", "attention") + chip("Waiting on client", "waiting") +
-      chip("In setup", "setup") + chip("Live", "live") + "</div>" +
+      chip("Setup incomplete", "draft") + chip("In setup", "setup") + chip("Live", "live") + "</div>" +
       '<select class="ctrl" style="width:auto" data-action="go-filter" data-key="type" aria-label="Business type">' + options(types, filters.type, "All types") + "</select>" +
       '<select class="ctrl" style="width:auto" data-action="go-filter" data-key="tier" aria-label="Size tier">' + options([["Solo", "Solo · 1–3"], ["Small", "Small · 4–15"], ["Growing", "Growing · 16+"]], filters.tier, "All tiers") + "</select>" +
       (filters.q || filters.type || filters.tier || filters.status ? '<a class="btn btn-sm" href="clients.html">Clear</a>' : "") + "</div>" +
@@ -789,12 +920,37 @@
     });
   }
 
-  function syncNumber() {
+  function syncAreaCode() {
     var area = String(wizard.areaCode || "").replace(/\D/g, "").slice(0, 3);
-    if (area.length < 3) return;
     wizard.areaCode = area;
-    var list = candidates(area);
-    if (digits(wizard.chosenNumber).slice(0, 3) !== area) wizard.chosenNumber = list[0];
+    var listed = wizard.numberOptions && wizard.numberOptions[0] ? digits(wizard.numberOptions[0].e164).slice(0, 3) : "";
+    if (listed && area && listed !== area) {
+      wizard.numberOptions = [];
+      wizard.numberStatus = "idle";
+      wizard.numberError = "";
+      wizard.chosenE164 = "";
+      wizard.chosenNumber = "";
+      return;
+    }
+    var chosenArea = digits(wizard.chosenE164 || wizard.chosenNumber).slice(0, 3);
+    if (chosenArea && area && chosenArea !== area) {
+      wizard.chosenE164 = "";
+      wizard.chosenNumber = "";
+    }
+  }
+
+  function numberResultBlock(state, pickAction, bizId) {
+    if (state.status === "loading") return '<p class="help">Looking up numbers for ' + esc(state.areaCode) + "…</p>";
+    if (state.status === "error") return '<p class="error">' + esc(state.error || "Number search failed.") + "</p>";
+    if (state.status === "empty") return '<p class="help">' + esc(emptyNumberCopy(state.areaCode)) + "</p>";
+    if (!state.options || !state.options.length) return '<p class="help">Enter an area code and choose Show numbers.</p>';
+    return '<div class="field"><label>Available numbers</label><div class="choice-grid">' + state.options.map(function (num) {
+      var title = num.friendly || pretty(digits(num.e164)) || num.e164;
+      var where = [num.locality, num.region].filter(Boolean).join(", ") || "Local voice";
+      var on = state.chosenE164 === num.e164 ? " on" : "";
+      return '<button class="choice' + on + '" type="button" data-action="' + pickAction + '" data-field="chosenE164" data-value="' + esc(num.e164) + '" data-label="' + esc(title) + '"' +
+        (bizId ? ' data-id="' + esc(bizId) + '"' : "") + "><b>" + esc(title) + "</b><span>" + esc(where) + " · " + esc(num.e164) + "</span></button>";
+    }).join("") + "</div></div>";
   }
 
   function ensureGreeting() {
@@ -827,7 +983,12 @@
       var name = created ? created.name : wizard.name;
       return '<h2>' + esc(name) + ' is in the panel</h2><p class="sub">These steps are simulated in the prototype. The business stays in this browser until you close the tab.</p>' +
         '<div class="banner ok" style="margin-top:12px">Welcome note queued for the owner, with one link per step they still have to do.</div><ul>' +
-        "<li>Receptionist created, with the virtual-assistant disclosure in the greeting</li><li>Number " + esc(wizard.chosenNumber) + " attached</li>" +
+        "<li>Receptionist created, with the virtual-assistant disclosure in the greeting</li><li>" +
+        (LIVE
+          ? (wizard.chosenNumber
+            ? esc(wizard.chosenNumber) + " is saved. Buy and connect on Overview purchases it (about $1.15 a month). Nothing has been bought yet."
+            : "No AI number chosen yet. Search on Overview, then Buy and connect.")
+          : "Number search works in the live control panel.") + "</li>" +
         "<li>Booking page started</li><li>Texting registration held until the final company tax ID is on file</li>" +
         "<li>Email sender drafted</li><li>Website draft started</li><li>Billing customer created" + (wizard.pilot ? " · pilot, setup fee waived" : "") + "</li></ul>" +
         '<div class="head-actions"><a class="btn btn-primary" href="client.html?id=' + encodeURIComponent(wizard.createdId) + '">Open the business</a>' +
@@ -862,18 +1023,34 @@
         '<label class="setting-row"><span><strong>Pilot business</strong><div class="help">Setup fee of $299 is waived, and the first 30 days are $0.</div></span><input data-field="pilot" type="checkbox"' + (wizard.pilot ? " checked" : "") + "></label>" +
         '<p class="help">Size tiers are the working proposal: Solo to Starter, Small to Growth, Growing to Pro. Setup is $299 unless this is a pilot.</p>';
     } else if (wizard.step === 2) {
-      var numbers = candidates(wizard.areaCode);
+      var numberKeys = LIVE ? missingNumberKeys() : [];
       body = '<div class="choice-grid">' +
         choice("phoneMode", "new", "New number", "Callers use a number we buy. Nothing to forward.") +
         choice("phoneMode", "forward", "Forward the current number", "The number on the door stays. Calls roll to the receptionist.") +
         choice("phoneMode", "port", "Move the number to us", "Porting takes days. Forwarding is the usual start.") +
         "</div>" +
-        '<div class="field"><label>Area code</label><div class="inline">' + input("areaCode", wizard.areaCode, "415") +
-        '<button class="btn" type="button" data-action="show-numbers">Show numbers</button></div><div class="help">Used to list local numbers.</div></div>' +
-        (LIVE ? '<div class="note calm">Live mode: these numbers are examples. The real number is bought from the business page (Overview > AI number) after the business is created.</div>' : "") +
-        '<div class="field"><label>AI receptionist number</label>' + featureBar(["number_search"]) + '<div class="choice-grid">' + numbers.map(function (num) {
-          return choice("chosenNumber", num, num, "Local · voice");
-        }).join("") + "</div></div>";
+        '<div class="field"><label>Area code</label>' + featureBar(["number_search"]) + '<div class="inline">' + input("areaCode", wizard.areaCode, "415") +
+        ((!LIVE || (isAdmin() && !numberKeys.length))
+          ? '<button class="btn" type="button" data-action="show-numbers"' + (wizard.numberStatus === "loading" ? " disabled" : "") + ">Show numbers</button>"
+          : "") +
+        "</div>" +
+        '<div class="help">Used to list local numbers.</div></div>';
+      if (!LIVE) {
+        body += '<div class="note calm">Number search works in the live control panel.</div>';
+      } else if (numberKeys.length) {
+        body += "<p class='banner warn'>Not connected yet. Add " + esc(numberKeys.join(" and ")) + " on the server, then come back.</p>";
+      } else if (!isAdmin()) {
+        body += '<div class="note">Admins search available numbers. You can continue, and an admin can buy one from Overview.</div>';
+      } else {
+        body += '<div class="note calm">Searching does not buy a number. It is purchased only when you choose Buy and connect on the business Overview, and a local number costs about $1.15 a month.</div>' +
+          numberResultBlock({
+            status: wizard.numberStatus,
+            error: wizard.numberError,
+            areaCode: wizard.areaCode,
+            options: wizard.numberOptions,
+            chosenE164: wizard.chosenE164
+          }, "pick", "");
+      }
       if (wizard.phoneMode === "forward") {
         body += field("Current business number", input("businessNumber", wizard.businessNumber, "(503) 555-0172")) +
           '<div class="grid-2"><div class="field"><label>Phone company</label><select class="ctrl" data-field="carrier">' +
@@ -892,7 +1069,7 @@
           field("Account number", input("taxId", wizard.taxId, "From a recent bill")) +
           '<div class="field"><label>Recent bill</label><input class="ctrl" type="file" data-action="bill-file"></div>';
       } else {
-        body += '<div class="note calm">Callers will use ' + esc(wizard.chosenNumber || "the number you pick") + ". Update the website, Google listing, and window once the test call passes.</div>";
+        body += '<div class="note calm">Callers will use ' + esc(wizard.chosenNumber || "the number you pick") + ". Nothing is bought until Buy and connect. Update the website, Google listing, and window once the test call passes.</div>";
       }
     } else if (wizard.step === 3) {
       var target = wizard.phoneMode === "forward" ? (wizard.businessNumber || "the business number") : wizard.chosenNumber;
@@ -912,17 +1089,26 @@
         body += '<div class="banner bad">Not working. The receptionist did not pick up within about 45 seconds.</div><ul><li>The code was typed wrong.</li><li>It was dialed from a different line.</li><li>This phone company needs its website or app instead of a code.</li></ul>';
       }
     } else if (wizard.step === 4) {
-      body = '<div class="choice-grid">' +
-        choice("calendar", "google", "Google Calendar", "Owner approves with one sign-in link.") +
-        choice("calendar", "microsoft", "Microsoft Outlook", "Some work accounts need an IT admin.") +
-        choice("calendar", "cal", "Create a cal.com page", "Free booking page linked to their calendar.") +
-        choice("calendar", "square", "Square Appointments", "Works when they pay for Plus or Premium.") +
-        choice("calendar", "vagaro", "Vagaro", "Needs their paid plan and a short review.") +
-        choice("calendar", "fresha", "Fresha", "No public connection. Text their booking link.") +
-        choice("calendar", "booksy", "Booksy", "No public connection. Text their booking link.") +
-        "</div>" +
-        (wizard.calendar === "fresha" || wizard.calendar === "booksy" ? '<div class="note">The receptionist cannot book inside the call. It texts the business’s own booking link instead.</div>' : '<div class="note calm">After they approve, the panel reads free times, creates a test booking, and deletes it.</div>') +
-        '<button class="btn" type="button" data-action="toast-link">Send the calendar sign-in link</button>';
+      var cal = calendarDescribe(wizard.calendar);
+      body = '<div class="choice-grid">' + calendarChoices().map(function (item) {
+        return choice("calendar", item.id, item.title, item.detail);
+      }).join("") + "</div>";
+      body += '<div data-calendar-panel>';
+      if (cal.steps.length) body += '<ol style="margin:12px 0 12px 1.2em">' + cal.steps.map(function (step) { return "<li>" + esc(step) + "</li>"; }).join("") + "</ol>";
+      if (cal.note) body += '<div class="note' + (cal.signIn ? " calm" : "") + '">' + esc(cal.note) + "</div>";
+      if (cal.keyField) {
+        var keyHelp = wizard.calcomKeySaved
+          ? "A key is already stored encrypted. Paste a new key only to replace it."
+          : (wizard.calcomDemoKey && !LIVE
+            ? "Entered in this session. This demo does not keep the API key."
+            : (LIVE ? "Stored encrypted on the live control panel. It is not shown again." : "The live control panel stores this key encrypted. This demo does not keep it."));
+        body += field("Cal.com API key", '<input class="ctrl" data-field="calcomApiKey" type="password" autocomplete="off" spellcheck="false" value="' + esc(wizard.calcomApiKey || "") + '" placeholder="Paste the API key">', keyHelp);
+      }
+      if (cal.eventTypeField) {
+        body += field("Event type slug or ID", input("calcomEventTypeId", wizard.calcomEventTypeId, "20-minute-demo"), "Type the slug or ID from Cal.com. Event types are not loaded from Cal.com yet.");
+      }
+      if (cal.signIn) body += '<button class="btn" type="button" data-action="toast-link">' + esc(cal.button) + "</button>";
+      body += "</div>";
     } else if (wizard.step === 5) {
       ensureGreeting();
       body = field("Greeting", textarea("greeting", wizard.greeting), "Always says it is the virtual assistant, and that the call may be recorded.") +
@@ -931,9 +1117,7 @@
         field("FAQs", textarea("faqs", wizard.faqs, "Do you take walk-ins? Yes, when a chair is open."), "One question per line. You can also attach a text file.") +
         '<div class="field"><label>FAQ file</label><input class="ctrl" type="file" accept=".txt,.md,.csv,text/plain" data-action="faq-file"></div>' +
         '<div class="grid-2">' + field("Transfer-to number", input("transfer", wizard.transfer || wizard.ownerMobile, "(503) 555-0172")) +
-        field("Voice " + badge("voice_dropdown"), '<select class="ctrl" data-field="voice">' + ["Juniper (warm)", "Harbor (clear)", "North (calm)", "Sol (bright)"].map(function (voice) {
-          return '<option' + (wizard.voice === voice ? " selected" : "") + ">" + esc(voice) + "</option>";
-        }).join("") + "</select>") + "</div>" +
+        field("Voice " + badge("voice_dropdown"), '<select class="ctrl" data-field="voice">' + voiceOptions(wizard.voice) + "</select>", "Saved on this business. Publish uses this voice.") + "</div>" +
         '<label class="setting-row"><span><strong>Spanish as well as English</strong><div class="help">Optional. English is always on.</div></span><input data-field="spanish" type="checkbox"' + (wizard.spanish ? " checked" : "") + "></label>";
       if (wizard.category === "Clinic") body += '<div class="note">Do not collect symptoms, insurance numbers, or other health details on this line.</div>';
     } else if (wizard.step === 6) {
@@ -969,10 +1153,15 @@
         ["Type", wizard.category || "Not set"],
         ["Tier and plan", wizard.tier + " · " + wizard.plan + " · " + money(wizard.pilot ? 0 : (plan ? plan.price : 0)) + (wizard.pilot ? " pilot" : "/mo")],
         ["Setup fee", wizard.pilot ? "$0 · waived" : "$299"],
-        ["Phone", wizard.phoneMode === "new" ? "New number " + wizard.chosenNumber : wizard.phoneMode === "port" ? "Port " + (wizard.businessNumber || "") : "Forward " + (wizard.businessNumber || "current number") + " to " + wizard.chosenNumber],
+        ["Phone", (function () {
+          var chosen = wizard.chosenNumber || (LIVE ? "not chosen yet" : "search on the live control panel");
+          if (wizard.phoneMode === "new") return "New number " + chosen;
+          if (wizard.phoneMode === "port") return "Port " + (wizard.businessNumber || "");
+          return "Forward " + (wizard.businessNumber || "current number") + " to " + chosen;
+        })()],
         ["Test call", wizard.testStatus === "ok" ? "Confirmed" : wizard.testStatus === "miss" ? "Not working" : "Not run"],
-        ["Calendar", wizard.calendar],
-        ["Voice", wizard.voice + (wizard.spanish ? " · English and Spanish" : " · English")],
+        ["Calendar", calendarTitle(wizard.calendar)],
+        ["Voice", voiceLabel(wizard.voice) + (wizard.spanish ? " · English and Spanish" : " · English")],
         ["Website", (wizard.siteChoice === "keep" ? "Keep " : "Build ") + (wizard.domain || wizard.website || "domain not set")],
         ["Texting", "Pending · held for the company tax ID"]
       ];
@@ -995,9 +1184,11 @@
     var steps = STEPS.map(function (step, index) {
       return '<button class="step-btn' + (index === wizard.step || (wizard.step === 10 && index === 9) ? " on" : "") + '" type="button" data-action="goto-step" data-step="' + index + '"><i>' + (index + 1) + "</i><span>" + esc(step[0]) + statusMarks(STEP_FEATURES[index]) + "</span></button>";
     }).join("");
-    var nav = wizard.step === 10 ? "" : '<div class="wizard-nav"><button class="btn" type="button" data-action="back"' + (wizard.step === 0 ? " disabled" : "") + '>Back</button>' +
-      (wizard.step < 9 ? '<button class="btn btn-primary" type="button" data-action="next">Continue</button>' : "<span></span>") + "</div>";
-    view.innerHTML = '<div class="page-head"><div><h1>Add business</h1><p class="sub">About ten minutes. The owner only handles the steps a phone company or Google requires.</p></div></div>' +
+    var nav = wizard.step === 10 ? "" : '<div class="wizard-nav"><button class="btn" type="button" data-action="back"' + (wizard.step === 0 || wizard.saving ? " disabled" : "") + '>Back</button>' +
+      (wizard.step < 9 ? '<button class="btn btn-primary" type="button" data-action="next"' + (wizard.saving ? " disabled" : "") + ">" + (wizard.saving ? "Saving…" : "Continue") + "</button>" : "<span></span>") + "</div>";
+    var savedNote = wizard.saved && wizard.step !== 10 ? '<p class="help">Draft saved. This business stays on the Businesses list as Setup incomplete until you finish.</p>' : "";
+    var deleteDraft = wizard.draftId && wizard.step !== 10 ? '<button class="btn btn-sm" type="button" data-action="delete-draft" data-id="' + esc(wizard.draftId) + '" data-name="' + esc(wizard.name || "this draft") + '">Delete draft</button>' : "";
+    view.innerHTML = '<div class="page-head"><div><h1>Add business</h1><p class="sub">About ten minutes. The owner only handles the steps a phone company or Google requires.</p>' + savedNote + '</div>' + deleteDraft + "</div>" +
       '<div class="wizard"><aside class="step-list">' + steps + '</aside><section class="wizard-panel">' + wizardBody() + nav + "</section></div>" + legal();
   }
 
@@ -1036,9 +1227,202 @@
     });
   }
 
+  function calendarChoices() {
+    return window.RWCalendarStep ? window.RWCalendarStep.choices() : [{ id: "google", title: "Google Calendar", detail: "Owner approves with one sign-in link." }];
+  }
+
+  function calendarDescribe(choice) {
+    if (window.RWCalendarStep) return window.RWCalendarStep.describe(choice);
+    return { provider: "google", signIn: true, title: "Google Calendar", button: "Send the calendar sign-in link", note: "After they approve, the panel reads free times, creates a test booking, and deletes it.", steps: [], keyField: false, eventTypeField: false, checklist: "Sign-in link is ready to send." };
+  }
+
+  function calendarTitle(choice) {
+    return calendarDescribe(choice).title || choice || "Calendar";
+  }
+
+  function calendarSignIn(b) {
+    var provider = b && b.calendar && b.calendar.provider;
+    if (!provider) return true;
+    return calendarDescribe(window.RWCalendarStep ? window.RWCalendarStep.choiceValue(provider) : provider).signIn;
+  }
+
+  function takeCalcomKey() {
+    var key = String(wizard.calcomApiKey || "").trim();
+    wizard.calcomApiKey = "";
+    if (key && !LIVE) wizard.calcomDemoKey = true;
+    return key;
+  }
+
+  function storeCalcomKey(slug, key) {
+    if (!key || !LIVE || !slug) return Promise.resolve(null);
+    var stepApi = window.RWCalendarStep;
+    return api("PUT", "api/businesses/" + encodeURIComponent(slug) + "/calendar", {
+      provider: stepApi ? stepApi.providerId(wizard.calendar) : wizard.calendar,
+      calcomEventTypeId: wizard.calcomEventTypeId || "",
+      apiKey: key
+    }).then(function (data) {
+      wizard.calcomKeySaved = !!data.calcomKeySaved;
+      if (data.business) replaceBiz(data.business);
+      return data;
+    }, function (err) {
+      wizard.calcomApiKey = key;
+      throw err;
+    });
+  }
+
+  function wizardSnapshot() {
+    var keep = ["step", "name", "category", "address", "city", "website", "hours", "timezone", "ownerName", "ownerMobile", "ownerEmail", "tier", "plan", "pilot", "multi", "phoneMode", "carrier", "forwardType", "businessNumber", "areaCode", "chosenNumber", "chosenE164", "clientDone", "testStatus", "testNote", "calendar", "calcomEventTypeId", "greeting", "services", "faqs", "transfer", "voice", "spanish", "facebook", "instagram", "gbp", "siteChoice", "domain", "template", "legalName", "taxId", "sampleSms", "consent", "createdId", "draftId"];
+    var snap = {};
+    keep.forEach(function (key) { snap[key] = wizard[key]; });
+    snap.step = wizard.step;
+    snap.draftId = wizard.draftId || "";
+    return snap;
+  }
+
+  function draftRecord() {
+    var business = buildBusiness();
+    business.id = wizard.draftId || business.id;
+    business.status = "draft";
+    business.wizardStep = wizard.step;
+    business.wizard = wizardSnapshot();
+    if (window.RWCalendarStep) business.calendar = window.RWCalendarStep.profile(wizard.calendar, wizard.calcomEventTypeId);
+    business.phone = Object.assign({}, business.phone, { aiNumber: "" });
+    business.assistantPublished = false;
+    business.setupProgress = [
+      { key: "details", label: "Details", done: true, step: 0 },
+      { key: "receptionist", label: "Receptionist published", done: false, step: 5 },
+      { key: "number", label: "Number bought", done: false, step: 2 },
+      { key: "test", label: "Test call", done: checklistItem(business, "test").status === "connected", step: 3 }
+    ];
+    return business;
+  }
+
+  function canSaveDraft() {
+    return !wizard.finished && wizard.step !== 10 && !!wizard.name.trim() && !!wizard.category;
+  }
+
+  function saveDraft() {
+    if (!canSaveDraft()) return Promise.resolve(null);
+    var key = takeCalcomKey();
+    if (!LIVE) {
+      if (!wizard.draftId) wizard.draftId = slug(wizard.name.trim());
+      var business = draftRecord();
+      business.id = wizard.draftId;
+      business.wizard.draftId = wizard.draftId;
+      upsertDraftRecord(business);
+      wizard.saved = true;
+      return Promise.resolve(business);
+    }
+    var body = draftRecord();
+    var url = wizard.draftId
+      ? "api/businesses/" + encodeURIComponent(wizard.draftId) + "/draft"
+      : "api/businesses/draft";
+    return api(wizard.draftId ? "PUT" : "POST", url, body).then(function (data) {
+      wizard.draftId = data.business.id;
+      wizard.saved = true;
+      if (data.business && data.business.calcomKeySaved) wizard.calcomKeySaved = true;
+      replaceBiz(data.business);
+      return storeCalcomKey(wizard.draftId, key).then(function () { return data.business; });
+    }, function (err) {
+      if (key) wizard.calcomApiKey = key;
+      throw err;
+    });
+  }
+
+  function persistDraftOnLeave() {
+    if ((document.body.dataset.page || "") !== "add") return;
+    readWizard();
+    if (wizard.finished || wizard.step === 10) return;
+    if (!wizard.name.trim() || !wizard.category) return;
+    if (!wizard.draftId && wizard.step === 0) return;
+    var key = takeCalcomKey();
+    if (!LIVE) {
+      if (!wizard.draftId) wizard.draftId = slug(wizard.name.trim());
+      var business = draftRecord();
+      business.id = wizard.draftId;
+      upsertDraftRecord(business);
+      return;
+    }
+    var body = JSON.stringify(draftRecord());
+    var url = wizard.draftId
+      ? "api/businesses/" + encodeURIComponent(wizard.draftId) + "/draft"
+      : "api/businesses/draft";
+    var headers = { "Content-Type": "application/json", "X-RW-Client": "portal" };
+    try {
+      fetch(url, {
+        method: wizard.draftId ? "PUT" : "POST",
+        body: body,
+        keepalive: true,
+        credentials: "same-origin",
+        headers: headers
+      });
+      if (key && wizard.draftId && window.RWCalendarStep) {
+        fetch("api/businesses/" + encodeURIComponent(wizard.draftId) + "/calendar", {
+          method: "PUT",
+          body: JSON.stringify({
+            provider: window.RWCalendarStep.providerId(wizard.calendar),
+            calcomEventTypeId: wizard.calcomEventTypeId || "",
+            apiKey: key
+          }),
+          keepalive: true,
+          credentials: "same-origin",
+          headers: headers
+        });
+      }
+    } catch (e) {}
+  }
+
+  function afterDraftSave(render) {
+    wizard.saving = false;
+    if (render) renderWizard();
+  }
+
+  function failDraftSave(err, previousStep) {
+    wizard.saving = false;
+    if (previousStep != null) wizard.step = previousStep;
+    wizard.error = (err && err.message) || "Could not save the draft.";
+    renderWizard();
+    if (LIVE && err && err.status === 401) liveFail(err);
+  }
+
+  function resumeDraft() {
+    if ((document.body.dataset.page || "") !== "add") return;
+    var params = new URLSearchParams(location.search);
+    var id = params.get("draft");
+    if (!id) return;
+    var biz = findBiz(id);
+    if (!biz) return;
+    var snap = biz.wizard || {};
+    wizard = Object.assign(defaultWizard(), snap);
+    wizard.draftId = biz.id;
+    wizard.saved = true;
+    wizard.finished = false;
+    wizard.saving = false;
+    wizard.error = "";
+    wizard.numberError = "";
+    wizard.numberOptions = [];
+    wizard.numberStatus = "idle";
+    if (!wizard.name) wizard.name = biz.name || "";
+    if (!wizard.category) wizard.category = biz.category || "";
+    if (biz.calendar && biz.calendar.provider && window.RWCalendarStep) {
+      wizard.calendar = window.RWCalendarStep.choiceValue(biz.calendar.provider);
+      if (biz.calendar.calcomEventTypeId) wizard.calcomEventTypeId = biz.calendar.calcomEventTypeId;
+    }
+    wizard.calcomKeySaved = !!biz.calcomKeySaved;
+    wizard.calcomApiKey = "";
+    wizard.calcomDemoKey = false;
+    if (wizard.chosenE164) {
+      wizard.numberStatus = "ready";
+      wizard.numberOptions = [{ e164: wizard.chosenE164, friendly: wizard.chosenNumber || wizard.chosenE164, locality: "Saved choice", region: "" }];
+    }
+    var requested = params.get("step");
+    var step = requested != null && requested !== "" ? Number(requested) : Number(biz.wizardStep != null ? biz.wizardStep : wizard.step);
+    wizard.step = Math.max(0, Math.min(9, step || 0));
+  }
+
   function buildBusiness() {
     ensureGreeting();
-    syncNumber();
+    syncAreaCode();
     var plan = planByName(wizard.plan);
     var id = slug(wizard.name.trim());
     var textReady = wizard.legalName.trim() && wizard.taxId.trim();
@@ -1047,7 +1431,9 @@
     var forwardDetail = "Waiting on the client to dial the code.";
     if (wizard.phoneMode === "new") {
       forwardStatus = "connected";
-      forwardDetail = "Not used. Callers use the new number " + wizard.chosenNumber + ".";
+      forwardDetail = wizard.chosenNumber
+        ? "Not used. Callers use the new number " + wizard.chosenNumber + "."
+        : "Not used. Callers will use the new number once it is bought.";
     } else if (wizard.phoneMode === "port") {
       forwardDetail = "Port packet started. Forwarding is still the faster path if they want calls live this week.";
     } else if (wizard.testStatus === "ok") {
@@ -1078,6 +1464,7 @@
       callsToday: 0,
       bookingsToday: 0,
       status: "setup",
+      calendar: window.RWCalendarStep ? window.RWCalendarStep.profile(wizard.calendar, wizard.calcomEventTypeId) : null,
       pilot: !!wizard.pilot,
       setupFee: wizard.pilot ? 0 : 299,
       card: wizard.pilot ? "Pilot · no card charged" : "Payment link not sent",
@@ -1093,14 +1480,15 @@
         carrier: wizard.carrier,
         forwardType: wizard.forwardType,
         businessNumber: wizard.businessNumber,
-        aiNumber: wizard.chosenNumber,
+        requestedE164: wizard.chosenE164 || "",
+        aiNumber: wizard.chosenNumber || "",
         tests: wizard.testStatus === "idle" ? [] : [{ when: "Just now", result: wizard.testStatus === "ok" ? "Confirmed" : "Not working", note: wizard.testNote || "Run from the add-business wizard." }]
       },
       greeting: wizard.greeting,
       voice: wizard.voice,
       languages: wizard.spanish ? ["English", "Spanish"] : ["English"],
       transfer: wizard.transfer || wizard.ownerMobile || "",
-      capabilities: { book: true, reschedule: true, cancel: true, transfer: true, textLink: false },
+      capabilities: { book: wizard.calendar !== "none", reschedule: wizard.calendar !== "none", cancel: wizard.calendar !== "none", transfer: true, textLink: false },
       services: parseServices(wizard.services),
       faqs: parseFaqs(wizard.faqs),
       blurb: wizard.name.trim() + " · " + wizard.category,
@@ -1117,10 +1505,12 @@
       suppressed: 0,
       activity: [{ time: "Just now", text: "Added in the control panel." }],
       checklist: makeChecklist({
-        number: { status: "connected", detail: wizard.chosenNumber + " is attached to the receptionist.", owner: "Team" },
+        number: wizard.chosenE164
+          ? { status: "pending", detail: wizard.chosenNumber + " is selected. Buy and connect on Overview purchases it for about $1.15 a month.", owner: "Team" }
+          : { status: "pending", detail: LIVE ? "No AI number yet. Search on Overview, then Buy and connect." : "Number search works in the live control panel.", owner: "Team" },
         test: { status: testStatus, detail: testStatus === "connected" ? "Greeting matched." : testStatus === "action" ? "Test call did not match." : "Test call has not been run.", owner: "Team" },
         forwarding: { status: forwardStatus, detail: forwardDetail, owner: wizard.phoneMode === "forward" ? "Client" : "Team", next: forwardStatus !== "connected" },
-        calendar: { status: "pending", detail: wizard.calendar === "cal" ? "cal.com page drafted. Connect a calendar before going live." : "Sign-in link is ready to send.", owner: "Client" },
+        calendar: { status: "pending", detail: calendarDescribe(wizard.calendar).checklist, owner: wizard.calendar === "none" ? "Team" : "Client" },
         texting: { status: textReady ? "pending" : "action", detail: "Texting stays off until the final company tax ID is on file.", owner: "Team", next: forwardStatus === "connected" },
         email: { status: "pending", detail: "SPF and DKIM are not checked yet.", owner: "Team" },
         reviews: { status: "pending", detail: "Google review link is not on file.", owner: "Team" },
@@ -1170,7 +1560,7 @@
       ["Staff", (b.staff || "—") + " · " + (b.locations || 1) + " location" + ((b.locations || 1) > 1 ? "s" : "")],
       ["Plan", b.tier + " · " + b.plan + " · " + (b.pilot ? "$0 pilot" : money(b.price) + "/mo")]
     ];
-    return minuteBanner(b) + '<div class="split"><section class="card"><div class="card-h"><h2>Setup checklist</h2><span class="help">' + setupCount(b).done + " of " + setupCount(b).total + ' connected</span></div><div class="card-b checklist">' +
+    return draftSetupCard(b) + minuteBanner(b) + '<div class="split"><section class="card"><div class="card-h"><h2>Setup checklist</h2><span class="help">' + setupCount(b).done + " of " + setupCount(b).total + ' connected</span></div><div class="card-b checklist">' +
       checks + '</div></section><div class="stack"><section class="card"><div class="card-h"><h2>Needs action</h2></div><div class="card-b">' + (alerts || '<div class="empty">Nothing is blocked.</div>') +
       '</div></section><section class="card"><div class="card-h"><h2>Activity</h2></div><div class="card-b">' + activity +
       '</div></section><section class="card"><div class="card-h"><h2>Business</h2></div><div class="card-b"><dl class="kvs">' + facts.map(function (row) {
@@ -1182,14 +1572,20 @@
     var id = esc(b.id);
     if (item.key === "test") return '<button class="btn btn-sm" type="button" data-action="run-greeting-test" data-id="' + id + '">Run test call</button>';
     if (item.key === "forwarding") return '<button class="btn btn-sm" type="button" data-action="forward-test" data-id="' + id + '">Run forwarding test</button>';
-    if (item.key === "calendar") return '<button class="btn btn-sm" type="button" data-action="send-link" data-id="' + id + '" data-kind="calendar">Send sign-in link</button> <button class="btn btn-sm" type="button" data-action="booking-test" data-id="' + id + '">Run booking test</button>';
+    if (item.key === "calendar") {
+      if (!calendarSignIn(b)) return '<p class="help">' + esc(calendarDescribe(window.RWCalendarStep ? window.RWCalendarStep.choiceValue((b.calendar && b.calendar.provider) || "none") : "none").checklist) + "</p>";
+      return '<button class="btn btn-sm" type="button" data-action="send-link" data-id="' + id + '" data-kind="calendar">Send sign-in link</button> <button class="btn btn-sm" type="button" data-action="booking-test" data-id="' + id + '">Run booking test</button>';
+    }
     if (item.key === "texting") return '<button class="btn btn-sm" type="button" data-action="texting-status">Check registration</button>';
     if (item.key === "email") return '<button class="btn btn-sm" type="button" data-action="check-email" data-id="' + id + '">Check DNS records</button>';
     if (item.key === "reviews") return '<button class="btn btn-sm" type="button" data-action="open-review" data-id="' + id + '">Review link</button>';
     if (item.key === "gbp" || item.key === "social") return '<button class="btn btn-sm" type="button" data-action="send-link" data-id="' + id + '" data-kind="social">Send connect link</button>';
     if (item.key === "website") return '<a class="btn btn-sm" href="#website">Website</a>';
     if (item.key === "billing") return '<button class="btn btn-sm" type="button" data-action="payment-link" data-id="' + id + '">Send payment link</button>';
-    if (item.key === "number") return '<button class="btn btn-sm" type="button" data-action="call-receptionist" data-id="' + id + '">Call the number</button>';
+    if (item.key === "number") {
+      if (LIVE && !(b.phone && b.phone.aiNumber)) return aiNumberStep(b);
+      return '<button class="btn btn-sm" type="button" data-action="call-receptionist" data-id="' + id + '">Call the number</button>';
+    }
     return "";
   }
 
@@ -1243,9 +1639,7 @@
     }).join("") || '<div class="empty">No calls yet.</div>';
     return '<div class="split"><section class="card"><div class="card-h"><h2>Receptionist</h2><span class="feat-row">' + badge("receptionist") + '<span class="pill neutral">Draft until you publish</span></span></div><div class="card-b">' +
       '<div class="field"><label>Greeting</label><textarea class="ctrl" id="greet">' + esc(b.greeting) + "</textarea></div>" +
-      '<div class="field"><label>Voice ' + badge("voice_dropdown") + '</label><select class="ctrl" id="voice">' + ["Juniper (warm)", "Harbor (clear)", "North (calm)", "Sol (bright)"].map(function (voice) {
-        return "<option" + (b.voice === voice ? " selected" : "") + ">" + esc(voice) + "</option>";
-      }).join("") + "</select></div>" +
+      '<div class="field"><label>Voice ' + badge("voice_dropdown") + '</label><select class="ctrl" id="voice">' + voiceOptions(b.voice) + '</select><div class="help">Saved on this business. Publish uses this voice.</div></div>' +
       '<p class="help">Languages: ' + esc((b.languages || ["English"]).join(", ")) + ". The assistant always offers a person.</p>" +
       capRow + '<p class="help">Texting a link stays off until registration is approved.</p>' +
       (LIVE ? '<p class="help"><a href="settings.html?id=' + encodeURIComponent(b.id) + '">Edit greeting, hours, and booking rules</a></p>' : '') +
@@ -1265,9 +1659,12 @@
     var rows = (b.bookings || []).map(function (booking) {
       return "<tr><td>" + esc(booking.when) + "</td><td>" + esc(booking.customer) + "</td><td>" + esc(booking.service) + "</td><td>" + esc(booking.source) + "</td><td>" + esc(booking.status) + "</td></tr>";
     }).join("");
-    return '<div class="head-actions" style="margin-bottom:12px">' + badge("calendar_connection") +
-      '<button class="btn btn-primary" type="button" data-action="booking-test" data-id="' + esc(b.id) + '">Run booking test</button>' +
-      '<button class="btn" type="button" data-action="send-link" data-id="' + esc(b.id) + '" data-kind="calendar">Send calendar link</button></div>' +
+    var calendarActions = calendarSignIn(b)
+      ? '<div class="head-actions" style="margin-bottom:12px">' + badge("calendar_connection") +
+        '<button class="btn btn-primary" type="button" data-action="booking-test" data-id="' + esc(b.id) + '">Run booking test</button>' +
+        '<button class="btn" type="button" data-action="send-link" data-id="' + esc(b.id) + '" data-kind="calendar">Send calendar link</button></div>'
+      : '<p class="help" style="margin-bottom:12px">' + badge("calendar_connection") + esc(calendarDescribe(window.RWCalendarStep ? window.RWCalendarStep.choiceValue((b.calendar && b.calendar.provider) || "none") : "none").checklist) + "</p>";
+    return calendarActions +
       '<section class="card"><div class="card-h"><h2>Upcoming</h2>' + badge("bookings") + '</div><div class="table-wrap"><table class="data"><thead><tr><th>When</th><th>Customer</th><th>Service</th><th>Source</th><th>Status</th></tr></thead><tbody>' +
       (rows || '<tr><td colspan="5"><div class="empty">No upcoming bookings.</div></td></tr>') + "</tbody></table></div></section>";
   }
@@ -1482,7 +1879,8 @@
     view.innerHTML = '<section class="card client-head"><div class="client-ident"><div class="avatar" style="background:' + colorFor(b.category) + '">' + esc(initials(b.name)) +
       "</div><div><h1 class='client-title'>" + esc(b.name) + "</h1><p class='sub'>" + esc(b.category) + " · " + esc(b.city) + " · " + esc((b.owner && b.owner.name) || "") +
       "</p><div class='pills'>" + pill(b.status) + '<span class="pill neutral">' + esc(b.plan) + "</span>" + (b.pilot ? '<span class="pill pilot">Pilot</span>' : "") + "</div></div></div>" +
-      '<div class="head-actions"><button class="btn" type="button" data-action="call-receptionist" data-id="' + esc(b.id) + '">Call the receptionist</button>' +
+      '<div class="head-actions">' + (b.status === "draft" ? '<a class="btn btn-primary" href="add.html?draft=' + encodeURIComponent(b.id) + '">Resume setup</a>' : '') +
+      '<button class="btn" type="button" data-action="call-receptionist" data-id="' + esc(b.id) + '">Call the receptionist</button>' +
       '<button class="btn btn-primary" type="button" data-action="send-steps" data-id="' + esc(b.id) + '">Send owner their steps</button></div></section>' +
       '<nav class="tabs">' + tabs + "</nav>" + featureBar(TAB_FEATURES[tab]) + body + legal();
     if (tab === "website") loadSitePreview(b);
@@ -1614,6 +2012,7 @@
     pick: function (el) {
       readWizard();
       wizard[el.dataset.field] = el.dataset.value;
+      if (el.dataset.field === "chosenE164") wizard.chosenNumber = el.dataset.label || el.dataset.value || "";
       if (el.dataset.field === "tier") {
         wizard.plan = { Solo: "Starter", Small: "Growth", Growing: "Pro" }[el.dataset.value] || wizard.plan;
       }
@@ -1623,8 +2022,8 @@
     },
     "show-numbers": function () {
       readWizard();
-      syncNumber();
-      toast("Numbers updated for area code " + wizard.areaCode + ".");
+      syncAreaCode();
+      toast("Number search works in the live control panel.");
       renderWizard();
     },
     "lookup-carrier": function () {
@@ -1638,7 +2037,11 @@
     },
     "send-forward-instructions": function () {
       readWizard();
-      syncNumber();
+      syncAreaCode();
+      if (digits(wizard.chosenNumber).length < 10) {
+        toast("Choose an AI number before sending forwarding codes.");
+        return;
+      }
       var text = instructionText(wizard.carrier, wizard.forwardType, wizard.chosenNumber, wizard.name || "this business");
       openModal("Instructions for the client", "<p>This is the message we would text. They dial it from the business phone.</p><pre class='code' style='white-space:pre-wrap'>" + esc(text) + "</pre>",
         '<button class="btn" type="button" data-action="close-modal">Close</button><button class="btn btn-primary" type="button" data-action="copy-code" data-code="' + esc(text) + '">Copy message</button>');
@@ -1684,33 +2087,53 @@
     },
     back: function () {
       readWizard();
+      if (wizard.saving) return;
       if (wizard.step > 0) wizard.step -= 1;
       wizard.error = "";
-      renderWizard();
+      if (wizard.step === 5) ensureGreeting();
+      wizard.saving = true;
+      saveDraft().then(function () { afterDraftSave(true); }).catch(function (err) { failDraftSave(err); });
     },
     next: function () {
       readWizard();
-      syncNumber();
+      syncAreaCode();
+      if (wizard.saving) return;
       wizard.error = "";
       if (wizard.step === 0 && !wizard.name.trim()) wizard.error = "Enter the business name.";
       else if (wizard.step === 0 && !wizard.category) wizard.error = "Choose a business type.";
-      else if (wizard.step === 2 && !wizard.chosenNumber) wizard.error = "Choose the AI receptionist number.";
+      else if (wizard.step === 2 && LIVE && wizard.numberOptions && wizard.numberOptions.length && !wizard.chosenE164) wizard.error = "Pick one of the available numbers. It is not bought until Buy and connect.";
       else if (wizard.step === 2 && wizard.phoneMode === "forward" && digits(wizard.businessNumber).length < 10) wizard.error = "Enter the 10-digit business number to forward.";
       if (wizard.error) { renderWizard(); return; }
       if (wizard.step === 1 && wizard.multi) {
         wizard.tier = "Growing";
         wizard.plan = "Pro";
       }
+      var previous = wizard.step;
       if (wizard.step < 9) wizard.step += 1;
       if (wizard.step === 5) ensureGreeting();
+      wizard.saving = true;
       renderWizard();
+      saveDraft().then(function () { afterDraftSave(true); }).catch(function (err) { failDraftSave(err, previous); });
     },
     "goto-step": function (el) {
       readWizard();
-      wizard.step = Number(el.dataset.step) || 0;
+      if (wizard.saving) return;
+      var nextStep = Number(el.dataset.step) || 0;
+      if (wizard.step === 0 && nextStep !== 0) {
+        if (!wizard.name.trim()) wizard.error = "Enter the business name.";
+        else if (!wizard.category) wizard.error = "Choose a business type.";
+        if (wizard.error) { renderWizard(); return; }
+      }
+      var previous = wizard.step;
+      wizard.step = nextStep;
       wizard.error = "";
       if (wizard.step === 5) ensureGreeting();
-      renderWizard();
+      if (!(wizard.name.trim() && wizard.category) || (previous === 0 && nextStep === 0 && !wizard.draftId)) {
+        renderWizard();
+        return;
+      }
+      wizard.saving = true;
+      saveDraft().then(function () { afterDraftSave(true); }).catch(function (err) { failDraftSave(err, previous); });
     },
     "reset-wizard": function () {
       wizard = defaultWizard();
@@ -1725,13 +2148,49 @@
         return;
       }
       var business = buildBusiness();
+      business.status = "setup";
+      if (wizard.draftId) business.id = wizard.draftId;
+      removeDraftRecord(business.id);
       var all = createdList();
       all.push(business);
+      extraCache = all;
       storageSet("rw_created", JSON.stringify(all));
+      wizard.finished = true;
       wizard.createdId = business.id;
       wizard.step = 10;
       toast(business.name + " added.");
       renderWizard();
+    },
+    "delete-draft": function (el) {
+      var name = el.dataset.name || "this draft";
+      openModal("Delete this draft?", "<p><strong>" + esc(name) + "</strong> will be removed from the Businesses list. A draft has not bought a number or published a receptionist.</p>",
+        '<button class="btn" type="button" data-action="close-modal">Cancel</button><button class="btn btn-primary" type="button" data-action="confirm-delete-draft" data-id="' + esc(el.dataset.id || "") + '">Delete draft</button>');
+    },
+    "confirm-delete-draft": function (el) {
+      var id = el.dataset.id || "";
+      function done() {
+        closeModal();
+        toast("Draft deleted.");
+        if (wizard.draftId === id) {
+          wizard = defaultWizard();
+          if ((document.body.dataset.page || "") === "add") {
+            history.replaceState(null, "", "add.html");
+            renderWizard();
+            return;
+          }
+        }
+        if (currentRender) currentRender();
+      }
+      if (LIVE) {
+        api("DELETE", "api/businesses/" + encodeURIComponent(id)).then(function () {
+          var list = window.RW_DATA.businesses || [];
+          window.RW_DATA.businesses = list.filter(function (item) { return item.id !== id; });
+          done();
+        }).catch(liveFail);
+        return;
+      }
+      removeDraftRecord(id);
+      done();
     },
     "toggle-check": function (el) {
       openCheck = openCheck === el.dataset.key ? "" : el.dataset.key;
@@ -2032,24 +2491,50 @@
     }
   };
 
+  function ensureNumberPick(b) {
+    if (!b) return;
+    if (numberPick.bizId === b.id) return;
+    var requested = (b.phone && b.phone.requestedE164) || "";
+    var area = digits(requested).slice(0, 3) || "781";
+    numberPick = {
+      bizId: b.id,
+      areaCode: area,
+      status: requested ? "ready" : "idle",
+      options: requested ? [{ e164: requested, friendly: pretty(digits(requested)) || requested, locality: "Saved choice", region: "" }] : [],
+      error: "",
+      chosenE164: requested
+    };
+  }
+
+  function refreshNumbers(b) {
+    if (currentRender) currentRender();
+    var back = document.getElementById("modal-back");
+    if (back && back.classList.contains("open") && b) numberModal(b);
+  }
+
+  function aiNumberStep(b) {
+    ensureNumberPick(b);
+    var missing = missingNumberKeys();
+    if (missing.length) {
+      return "<p class='banner warn'>Not connected yet. Add " + esc(missing.join(" and ")) + " on the server, then come back.</p>";
+    }
+    if (!isAdmin()) return '<p class="help">Admins only.</p>';
+    var loading = numberPick.status === "loading";
+    return '<div class="number-search"><p class="help">Searching does not buy a number. It is purchased only when you choose Buy and connect, and a local number costs about $1.15 a month. Texting stays off.</p>' +
+      '<div class="field"><label>Area code</label><div class="inline"><input class="ctrl" data-number-area value="' + esc(numberPick.areaCode || "") + '" placeholder="781">' +
+      '<button class="btn" type="button" data-action="show-biz-numbers" data-id="' + esc(b.id) + '"' + (loading ? " disabled" : "") + ">Show numbers</button></div></div>" +
+      numberResultBlock(numberPick, "pick-biz-number", b.id) +
+      '<button class="btn btn-primary" type="button" data-action="live-provision" data-id="' + esc(b.id) + '"' + (loading ? " disabled" : "") + ">Buy and connect</button></div>";
+  }
+
   function numberModal(b) {
-    var ints = (window.RW_LIVE && window.RW_LIVE.integrations) || {};
-    var admin = window.RW_LIVE && window.RW_LIVE.user && window.RW_LIVE.user.role === "admin";
     if (b.phone && b.phone.aiNumber) {
       openModal("Receptionist test call", "<p>The receptionist will call you from <strong>" + esc(b.phone.aiNumber) + "</strong>. Answer to hear the greeting.</p>" +
         '<div class="field"><label for="test-to">Your phone</label><input class="ctrl" id="test-to" placeholder="(617) 555-0100"></div>',
         '<button class="btn" type="button" data-action="close-modal">Cancel</button><button class="btn btn-primary" type="button" data-action="live-test-call" data-id="' + esc(b.id) + '">Call me</button>');
       return;
     }
-    var missing = [];
-    if (!ints.twilio) missing.push("TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN");
-    if (!ints.vapi) missing.push("VAPI_API_KEY");
-    openModal("Get an AI number", missing.length
-      ? "<p class='banner warn'>Not connected yet. Add " + esc(missing.join(" and ")) + " on the server, then come back.</p>"
-      : "<p>Buys a local voice number from Twilio ($1.15/mo), connects it to this receptionist, and publishes the greeting. Texting stays off.</p>" +
-        '<div class="field"><label for="area-code">Area code</label><input class="ctrl" id="area-code" placeholder="781" maxlength="3"></div>',
-      '<button class="btn" type="button" data-action="close-modal">Close</button>' +
-      (missing.length ? "" : admin ? '<button class="btn btn-primary" type="button" data-action="live-provision" data-id="' + esc(b.id) + '">Buy and connect</button>' : "<span class='help'>Admins only.</span>"));
+    openModal("Get an AI number", aiNumberStep(b), '<button class="btn" type="button" data-action="close-modal">Close</button>');
   }
 
   var liveActions = {
@@ -2064,13 +2549,22 @@
         renderWizard();
         return;
       }
-      api("POST", "api/businesses", buildBusiness()).then(function (data) {
+      wizard.finished = true;
+      var body = buildBusiness();
+      var req = wizard.draftId
+        ? api("POST", "api/businesses/" + encodeURIComponent(wizard.draftId) + "/draft/finish", body)
+        : api("POST", "api/businesses", body);
+      req.then(function (data) {
         replaceBiz(data.business);
         wizard.createdId = data.business.id;
+        wizard.draftId = data.business.id;
         wizard.step = 10;
         toast(data.business.name + " added.");
         renderWizard();
-      }).catch(liveFail);
+      }).catch(function (err) {
+        wizard.finished = false;
+        liveFail(err);
+      });
     },
     "save-draft": function (el) {
       var b = findBiz(el.dataset.id);
@@ -2122,14 +2616,100 @@
       var b = findBiz(el.dataset.id);
       if (b) numberModal(b);
     },
+    "show-numbers": function () {
+      readWizard();
+      syncAreaCode();
+      if (!isAdmin()) {
+        wizard.numberStatus = "error";
+        wizard.numberError = "Admins only.";
+        renderWizard();
+        return;
+      }
+      var missing = missingNumberKeys();
+      if (missing.length) {
+        wizard.numberStatus = "error";
+        wizard.numberError = "Not connected yet. Add " + missing.join(" and ") + ".";
+        renderWizard();
+        return;
+      }
+      if (String(wizard.areaCode || "").length !== 3) {
+        wizard.numberStatus = "error";
+        wizard.numberError = "Enter a 3-digit area code.";
+        renderWizard();
+        return;
+      }
+      wizard.numberStatus = "loading";
+      wizard.numberError = "";
+      wizard.numberOptions = [];
+      renderWizard();
+      api("GET", "api/numbers/search?areaCode=" + encodeURIComponent(wizard.areaCode)).then(function (data) {
+        var list = data.numbers || [];
+        wizard.numberOptions = list;
+        wizard.numberStatus = list.length ? "ready" : "empty";
+        if (wizard.chosenE164 && !list.some(function (n) { return n.e164 === wizard.chosenE164; })) {
+          wizard.chosenE164 = "";
+          wizard.chosenNumber = "";
+        }
+        renderWizard();
+      }).catch(function (err) {
+        wizard.numberStatus = "error";
+        wizard.numberError = (err && err.message) || "Number search failed.";
+        wizard.numberOptions = [];
+        renderWizard();
+      });
+    },
+    "show-biz-numbers": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      ensureNumberPick(b);
+      var root = el.closest(".number-search");
+      var box = root ? root.querySelector("[data-number-area]") : null;
+      var area = String((box && box.value) || "").replace(/\D/g, "").slice(0, 3);
+      numberPick.areaCode = area;
+      if (area.length !== 3) {
+        numberPick.status = "error";
+        numberPick.error = "Enter a 3-digit area code.";
+        refreshNumbers(b);
+        return;
+      }
+      numberPick.status = "loading";
+      numberPick.error = "";
+      numberPick.options = [];
+      refreshNumbers(b);
+      api("GET", "api/numbers/search?areaCode=" + encodeURIComponent(area)).then(function (data) {
+        var list = data.numbers || [];
+        numberPick.options = list;
+        numberPick.status = list.length ? "ready" : "empty";
+        if (numberPick.chosenE164 && !list.some(function (n) { return n.e164 === numberPick.chosenE164; })) numberPick.chosenE164 = "";
+        refreshNumbers(b);
+      }).catch(function (err) {
+        numberPick.status = "error";
+        numberPick.error = (err && err.message) || "Number search failed.";
+        numberPick.options = [];
+        refreshNumbers(b);
+      });
+    },
+    "pick-biz-number": function (el) {
+      var b = findBiz(el.dataset.id);
+      if (!b) return;
+      ensureNumberPick(b);
+      numberPick.chosenE164 = el.dataset.value || "";
+      refreshNumbers(b);
+    },
     "live-provision": function (el) {
-      var box = document.getElementById("area-code");
-      var area = box ? box.value.replace(/\D/g, "").slice(0, 3) : "";
+      var b = findBiz(el.dataset.id);
+      ensureNumberPick(b);
+      var chosen = numberPick.bizId === el.dataset.id ? numberPick.chosenE164 : "";
+      if (!chosen) {
+        toast("Pick a number first. Searching does not buy one.");
+        return;
+      }
       el.disabled = true;
-      api("POST", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/numbers/provision", area ? { areaCode: area } : {}).then(function (data) {
+      api("POST", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/numbers/provision", { e164: chosen }).then(function (data) {
         replaceBiz(data.business);
         closeModal();
-        toast(data.pretty + " is live.");
+        numberPick = { bizId: "", areaCode: "", status: "idle", options: [], error: "", chosenE164: "" };
+        toast((data.pretty || chosen) + " is live.");
         currentRender();
       }).catch(function (err) { el.disabled = false; liveFail(err); });
     },
@@ -2381,8 +2961,10 @@
     var list = ordered(allBusinesses());
     var rows = list.map(function (b) {
       return "<tr><td><a href='client.html?id=" + encodeURIComponent(b.id) + "'>" + esc(b.name) + "</a>" + (b.pilot ? " <span class='pill pilot'>Pilot</span>" : "") +
-        "</td><td>" + (b.callsToday || 0) + "</td><td>" + (b.bookingsToday || 0) + "</td><td>" + esc(phoneStatus(b)) + "</td><td><a href='phone.html?id=" +
-        encodeURIComponent(b.id) + "'>Phone</a> · <a href='settings.html?id=" + encodeURIComponent(b.id) + "'>Settings</a></td></tr>";
+        (b.status === "draft" ? " " + pill("draft") : "") +
+        "</td><td>" + (b.callsToday || 0) + "</td><td>" + (b.bookingsToday || 0) + "</td><td>" + esc(phoneStatus(b)) + "</td><td>" +
+        (b.status === "draft" ? draftActions(b) : "<a href='phone.html?id=" + encodeURIComponent(b.id) + "'>Phone</a> · <a href='settings.html?id=" + encodeURIComponent(b.id) + "'>Settings</a>") +
+        "</td></tr>";
     }).join("");
     view.innerHTML = '<div class="page-head"><div><h1>Overview</h1><p class="sub">' + esc(todayLabel()) + " · calls stored for the businesses you manage</p></div>" +
       '<div class="head-actions"><button class="btn" type="button" data-action="sync-dashboard">Sync from Vapi</button><a class="btn btn-primary" href="settings.html">Receptionist settings</a></div></div>' +
@@ -2703,7 +3285,10 @@
       else if (page === "integrations") renderIntegrations(view);
       refreshBell();
     };
+    if (page === "add") resumeDraft();
     currentRender();
+    loadVoiceCatalog();
+    if (page === "add") window.addEventListener("pagehide", persistDraftOnLeave);
   }
 
   document.addEventListener("click", onClick);

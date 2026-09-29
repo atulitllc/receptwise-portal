@@ -64,6 +64,22 @@ global.fetch = async (url, opts = {}) => {
   }
   if (target.includes('AvailablePhoneNumbers')) {
     const area = params.get('AreaCode') || '503';
+    if (area === '999') return jsonRes(200, { available_phone_numbers: [] });
+    if (area === '781') {
+      const pageSize = Number(params.get('PageSize') || 10);
+      const numbers = [];
+      for (let i = 0; i < 12; i++) {
+        const line = String(2000000 + i);
+        const national = area + line;
+        numbers.push({
+          phone_number: '+1' + national,
+          friendly_name: '(' + area + ') ' + line.slice(0, 3) + '-' + line.slice(3),
+          locality: 'Waltham',
+          region: 'MA'
+        });
+      }
+      return jsonRes(200, { available_phone_numbers: numbers.slice(0, pageSize) });
+    }
     return jsonRes(200, {
       available_phone_numbers: [{
         phone_number: '+1' + area + '5550199',
@@ -216,7 +232,8 @@ describe('control panel API', () => {
     const res = await request('GET', '/api/feature-status', { headers: { 'X-RW-Client': '' } });
     assert.equal(res.status, 200);
     assert.equal(res.json.phone_number.status, 'real');
-    assert.equal(res.json.number_search.status, 'mockup');
+    assert.equal(res.json.number_search.status, 'real');
+    assert.equal(res.json.voice_dropdown.status, 'real');
     assert.equal(res.json.calendar_connection.status, 'in_progress');
     assert.equal(res.json.receptionist.status, 'real');
     assert.equal(res.json.website_generator.status, 'in_progress');
@@ -861,5 +878,339 @@ describe('control panel API', () => {
     assert.equal(testBody.assistantId, 'asst-new-harbor');
     assert.equal(testBody.phoneNumberId, 'pn-new-harbor');
     assert.equal(testBody.customer.number, '+16175550144');
+  });
+
+  it('lets an admin search available numbers by area code without buying', async () => {
+    const anon = await request('GET', '/api/numbers/search?areaCode=781');
+    assert.equal(anon.status, 401);
+
+    const team = await request('POST', '/api/users', {
+      cookie,
+      body: { email: 'search-team@receptwise.example', name: 'Search Team', password: 'team-password-10', role: 'team' }
+    });
+    assert.equal(team.status, 201, team.text);
+    const teamLogin = await request('POST', '/api/auth/login', {
+      body: { email: 'search-team@receptwise.example', password: 'team-password-10' }
+    });
+    assert.equal(teamLogin.status, 200, teamLogin.text);
+    const denied = await request('GET', '/api/numbers/search?areaCode=781', { cookie: cookieFrom(teamLogin.setCookie) });
+    assert.equal(denied.status, 403);
+
+    const bad = await request('GET', '/api/numbers/search?areaCode=78', { cookie });
+    assert.equal(bad.status, 400);
+
+    const before = httpCalls.length;
+    const res = await request('GET', '/api/numbers/search?areaCode=781', { cookie });
+    assert.equal(res.status, 200, res.text);
+    assert.equal(res.json.numbers.length, 10);
+    assert.equal(res.json.numbers[0].e164, '+17812000000');
+    assert.equal(res.json.numbers[0].friendly, '(781) 200-0000');
+    assert.equal(res.json.numbers[0].locality, 'Waltham');
+    const calls = httpCalls.slice(before);
+    const searchCall = calls.find((c) => c.url.includes('AvailablePhoneNumbers'));
+    assert.ok(searchCall);
+    assert.equal(searchCall.method, 'GET');
+    assert.equal(new URL(searchCall.url).searchParams.get('AreaCode'), '781');
+    assert.equal(new URL(searchCall.url).searchParams.get('PageSize'), '10');
+    assert.equal(new URL(searchCall.url).searchParams.get('VoiceEnabled'), 'true');
+    assert.equal(calls.some((c) => c.method === 'POST' && c.url.includes('IncomingPhoneNumbers')), false);
+
+    const empty = await request('GET', '/api/numbers/search?areaCode=999', { cookie });
+    assert.equal(empty.status, 200, empty.text);
+    assert.deepEqual(empty.json.numbers, []);
+  });
+
+  it('provisions the e164 the admin picked and does not search first', async () => {
+    const created = await request('POST', '/api/businesses', {
+      cookie,
+      body: { name: 'Waltham Books', category: 'Retail', city: 'Waltham, MA', timezone: 'Eastern Time' }
+    });
+    assert.equal(created.status, 201, created.text);
+    const slug = created.json.business.id;
+    httpCalls.length = 0;
+    const chosen = '+17812000999';
+    const bought = await request('POST', '/api/businesses/' + slug + '/numbers/provision', {
+      cookie,
+      body: { e164: chosen }
+    });
+    assert.equal(bought.status, 201, bought.text);
+    assert.equal(bought.json.e164, chosen);
+    assert.equal(bought.json.pretty, '(781) 200-0999');
+    assert.equal(bought.json.business.phone.aiNumber, '(781) 200-0999');
+    assert.equal(httpCalls.some((c) => c.url.includes('AvailablePhoneNumbers')), false);
+    const twilioBuy = httpCalls.find((c) => c.method === 'POST' && c.url.includes('IncomingPhoneNumbers.json'));
+    assert.ok(twilioBuy);
+    assert.equal(new URLSearchParams(twilioBuy.opts.body).get('PhoneNumber'), chosen);
+    assert.equal(httpCalls.filter((c) => c.method === 'POST' && c.url.includes('IncomingPhoneNumbers.json')).length, 1);
+  });
+
+  it('saves a wizard draft without creating an assistant or buying a number', async () => {
+    const missing = await request('POST', '/api/businesses/draft', {
+      cookie,
+      body: { name: 'Draft Bakery' }
+    });
+    assert.equal(missing.status, 400);
+
+    const before = httpCalls.length;
+    const created = await request('POST', '/api/businesses/draft', {
+      cookie,
+      body: {
+        name: 'Draft Bakery',
+        category: 'Retail',
+        city: 'Waltham, MA',
+        timezone: 'Eastern Time',
+        hours: 'Mon–Fri 8–4',
+        greeting: 'Thanks for calling Draft Bakery.',
+        wizardStep: 2,
+        phone: { mode: 'new', requestedE164: '+17812000007', aiNumber: '(781) 555-0148' },
+        wizard: {
+          step: 2,
+          name: 'Draft Bakery',
+          category: 'Retail',
+          city: 'Waltham, MA',
+          hours: 'Mon–Fri 8–4',
+          greeting: 'Thanks for calling Draft Bakery.',
+          areaCode: '781',
+          chosenE164: '+17812000007',
+          chosenNumber: '(781) 200-0007'
+        }
+      }
+    });
+    assert.equal(created.status, 201, created.text);
+    const draft = created.json.business;
+    assert.equal(draft.status, 'draft');
+    assert.equal(draft.name, 'Draft Bakery');
+    assert.equal(draft.category, 'Retail');
+    assert.equal(draft.wizardStep, 2);
+    assert.equal(draft.wizard.greeting, 'Thanks for calling Draft Bakery.');
+    assert.equal(draft.wizard.chosenE164, '+17812000007');
+    assert.equal(draft.phone.aiNumber, '');
+    assert.equal(draft.phone.requestedE164, '+17812000007');
+    assert.equal(draft.assistantPublished, false);
+    const progress = Object.fromEntries(draft.setupProgress.map((item) => [item.key, item.done]));
+    assert.equal(progress.details, true);
+    assert.equal(progress.receptionist, false);
+    assert.equal(progress.number, false);
+    assert.equal(progress.test, false);
+    const calls = httpCalls.slice(before);
+    assert.equal(calls.some((c) => /vapi|twilio/i.test(c.url)), false);
+    const assistants = await db.query('SELECT vapi_assistant_id FROM assistants WHERE business_id = $1', [draft.dbId]);
+    const numbers = await db.query('SELECT e164 FROM phone_numbers WHERE business_id = $1', [draft.dbId]);
+    assert.equal(assistants.rows.length, 0);
+    assert.equal(numbers.rows.length, 0);
+
+    const listed = await request('GET', '/api/businesses', { cookie });
+    assert.equal(listed.status, 200, listed.text);
+    const row = listed.json.businesses.find((b) => b.id === draft.id);
+    assert.ok(row);
+    assert.equal(row.status, 'draft');
+    assert.equal(row.wizardStep, 2);
+
+    const resumed = await request('GET', '/api/businesses/' + draft.id, { cookie });
+    assert.equal(resumed.status, 200, resumed.text);
+    assert.equal(resumed.json.business.wizardStep, 2);
+    assert.equal(resumed.json.business.wizard.chosenE164, '+17812000007');
+    assert.equal(resumed.json.business.wizard.hours, 'Mon–Fri 8–4');
+    assert.equal(resumed.json.business.hours, 'Mon–Fri 8–4');
+
+    const updatedBefore = httpCalls.length;
+    const updated = await request('PUT', '/api/businesses/' + draft.id + '/draft', {
+      cookie,
+      body: {
+        name: 'Draft Bakery',
+        category: 'Retail',
+        city: 'Waltham, MA',
+        address: '12 Main Street',
+        wizardStep: 4,
+        wizard: {
+          step: 4,
+          name: 'Draft Bakery',
+          category: 'Retail',
+          address: '12 Main Street',
+          greeting: 'Thanks for calling Draft Bakery. We book visits.',
+          chosenE164: '+17812000007'
+        }
+      }
+    });
+    assert.equal(updated.status, 200, updated.text);
+    assert.equal(updated.json.business.status, 'draft');
+    assert.equal(updated.json.business.wizardStep, 4);
+    assert.equal(updated.json.business.address, '12 Main Street');
+    assert.equal(updated.json.business.wizard.greeting, 'Thanks for calling Draft Bakery. We book visits.');
+    assert.equal(updated.json.business.wizard.chosenE164, '+17812000007');
+    assert.equal(httpCalls.slice(updatedBefore).some((c) => /vapi|twilio/i.test(c.url)), false);
+
+    const stuck = await request('PUT', '/api/businesses/' + draft.id, {
+      cookie,
+      body: { status: 'live', name: 'Draft Bakery' }
+    });
+    assert.equal(stuck.status, 200, stuck.text);
+    assert.equal(stuck.json.business.status, 'draft');
+
+    const notDraft = await request('PUT', '/api/businesses/receptwise/draft', {
+      cookie,
+      body: { name: 'ReceptWise', category: 'Professional services' }
+    });
+    assert.equal(notDraft.status, 409);
+    const keepPilot = await request('DELETE', '/api/businesses/receptwise', { cookie });
+    assert.equal(keepPilot.status, 409);
+
+    const finished = await request('POST', '/api/businesses/' + draft.id + '/draft/finish', {
+      cookie,
+      body: { name: 'Draft Bakery', category: 'Retail', city: 'Waltham, MA' }
+    });
+    assert.equal(finished.status, 200, finished.text);
+    assert.equal(finished.json.business.status, 'setup');
+    assert.equal(finished.json.business.wizardStep, 9);
+    assert.equal(finished.json.business.wizard.chosenE164, '+17812000007');
+    assert.equal(finished.json.business.phone.aiNumber, '');
+    const finishedDelete = await request('DELETE', '/api/businesses/' + draft.id, { cookie });
+    assert.equal(finishedDelete.status, 409);
+
+    const second = await request('POST', '/api/businesses/draft', {
+      cookie,
+      body: { name: 'Discarded Draft', category: 'Salon', wizardStep: 1, wizard: { step: 1, name: 'Discarded Draft', category: 'Salon' } }
+    });
+    assert.equal(second.status, 201, second.text);
+    const removed = await request('DELETE', '/api/businesses/' + second.json.business.id, { cookie });
+    assert.equal(removed.status, 200, removed.text);
+    assert.equal(removed.json.ok, true);
+    const gone = await request('GET', '/api/businesses/' + second.json.business.id, { cookie });
+    assert.equal(gone.status, 404);
+    const afterList = await request('GET', '/api/businesses', { cookie });
+    assert.equal(afterList.json.businesses.some((b) => b.id === second.json.business.id), false);
+    assert.equal(afterList.json.businesses.some((b) => b.id === draft.id && b.status === 'setup'), true);
+  });
+
+  it('stores a Cal.com event type and encrypts the API key', async () => {
+    const cryptoBox = require('../src/cryptoBox');
+    const secret = 'cal_live_test_key_123';
+    const created = await request('POST', '/api/businesses/draft', {
+      cookie,
+      body: {
+        name: 'Cal.com Draft',
+        category: 'Professional services',
+        calendar: { provider: 'calcom', calcomEventTypeId: '20-minute-demo', apiKey: secret },
+        wizard: { calendar: 'cal', calcomEventTypeId: '20-minute-demo', calcomApiKey: secret, step: 4 }
+      }
+    });
+    assert.equal(created.status, 201, created.text);
+    assert.equal(created.json.business.calendar.provider, 'calcom');
+    assert.equal(created.json.business.calendar.calcomEventTypeId, '20-minute-demo');
+    assert.equal(created.json.business.calcomKeySaved, false);
+    assert.equal(JSON.stringify(created.json).includes(secret), false);
+    const slug = created.json.business.id;
+    const storedEarly = await db.query(
+      `SELECT profile, (SELECT count(*) FROM integrations i WHERE i.business_id = businesses.id AND i.provider = 'calcom') AS keys
+       FROM businesses WHERE slug = $1`,
+      [slug]
+    );
+    assert.equal(JSON.stringify(storedEarly.rows[0].profile).includes(secret), false);
+    assert.equal(Number(storedEarly.rows[0].keys), 0);
+
+    const before = httpCalls.length;
+    const saved = await request('PUT', '/api/businesses/' + slug + '/calendar', {
+      cookie,
+      body: { provider: 'calcom', calcomEventTypeId: '20-minute-demo', apiKey: secret }
+    });
+    assert.equal(saved.status, 200, saved.text);
+    assert.equal(saved.json.calcomKeySaved, true);
+    assert.equal(saved.json.calendar.provider, 'calcom');
+    assert.equal(saved.json.calendar.calcomEventTypeId, '20-minute-demo');
+    assert.equal(saved.json.business.calcomKeySaved, true);
+    assert.equal(JSON.stringify(saved.json).includes(secret), false);
+    assert.equal(httpCalls.slice(before).some((c) => /vapi|twilio|cal\.com/i.test(c.url)), false);
+
+    const row = await db.query(
+      `SELECT i.token_enc, b.profile FROM integrations i JOIN businesses b ON b.id = i.business_id
+       WHERE b.slug = $1 AND i.provider = 'calcom'`,
+      [slug]
+    );
+    assert.equal(cryptoBox.decrypt(row.rows[0].token_enc), secret);
+    assert.equal(row.rows[0].profile.calendar.provider, 'calcom');
+    assert.equal(row.rows[0].profile.calendar.calcomEventTypeId, '20-minute-demo');
+    assert.equal(JSON.stringify(row.rows[0].profile).includes(secret), false);
+
+    const renamed = await request('PUT', '/api/businesses/' + slug + '/calendar', {
+      cookie,
+      body: { provider: 'calcom', calcomEventTypeId: 'intro-call' }
+    });
+    assert.equal(renamed.status, 200, renamed.text);
+    assert.equal(renamed.json.calendar.calcomEventTypeId, 'intro-call');
+    assert.equal(renamed.json.calcomKeySaved, true);
+    const still = await db.query(
+      `SELECT i.token_enc FROM integrations i JOIN businesses b ON b.id = i.business_id
+       WHERE b.slug = $1 AND i.provider = 'calcom'`,
+      [slug]
+    );
+    assert.equal(cryptoBox.decrypt(still.rows[0].token_enc), secret);
+
+    const resumed = await request('GET', '/api/businesses/' + slug, { cookie });
+    assert.equal(resumed.json.business.calendar.calcomEventTypeId, 'intro-call');
+    assert.equal(resumed.json.business.calcomKeySaved, true);
+    assert.equal(resumed.json.business.wizard.calcomEventTypeId, '20-minute-demo');
+    assert.equal(JSON.stringify(resumed.json).includes(secret), false);
+
+    const rejected = await request('PUT', '/api/businesses/' + slug + '/calendar', {
+      cookie,
+      body: { provider: 'google', apiKey: secret }
+    });
+    assert.equal(rejected.status, 400, rejected.text);
+    const unchanged = await db.query('SELECT profile FROM businesses WHERE slug = $1', [slug]);
+    assert.equal(unchanged.rows[0].profile.calendar.provider, 'calcom');
+
+    const messages = await request('PUT', '/api/businesses/' + slug + '/calendar', {
+      cookie,
+      body: { provider: 'none' }
+    });
+    assert.equal(messages.status, 200, messages.text);
+    assert.equal(messages.json.calendar.provider, 'none');
+    assert.equal(Object.hasOwn(messages.json.calendar, 'calcomEventTypeId'), false);
+  });
+
+  it('lists the voice catalog and publishes the voice saved on the business', async () => {
+    const fs = require('fs');
+    const path = require('path');
+    const anon = await request('GET', '/api/voices');
+    assert.equal(anon.status, 401);
+
+    const catalog = await request('GET', '/api/voices', { cookie });
+    assert.equal(catalog.status, 200, catalog.text);
+    const keys = catalog.json.voices.map((voice) => voice.key);
+    assert.deepEqual(keys, ['nora', 'sarah', 'jessica', 'laura', 'lily']);
+    assert.equal(catalog.json.voices[0].isDefault, true);
+    assert.match(catalog.json.voices[0].description, /calm and natural/);
+    assert.equal(JSON.stringify(catalog.json).includes('Juniper'), false);
+    assert.equal(keys.includes('andrew'), false);
+
+    const created = await request('POST', '/api/businesses', {
+      cookie,
+      body: { name: 'Voice Trial', category: 'Retail', voice: 'sarah' }
+    });
+    assert.equal(created.status, 201, created.text);
+    assert.equal(created.json.business.voice, 'sarah');
+    httpCalls.length = 0;
+    const published = await request('POST', '/api/businesses/' + created.json.business.id + '/assistant/publish', { cookie });
+    assert.equal(published.status, 200, published.text);
+    const assistant = JSON.parse(httpCalls.find((c) => c.method === 'POST' && new URL(c.url).pathname === '/assistant').opts.body);
+    assert.deepEqual(assistant.voice, {
+      provider: '11labs', voiceId: 'EXAVITQu4vr4xnSDxMaL', model: 'eleven_flash_v2_5'
+    });
+
+    const migrated = await request('PUT', '/api/businesses/' + created.json.business.id, {
+      cookie,
+      body: { voice: 'Sol (bright)' }
+    });
+    assert.equal(migrated.status, 200, migrated.text);
+    assert.equal(migrated.json.business.voice, 'nora');
+
+    await db.query(`UPDATE businesses SET profile = jsonb_set(profile, '{voice}', '"Harbor (clear)"') WHERE slug = $1`, [created.json.business.id]);
+    const sql = fs.readFileSync(path.join(__dirname, '../migrations/006_voice_catalog.sql'), 'utf8');
+    await db.query(sql);
+    const again = await db.query(`SELECT profile->>'voice' AS voice FROM businesses WHERE slug = $1`, [created.json.business.id]);
+    assert.equal(again.rows[0].voice, 'nora');
+    await db.query(sql);
+    const twice = await db.query(`SELECT profile->>'voice' AS voice FROM businesses WHERE slug = $1`, [created.json.business.id]);
+    assert.equal(twice.rows[0].voice, 'nora');
   });
 });

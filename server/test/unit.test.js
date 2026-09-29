@@ -113,6 +113,43 @@ test('booking can be turned off, and only Cartesia voices send language', () => 
   });
 });
 
+test('assistant payload uses the business voice and falls back to the env voice', () => {
+  const voices = require('../src/voices');
+  const base = {
+    id: 3, slug: 'voice-shop', name: 'Voice Shop', timezone: 'America/New_York',
+    profile: { capabilities: { book: false, transfer: false } }
+  };
+  function payload(voice) {
+    return vapi.assistantPayload(Object.assign({}, base, {
+      profile: Object.assign({}, base.profile, voice ? { voice } : {})
+    }));
+  }
+  assert.deepEqual(payload('sarah').voice, {
+    provider: '11labs', voiceId: 'EXAVITQu4vr4xnSDxMaL', model: 'eleven_flash_v2_5'
+  });
+  assert.deepEqual(payload('jessica').voice, {
+    provider: '11labs', voiceId: 'cgSgspJ2msm6clMCkdW9', model: 'eleven_flash_v2_5'
+  });
+  assert.deepEqual(payload('laura').voice, {
+    provider: '11labs', voiceId: 'FGY2WhTYpPnrIDTdsKH5', model: 'eleven_flash_v2_5'
+  });
+  assert.deepEqual(payload('lily').voice, {
+    provider: '11labs', voiceId: 'pFZP5JQG7iQjIQuC4Bku', model: 'eleven_flash_v2_5'
+  });
+  assert.equal(payload('sarah').voice.language, undefined);
+  assert.deepEqual(payload('nora').voice, {
+    provider: 'cartesia',
+    voiceId: 'f4c1a0b2-669d-403f-b440-4b34b34856aa',
+    model: 'sonic-2',
+    language: 'en'
+  });
+  assert.equal(payload('Juniper (warm)').voice.voiceId, 'f4c1a0b2-669d-403f-b440-4b34b34856aa');
+  assert.equal(payload('Harbor (clear)').voice.voiceId, 'f4c1a0b2-669d-403f-b440-4b34b34856aa');
+  assert.deepEqual(payload('').voice, { provider: 'cartesia', voiceId: 'nora', model: 'sonic-2', language: 'en' });
+  assert.equal(voices.publicList().some((voice) => voice.key === 'andrew'), false);
+  assert.equal(voices.publicList().find((voice) => voice.key === 'nora').isDefault, true);
+});
+
 test('toE164', () => {
   assert.equal(vapi.toE164('(781) 555-0100'), '+17815550100');
   assert.equal(vapi.toE164('1-781-555-0100'), '+17815550100');
@@ -242,13 +279,13 @@ test('feature status registry is the single badge source', () => {
     phone_number: 'real',
     test_call: 'real',
     bookings: 'real',
-    number_search: 'mockup',
+    number_search: 'real',
     calendar_connection: 'in_progress',
     social: 'mockup',
     reviews: 'mockup',
     website_generator: 'in_progress',
     outreach: 'mockup',
-    voice_dropdown: 'mockup',
+    voice_dropdown: 'real',
     email_domain: 'mockup',
     receptionist: 'real'
   };

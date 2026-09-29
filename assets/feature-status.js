@@ -45,8 +45,8 @@
     },
     number_search: {
       label: "Number search",
-      status: "mockup",
-      note: "Show numbers lists 555 sample numbers. It does not search Twilio."
+      status: "real",
+      note: "Show numbers searches Twilio for local numbers and does not list 555 samples. A number is purchased only on Buy and connect."
     },
     calendar_connection: {
       label: "Calendar",
@@ -75,8 +75,8 @@
     },
     voice_dropdown: {
       label: "Voice",
-      status: "mockup",
-      note: "The voice picker does not change the live Vapi voice. That voice comes from server configuration."
+      status: "real",
+      note: "The voice picker uses the catalog (Nora, Sarah, Jessica, Laura, and Lily). The choice is stored on the business and used when the receptionist is published."
     },
     email_domain: {
       label: "Email domain",

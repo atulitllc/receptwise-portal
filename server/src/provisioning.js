@@ -62,14 +62,22 @@ async function publishAssistant(biz, userId) {
   }
   await db.query('INSERT INTO audit_log (user_id, business_id, action, detail) VALUES ($1,$2,$3,$4)',
     [userId || null, biz.id, 'assistant.publish', { assistantId: result.id }]);
-  return { assistantId: result.id, voiceSet: Boolean(config.vapi.voiceId), calendarTools: config.vapi.calendarToolIds.length };
+  return { assistantId: result.id, voiceSet: Boolean(payload.voice), calendarTools: config.vapi.calendarToolIds.length };
 }
 
+// Lists available local numbers. Never purchases.
 async function searchNumbers(areaCode) {
-  const codes = areaCode ? [areaCode] : config.twilio.defaultAreaCodes;
+  const codes = areaCode ? [String(areaCode)] : config.twilio.defaultAreaCodes;
   for (const code of codes) {
-    const found = await twilio.searchLocalNumbers({ areaCode: code, limit: 5 });
-    if (found.length) return found;
+    const found = await twilio.searchLocalNumbers({ areaCode: code, limit: 10 });
+    if (found.length) {
+      return found.slice(0, 10).map((n) => ({
+        e164: n.e164,
+        friendly: n.friendly || businesses.prettyPhone(n.e164),
+        locality: n.locality || '',
+        region: n.region || ''
+      }));
+    }
   }
   return [];
 }
