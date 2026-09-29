@@ -739,6 +739,13 @@
     return entry;
   }
 
+  // One legend for the whole view. Chips and nav items keep the dot only.
+  function statusLegend() {
+    return '<p class="status-legend"><span><i class="legend-dot real" aria-hidden="true"></i> Real</span>' +
+      '<span><i class="legend-dot in_progress" aria-hidden="true"></i> In progress</span>' +
+      '<span><i class="legend-dot mockup" aria-hidden="true"></i> Mockup</span></p>';
+  }
+
   // Pill for one feature. Every badge in the panel goes through here.
   function badge(key) {
     var entry = featureEntry(key);
@@ -746,15 +753,18 @@
     var word = FEATURE_WORD[entry.status];
     var name = entry.label || key;
     var tip = name + " — " + word + (entry.note ? ". " + entry.note : "");
-    return '<span class="pill feat ' + entry.status + '" title="' + esc(tip) + '"><i class="feat-dot" aria-hidden="true"></i><span class="feat-name">' + esc(name) + "</span> " + esc(word) + "</span>";
+    return '<span class="pill feat ' + entry.status + '" title="' + esc(tip) + '"><i class="feat-dot" role="img" aria-label="' + esc(word) + '" title="' + esc(word) + '"></i><span class="feat-name">' + esc(name) + "</span></span>";
   }
 
-  function featureBar(keys) {
+  function featureBar(keys, withLegend) {
     var html = (keys || []).map(badge).join("");
-    return html ? '<div class="feat-bar" aria-label="Feature status">' + html + "</div>" : "";
+    if (!html) return "";
+    var bar = '<div class="feat-bar" aria-label="Feature status">' + html + "</div>";
+    if (withLegend === false) return bar;
+    return '<div class="feat-block">' + statusLegend() + bar + "</div>";
   }
 
-  // One mini badge per distinct status, for tab and wizard step buttons.
+  // One dot per distinct status, for tab and wizard step buttons.
   function statusMarks(keys) {
     var groups = { real: [], in_progress: [], mockup: [] };
     (keys || []).forEach(function (key) {
@@ -765,8 +775,8 @@
     return ["real", "in_progress", "mockup"].map(function (status) {
       var names = groups[status];
       if (!names.length) return "";
-      var word = FEATURE_WORD[status];
-      return '<span class="feat-mini ' + status + '" title="' + esc(names.join(", ") + " — " + word) + '"><i aria-hidden="true"></i>' + esc(word) + '<span class="sr-only">: ' + esc(names.join(", ")) + "</span></span>";
+      var label = FEATURE_WORD[status] + ": " + names.join(", ");
+      return '<span class="feat-mini ' + status + '" role="img" title="' + esc(label) + '" aria-label="' + esc(label) + '"><i aria-hidden="true"></i></span>';
     }).join("");
   }
 
@@ -1207,7 +1217,7 @@
         choice("phoneMode", "forward", "Forward the current number", "The number on the door stays. Calls roll to the receptionist.") +
         choice("phoneMode", "port", "Move the number to us", "Porting takes days. Forwarding is the usual start.") +
         "</div>" +
-        '<div class="field"><label>Area code</label>' + featureBar(["number_search"]) + '<div class="inline">' + input("areaCode", wizard.areaCode, "415") +
+        '<div class="field"><label>Area code</label>' + featureBar(["number_search"], false) + '<div class="inline">' + input("areaCode", wizard.areaCode, "415") +
         ((!LIVE || (isAdmin() && !numberKeys.length))
           ? '<button class="btn" type="button" data-action="show-numbers"' + (wizard.numberStatus === "loading" ? " disabled" : "") + ">Show numbers</button>"
           : "") +
@@ -1347,7 +1357,7 @@
       }).join("") + "</dl>" +
         '<button class="btn btn-primary" type="button" data-action="create-business">Create business</button>';
     }
-    return "<h2>" + esc(STEPS[wizard.step][0]) + "</h2><p class='sub'>" + esc(STEPS[wizard.step][1]) + "</p>" + featureBar(STEP_FEATURES[wizard.step]) + error + '<div style="margin-top:14px">' + body + "</div>";
+    return "<h2>" + esc(STEPS[wizard.step][0]) + "</h2><p class='sub'>" + esc(STEPS[wizard.step][1]) + "</p>" + featureBar(STEP_FEATURES[wizard.step], false) + error + '<div style="margin-top:14px">' + body + "</div>";
   }
 
   function ensurePreviewGreeting() {
@@ -1366,7 +1376,7 @@
     var savedNote = wizard.saved && wizard.step !== 10 ? '<p class="help">Draft saved. This business stays on the Businesses list as Setup incomplete until you finish.</p>' : "";
     var deleteDraft = wizard.draftId && wizard.step !== 10 ? '<button class="btn btn-sm" type="button" data-action="delete-draft" data-id="' + esc(wizard.draftId) + '" data-name="' + esc(wizard.name || "this draft") + '">Delete draft</button>' : "";
     view.innerHTML = '<div class="page-head"><div><h1>Add business</h1><p class="sub">About ten minutes. The owner only handles the steps a phone company or Google requires.</p>' + savedNote + '</div>' + deleteDraft + "</div>" +
-      '<div class="wizard"><aside class="step-list">' + steps + '</aside><section class="wizard-panel">' + wizardBody() + nav + "</section></div>" + legal();
+      '<div class="wizard"><aside class="step-list">' + statusLegend() + steps + '</aside><section class="wizard-panel">' + wizardBody() + nav + "</section></div>" + legal();
   }
 
   function slug(name) {
@@ -2490,7 +2500,7 @@
       '<div class="head-actions">' + (b.status === "draft" ? '<a class="btn btn-primary" href="add.html?draft=' + encodeURIComponent(b.id) + '">Resume setup</a>' : '') +
       '<button class="btn" type="button" data-action="call-receptionist" data-id="' + esc(b.id) + '">Call the receptionist</button>' +
       '<button class="btn btn-primary" type="button" data-action="send-steps" data-id="' + esc(b.id) + '">Send owner their steps</button></div></section>' +
-      '<nav class="tabs">' + tabs + "</nav>" + featureBar(TAB_FEATURES[tab]) + body + legal();
+      '<div class="tab-row"><nav class="tabs">' + tabs + "</nav>" + statusLegend() + "</div>" + featureBar(TAB_FEATURES[tab], false) + body + legal();
     if (tab === "website") loadSitePreview(b);
     if (tab === "overview") {
       loadDomains(b);
