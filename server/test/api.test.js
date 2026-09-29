@@ -2560,6 +2560,26 @@ describe('control panel API', () => {
     assert.equal(teamPatch.status, 403);
   });
 
+  it('redirects the apex host to www and leaves panel and business hosts alone', async () => {
+    const apex = await request('GET', '/client.html?id=harbor-cafe', {
+      headers: { Host: 'receptwise.com', 'X-RW-Client': '' }
+    });
+    assert.equal(apex.status, 301);
+    assert.equal(apex.headers.location, 'https://www.receptwise.com/client.html?id=harbor-cafe');
+
+    const withPort = await request('GET', '/pricing?plan=growth', {
+      headers: { Host: 'receptwise.com:443', 'X-RW-Client': '' }
+    });
+    assert.equal(withPort.status, 301);
+    assert.equal(withPort.headers.location, 'https://www.receptwise.com/pricing?plan=growth');
+
+    for (const host of ['www.receptwise.com', 'panel.receptwise.com', 'api.receptwise.com', 'receptwise.receptwise.com', 'sphere.receptwise.com']) {
+      const page = await request('GET', '/', { headers: { Host: host, 'X-RW-Client': '' } });
+      assert.notEqual(page.status, 301, host);
+      assert.equal(page.headers.location, undefined, host);
+    }
+  });
+
   it('routes customer panel hosts and keeps the main panel on reserved names', async () => {
     const pilot = await request('GET', '/assets/data.js', {
       headers: { Host: 'receptwise.receptwise.com', 'X-RW-Client': '' }

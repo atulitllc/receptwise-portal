@@ -8,11 +8,21 @@ const ROOT = 'receptwise.com';
 function classifyHost(host) {
   const value = String(host || '').trim().toLowerCase().replace(/\.$/, '');
   const bare = value.replace(/:\d+$/, '');
+  // The apex is the marketing site, never a business panel. www, panel, and api stay the main panel.
   if (!bare || bare === ROOT || !bare.endsWith('.' + ROOT)) return { kind: 'primary' };
   const label = bare.slice(0, -(ROOT.length + 1));
   if (!label || label.includes('.')) return { kind: 'primary' };
   if (RESERVED.includes(label)) return { kind: 'primary', reserved: label };
   return { kind: 'customer', label };
+}
+
+// DNS for the apex is a DNS-only CNAME to this Render service. Send browsers to www.
+// Only the exact host receptwise.com or receptwise.com:<port>. www, panel, and business hosts stay put.
+function apexRedirectTarget(hostHeader, originalUrl) {
+  const host = String(hostHeader || '').trim().toLowerCase();
+  if (host !== ROOT && !/^receptwise\.com:\d+$/.test(host)) return '';
+  const path = String(originalUrl || '/');
+  return 'https://www.' + ROOT + (path.startsWith('/') ? path : '/' + path);
 }
 
 function notFoundPage(label) {
@@ -30,4 +40,4 @@ function notFoundPage(label) {
     '</main></body></html>';
 }
 
-module.exports = { RESERVED, ROOT, classifyHost, notFoundPage };
+module.exports = { RESERVED, ROOT, classifyHost, apexRedirectTarget, notFoundPage };

@@ -117,6 +117,13 @@ function createApp() {
   const app = express();
   app.set('trust proxy', 1);
   app.disable('x-powered-by');
+  // receptwise.com is on this service as a DNS-only custom domain. Send it to www
+  // before any other route. www, panel, api, and <slug>.receptwise.com are not redirected.
+  app.use((req, res, next) => {
+    const target = portalHost.apexRedirectTarget(req.headers.host, req.originalUrl);
+    if (!target) return next();
+    res.redirect(301, target);
+  });
   app.use((req, res, next) => {
     res.set('X-Content-Type-Options', 'nosniff');
     res.set('X-Frame-Options', 'DENY');
