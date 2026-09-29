@@ -1034,7 +1034,7 @@
         (b.status === "draft" ? draftActions(b) : esc(next.text) + "<div class='help'>" + esc(next.owner) + "</div>") + "</td></tr>";
     }).join("");
     view.innerHTML = '<div class="page-head"><div><h1>Businesses</h1><p class="sub">' + list.length + " shown · pinned pilot stays at the top</p></div>" +
-      '<a class="btn btn-primary" href="add.html">Add business</a></div>' +
+      (isBusinessViewer() ? "" : '<a class="btn btn-primary" href="add.html">Add business</a>') + "</div>" +
       '<div class="filters"><div class="chips">' + chip("All", "") + chip("Needs attention", "attention") + chip("Waiting on client", "waiting") +
       chip("Setup incomplete", "draft") + chip("In setup", "setup") + chip("Live", "live") + "</div>" +
       '<select class="ctrl" style="width:auto" data-action="go-filter" data-key="type" aria-label="Business type">' + options(types, filters.type, "All types") + "</select>" +
@@ -4101,6 +4101,10 @@
     }
     if (!session()) {
       location.replace("index.html");
+      return;
+    }
+    if (page === "add" && isBusinessViewer()) {
+      location.replace("clients.html");
       return;
     }
     document.getElementById("app").innerHTML = shell(page);
