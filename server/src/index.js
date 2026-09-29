@@ -15,7 +15,8 @@ async function main() {
       '| twilio', config.twilio.configured ? 'on' : 'off',
       '| vapi', config.vapi.configured ? 'on' : 'off',
       '| sms', config.smsEnabled ? 'on' : 'off',
-      '| trello', config.trello.configured ? 'on' : 'off');
+      '| trello', config.trello.configured ? 'on' : 'off',
+      '| github', config.github.configured ? 'on' : 'off');
   });
 }
 

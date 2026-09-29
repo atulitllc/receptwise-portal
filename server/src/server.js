@@ -19,10 +19,13 @@ const trelloSync = require('./trelloSync');
 const exportData = require('./exportData');
 const calendarConnection = require('./calendarConnection');
 const voices = require('./voices');
+const websites = require('./website/service');
 
 // The portal pages live at the repo root (also published as the GitHub Pages demo).
 const SITE_ROOT = path.join(__dirname, '..', '..');
 const PAGES = ['index', 'dashboard', 'clients', 'add', 'client', 'billing', 'team', 'phone', 'settings', 'integrations'];
+// Same object the admin badges read from assets/feature-status.js.
+const featureStatus = require(path.join(SITE_ROOT, 'assets', 'feature-status'));
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
@@ -96,6 +99,10 @@ function createApp() {
     await db.query('SELECT 1');
     res.json({ ok: true });
   }));
+  api.get('/feature-status', (_req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json(featureStatus);
+  });
   api.post('/auth/login', wrap(auth.login));
   api.post('/auth/logout', wrap(auth.logout));
   api.get('/me', auth.requireUser, (req, res) => res.json({ user: req.user }));
@@ -241,6 +248,19 @@ function createApp() {
   }));
   api.delete('/businesses/:slug/integrations/:provider', withBiz, wrap(async (req, res) => {
     res.json(await social.removeIntegration(req.biz, req.params.provider, req.user.id));
+  }));
+
+  // Website generator. Preview, generate, and regenerate are admin-only. Missing GITHUB_TOKEN is HTTP 409.
+  api.get('/businesses/:slug/website/preview', auth.requireAdmin, wrap(loadBiz), wrap(async (req, res) => {
+    res.json(await websites.preview(req.biz, req.query.template));
+  }));
+  api.post('/businesses/:slug/website/generate', auth.requireAdmin, wrap(loadBiz), wrap(async (req, res) => {
+    const result = await websites.generate(req.biz, (req.body || {}).template, req.user.id);
+    res.status(201).json(Object.assign({ ok: true }, result));
+  }));
+  api.post('/businesses/:slug/website/regenerate', auth.requireAdmin, wrap(loadBiz), wrap(async (req, res) => {
+    const result = await websites.regenerate(req.biz, req.user.id, (req.body || {}).template);
+    res.json(Object.assign({ ok: true }, result));
   }));
 
   api.get('/metrics', auth.requireUser, wrap(async (req, res) => {

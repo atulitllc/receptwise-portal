@@ -272,6 +272,33 @@ test('trello card text names the caller and links back to the call', () => {
   assert.equal(redact('https://api.trello.com/1/members/me?key=secret&token=tok'), 'https://api.trello.com/1/members/me?key=redacted&token=redacted');
 });
 
+test('feature status registry is the single badge source', () => {
+  const registry = require('../../assets/feature-status');
+  const allowed = new Set(['real', 'mockup', 'in_progress']);
+  const expected = {
+    phone_number: 'real',
+    test_call: 'real',
+    bookings: 'real',
+    number_search: 'real',
+    calendar_connection: 'in_progress',
+    social: 'mockup',
+    reviews: 'mockup',
+    website_generator: 'in_progress',
+    outreach: 'mockup',
+    voice_dropdown: 'real',
+    email_domain: 'mockup',
+    receptionist: 'real'
+  };
+  Object.keys(expected).forEach((key) => {
+    assert.equal(registry[key].status, expected[key], key);
+    assert.ok(registry[key].label, key);
+  });
+  Object.keys(registry).forEach((key) => {
+    assert.ok(allowed.has(registry[key].status), key);
+    assert.equal(typeof registry[key].note, 'string', key);
+  });
+});
+
 test('meta dialog URL uses the business login config when set', () => {
   const previous = process.env.META_LOGIN_CONFIG_ID;
   process.env.META_LOGIN_CONFIG_ID = '';
