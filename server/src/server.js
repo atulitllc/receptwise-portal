@@ -22,6 +22,8 @@ const websites = require('./website/service');
 // The portal pages live at the repo root (also published as the GitHub Pages demo).
 const SITE_ROOT = path.join(__dirname, '..', '..');
 const PAGES = ['index', 'dashboard', 'clients', 'add', 'client', 'billing', 'team', 'phone', 'settings', 'integrations'];
+// Same object the admin badges read from assets/feature-status.js.
+const featureStatus = require(path.join(SITE_ROOT, 'assets', 'feature-status'));
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
@@ -95,6 +97,10 @@ function createApp() {
     await db.query('SELECT 1');
     res.json({ ok: true });
   }));
+  api.get('/feature-status', (_req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json(featureStatus);
+  });
   api.post('/auth/login', wrap(auth.login));
   api.post('/auth/logout', wrap(auth.logout));
   api.get('/me', auth.requireUser, (req, res) => res.json({ user: req.user }));

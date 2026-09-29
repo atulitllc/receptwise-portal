@@ -25,6 +25,44 @@
     ["settings", "Settings"]
   ];
 
+  // Keys in assets/feature-status.js. Tab dots and the bar under the tabs read this.
+  var TAB_FEATURES = {
+    overview: ["phone_number", "number_search", "test_call", "calendar_connection", "email_domain", "reviews", "social", "website_generator", "billing", "texting"],
+    receptionist: ["receptionist", "voice_dropdown", "test_call", "call_log"],
+    bookings: ["bookings", "calendar_connection"],
+    reviews: ["reviews"],
+    social: ["social"],
+    website: ["website_generator"],
+    outreach: ["outreach"],
+    billing: ["billing"],
+    settings: ["business_settings"]
+  };
+
+  // Wizard step index -> features that appear on that step.
+  var STEP_FEATURES = {
+    1: ["billing"],
+    2: ["number_search"],
+    3: ["test_call"],
+    4: ["calendar_connection"],
+    5: ["receptionist", "voice_dropdown"],
+    6: ["social"],
+    7: ["website_generator"],
+    8: ["texting"]
+  };
+
+  var CHECK_FEATURES = {
+    number: "phone_number",
+    test: "test_call",
+    calendar: "calendar_connection",
+    texting: "texting",
+    email: "email_domain",
+    reviews: "reviews",
+    gbp: "social",
+    social: "social",
+    website: "website_generator",
+    billing: "billing"
+  };
+
   var CAT_COLOR = {
     Restaurant: "#c2410c",
     Clinic: "#0369a1",
@@ -59,6 +97,7 @@
   var timers = [];
   var extraCache = null;
   var currentRender = function () {};
+  var integrationByBiz = {};
 
   function defaultWizard() {
     return {
@@ -391,6 +430,66 @@
   function pill(status) {
     var label = STATUS_LABEL[status] || status || "—";
     return '<span class="pill ' + esc(status || "neutral") + '">' + esc(label) + "</span>";
+  }
+
+  var FEATURE_WORD = { real: "Real", mockup: "Mockup", in_progress: "In progress" };
+
+  function featureEntry(key) {
+    var all = window.RW_FEATURE_STATUS || {};
+    var entry = all[key];
+    if (!entry || !FEATURE_WORD[entry.status]) return null;
+    return entry;
+  }
+
+  // Pill for one feature. Every badge in the panel goes through here.
+  function badge(key) {
+    var entry = featureEntry(key);
+    if (!entry) return "";
+    var word = FEATURE_WORD[entry.status];
+    var name = entry.label || key;
+    var tip = name + " — " + word + (entry.note ? ". " + entry.note : "");
+    return '<span class="pill feat ' + entry.status + '" title="' + esc(tip) + '"><i class="feat-dot" aria-hidden="true"></i><span class="feat-name">' + esc(name) + "</span> " + esc(word) + "</span>";
+  }
+
+  function featureBar(keys) {
+    var html = (keys || []).map(badge).join("");
+    return html ? '<div class="feat-bar" aria-label="Feature status">' + html + "</div>" : "";
+  }
+
+  // One mini badge per distinct status, for tab and wizard step buttons.
+  function statusMarks(keys) {
+    var groups = { real: [], in_progress: [], mockup: [] };
+    (keys || []).forEach(function (key) {
+      var entry = featureEntry(key);
+      if (!entry) return;
+      groups[entry.status].push(entry.label || key);
+    });
+    return ["real", "in_progress", "mockup"].map(function (status) {
+      var names = groups[status];
+      if (!names.length) return "";
+      var word = FEATURE_WORD[status];
+      return '<span class="feat-mini ' + status + '" title="' + esc(names.join(", ") + " — " + word) + '"><i aria-hidden="true"></i>' + esc(word) + '<span class="sr-only">: ' + esc(names.join(", ")) + "</span></span>";
+    }).join("");
+  }
+
+  function ensureIntegrations(b) {
+    if (!LIVE || !b || !b.id || integrationByBiz[b.id]) return;
+    integrationByBiz[b.id] = { pending: true };
+    api("GET", "api/businesses/" + encodeURIComponent(b.id) + "/integrations").then(function (data) {
+      var map = {};
+      (data.accounts || []).forEach(function (account) {
+        if (account && account.provider) map[account.provider] = account.status || "";
+      });
+      integrationByBiz[b.id] = map;
+      if ((document.body.dataset.page || "") === "client" && currentTab() === "social") currentRender();
+    }).catch(function () {
+      integrationByBiz[b.id] = { failed: true };
+    });
+  }
+
+  function integrationConnected(b, provider) {
+    var map = b && integrationByBiz[b.id];
+    return !!(map && map[provider] === "connected");
   }
 
   function initials(name) {
@@ -772,7 +871,7 @@
         '<div class="field"><label>Area code</label><div class="inline">' + input("areaCode", wizard.areaCode, "415") +
         '<button class="btn" type="button" data-action="show-numbers">Show numbers</button></div><div class="help">Used to list local numbers.</div></div>' +
         (LIVE ? '<div class="note calm">Live mode: these numbers are examples. The real number is bought from the business page (Overview > AI number) after the business is created.</div>' : "") +
-        '<div class="field"><label>AI receptionist number</label><div class="choice-grid">' + numbers.map(function (num) {
+        '<div class="field"><label>AI receptionist number</label>' + featureBar(["number_search"]) + '<div class="choice-grid">' + numbers.map(function (num) {
           return choice("chosenNumber", num, num, "Local · voice");
         }).join("") + "</div></div>";
       if (wizard.phoneMode === "forward") {
@@ -832,7 +931,7 @@
         field("FAQs", textarea("faqs", wizard.faqs, "Do you take walk-ins? Yes, when a chair is open."), "One question per line. You can also attach a text file.") +
         '<div class="field"><label>FAQ file</label><input class="ctrl" type="file" accept=".txt,.md,.csv,text/plain" data-action="faq-file"></div>' +
         '<div class="grid-2">' + field("Transfer-to number", input("transfer", wizard.transfer || wizard.ownerMobile, "(503) 555-0172")) +
-        field("Voice", '<select class="ctrl" data-field="voice">' + ["Juniper (warm)", "Harbor (clear)", "North (calm)", "Sol (bright)"].map(function (voice) {
+        field("Voice " + badge("voice_dropdown"), '<select class="ctrl" data-field="voice">' + ["Juniper (warm)", "Harbor (clear)", "North (calm)", "Sol (bright)"].map(function (voice) {
           return '<option' + (wizard.voice === voice ? " selected" : "") + ">" + esc(voice) + "</option>";
         }).join("") + "</select>") + "</div>" +
         '<label class="setting-row"><span><strong>Spanish as well as English</strong><div class="help">Optional. English is always on.</div></span><input data-field="spanish" type="checkbox"' + (wizard.spanish ? " checked" : "") + "></label>";
@@ -882,7 +981,7 @@
       }).join("") + "</dl>" +
         '<button class="btn btn-primary" type="button" data-action="create-business">Create business</button>';
     }
-    return "<h2>" + esc(STEPS[wizard.step][0]) + "</h2><p class='sub'>" + esc(STEPS[wizard.step][1]) + "</p>" + error + '<div style="margin-top:14px">' + body + "</div>";
+    return "<h2>" + esc(STEPS[wizard.step][0]) + "</h2><p class='sub'>" + esc(STEPS[wizard.step][1]) + "</p>" + featureBar(STEP_FEATURES[wizard.step]) + error + '<div style="margin-top:14px">' + body + "</div>";
   }
 
   function ensurePreviewGreeting() {
@@ -894,7 +993,7 @@
     view = view || document.getElementById("view");
     if (!view) return;
     var steps = STEPS.map(function (step, index) {
-      return '<button class="step-btn' + (index === wizard.step || (wizard.step === 10 && index === 9) ? " on" : "") + '" type="button" data-action="goto-step" data-step="' + index + '"><i>' + (index + 1) + "</i><span>" + esc(step[0]) + "</span></button>";
+      return '<button class="step-btn' + (index === wizard.step || (wizard.step === 10 && index === 9) ? " on" : "") + '" type="button" data-action="goto-step" data-step="' + index + '"><i>' + (index + 1) + "</i><span>" + esc(step[0]) + statusMarks(STEP_FEATURES[index]) + "</span></button>";
     }).join("");
     var nav = wizard.step === 10 ? "" : '<div class="wizard-nav"><button class="btn" type="button" data-action="back"' + (wizard.step === 0 ? " disabled" : "") + '>Back</button>' +
       (wizard.step < 9 ? '<button class="btn btn-primary" type="button" data-action="next">Continue</button>' : "<span></span>") + "</div>";
@@ -1054,8 +1153,9 @@
     }
     var checks = (b.checklist || []).map(function (item) {
       var open = openCheck === item.key;
-      return '<div class="check"><button class="check-top" type="button" data-action="toggle-check" data-key="' + esc(item.key) + '"><b>' + esc(item.label) +
-        "</b>" + pill(item.status) + "</button>" + (open ? '<div class="check-body"><p>' + esc(item.detail) + '</p><p class="help">Owner: ' + esc(item.owner) + "</p>" +
+      var feat = CHECK_FEATURES[item.key] ? badge(CHECK_FEATURES[item.key]) : "";
+      return '<div class="check"><button class="check-top" type="button" data-action="toggle-check" data-key="' + esc(item.key) + '"><span class="check-label"><b>' + esc(item.label) +
+        "</b>" + feat + "</span>" + pill(item.status) + "</button>" + (open ? '<div class="check-body"><p>' + esc(item.detail) + '</p><p class="help">Owner: ' + esc(item.owner) + "</p>" +
         checkAction(b, item) + "</div>" : "") + "</div>";
     }).join("");
     var activity = (b.activity || []).map(function (item) {
@@ -1107,7 +1207,7 @@
     } else {
       codes = '<div class="note calm">This business publishes the new number ' + esc(phone.aiNumber || "") + ". No forwarding code is required.</div>";
     }
-    return '<section class="card" style="margin-top:14px"><div class="card-h"><h2>Phone and forwarding</h2><span class="help">' + esc(phoneStatus(b)) + '</span></div><div class="card-b">' +
+    return '<section class="card" style="margin-top:14px"><div class="card-h"><h2>Phone and forwarding</h2><span class="feat-row">' + badge("phone_number") + badge("number_search") + '<span class="help">' + esc(phoneStatus(b)) + "</span></span></div><div class='card-b'>" +
       '<dl class="kvs"><dt>AI number</dt><dd>' + esc(phone.aiNumber || "—") + "</dd><dt>Business number</dt><dd>" + esc(phone.businessNumber || "—") + "</dd><dt>Mode</dt><dd>" +
       esc(phone.mode === "forward" ? "Forward existing number" : phone.mode === "port" ? "Port the number" : "New number") + "</dd></dl>" + codes +
       '<button class="btn btn-sm btn-primary" type="button" data-action="forward-test" data-id="' + esc(b.id) + '">Run forwarding test</button>' +
@@ -1141,9 +1241,9 @@
           : '<div class="help">Recording sample · kept 90 days. ' + esc(call.duration) + (call.flag ? " · " + esc(call.flag) : "") + "</div>" +
             '<button class="btn btn-sm" type="button" data-action="play-call">Play recording</button><div class="scrub"><i></i></div></div>') : "") + "</div>";
     }).join("") || '<div class="empty">No calls yet.</div>';
-    return '<div class="split"><section class="card"><div class="card-h"><h2>Receptionist</h2><span class="pill neutral">Draft until you publish</span></div><div class="card-b">' +
+    return '<div class="split"><section class="card"><div class="card-h"><h2>Receptionist</h2><span class="feat-row">' + badge("receptionist") + '<span class="pill neutral">Draft until you publish</span></span></div><div class="card-b">' +
       '<div class="field"><label>Greeting</label><textarea class="ctrl" id="greet">' + esc(b.greeting) + "</textarea></div>" +
-      '<div class="field"><label>Voice</label><select class="ctrl" id="voice">' + ["Juniper (warm)", "Harbor (clear)", "North (calm)", "Sol (bright)"].map(function (voice) {
+      '<div class="field"><label>Voice ' + badge("voice_dropdown") + '</label><select class="ctrl" id="voice">' + ["Juniper (warm)", "Harbor (clear)", "North (calm)", "Sol (bright)"].map(function (voice) {
         return "<option" + (b.voice === voice ? " selected" : "") + ">" + esc(voice) + "</option>";
       }).join("") + "</select></div>" +
       '<p class="help">Languages: ' + esc((b.languages || ["English"]).join(", ")) + ". The assistant always offers a person.</p>" +
@@ -1151,23 +1251,24 @@
       (LIVE ? '<p class="help"><a href="settings.html?id=' + encodeURIComponent(b.id) + '">Edit greeting, hours, and booking rules</a></p>' : '') +
       '<div class="head-actions"><button class="btn" type="button" data-action="save-draft" data-id="' + esc(b.id) + '">Save draft</button>' +
       '<button class="btn btn-primary" type="button" data-action="publish-receptionist" data-id="' + esc(b.id) + '">Publish</button>' +
-      '<button class="btn" type="button" data-action="run-greeting-test" data-id="' + esc(b.id) + '">Test call</button></div>' +
+      '<button class="btn" type="button" data-action="run-greeting-test" data-id="' + esc(b.id) + '">Test call</button>' + badge("test_call") + "</div>" +
       "<h3 style='margin:16px 0 8px'>Services and FAQs</h3><ul>" + (b.services || []).map(function (service) {
         return "<li>" + esc(service.name) + " · " + esc(service.length) + " · " + esc(service.price) + "</li>";
       }).join("") + "</ul>" + (b.faqs || []).map(function (faq) {
         return "<p><strong>" + esc(faq.q) + "</strong><br>" + esc(faq.a) + "</p>";
-      }).join("") + '</div></section><section class="card"><div class="card-h"><h2>Call log</h2>' +
+      }).join("") + '</div></section><section class="card"><div class="card-h"><h2>Call log</h2><span class="feat-row">' + badge("call_log") +
       (LIVE ? '<button class="btn btn-sm" type="button" data-action="live-sync-calls" data-id="' + esc(b.id) + '">Refresh calls</button>' : "") +
-      '</div><div class="card-b">' + calls + "</div></section></div>";
+      "</span></div><div class='card-b'>" + calls + "</div></section></div>";
   }
 
   function tabBookings(b) {
     var rows = (b.bookings || []).map(function (booking) {
       return "<tr><td>" + esc(booking.when) + "</td><td>" + esc(booking.customer) + "</td><td>" + esc(booking.service) + "</td><td>" + esc(booking.source) + "</td><td>" + esc(booking.status) + "</td></tr>";
     }).join("");
-    return '<div class="head-actions" style="margin-bottom:12px"><button class="btn btn-primary" type="button" data-action="booking-test" data-id="' + esc(b.id) + '">Run booking test</button>' +
+    return '<div class="head-actions" style="margin-bottom:12px">' + badge("calendar_connection") +
+      '<button class="btn btn-primary" type="button" data-action="booking-test" data-id="' + esc(b.id) + '">Run booking test</button>' +
       '<button class="btn" type="button" data-action="send-link" data-id="' + esc(b.id) + '" data-kind="calendar">Send calendar link</button></div>' +
-      '<section class="card"><div class="card-h"><h2>Upcoming</h2></div><div class="table-wrap"><table class="data"><thead><tr><th>When</th><th>Customer</th><th>Service</th><th>Source</th><th>Status</th></tr></thead><tbody>' +
+      '<section class="card"><div class="card-h"><h2>Upcoming</h2>' + badge("bookings") + '</div><div class="table-wrap"><table class="data"><thead><tr><th>When</th><th>Customer</th><th>Service</th><th>Source</th><th>Status</th></tr></thead><tbody>' +
       (rows || '<tr><td colspan="5"><div class="empty">No upcoming bookings.</div></td></tr>') + "</tbody></table></div></section>";
   }
 
@@ -1180,7 +1281,7 @@
         "</div></article>";
     }).join("") || '<div class="card"><div class="empty">No reviews yet. Each customer gets the same request. Unhappy customers are not filtered out.</div></div>';
     return '<div class="banner ok">The same request goes to every customer. ReceptWise does not ask “were you happy?” first, and it does not offer rewards for reviews.</div>' +
-      '<div class="split"><section class="card"><div class="card-b"><h2>Review link</h2><p class="help">' + esc(b.reviewLink || "No link on file yet.") + "</p>" +
+      '<div class="split"><section class="card"><div class="card-b"><h2>Review link</h2>' + badge("reviews") + '<p class="help">' + esc(b.reviewLink || "No link on file yet.") + "</p>" +
       '<div class="head-actions"><button class="btn btn-sm" type="button" data-action="open-review" data-id="' + esc(b.id) + '">Open link</button>' +
       '<button class="btn btn-sm" type="button" data-action="copy-code" data-code="' + esc(b.reviewLink || "") + '">Copy</button></div>' +
       '<div class="qr" aria-hidden="true"></div><p class="help">Sample code for the review link. Send after the visit, one reminder at most.</p>' +
@@ -1191,18 +1292,26 @@
 
   function tabSocial(b) {
     var accounts = b.socialAccounts || {};
-    function row(label, value) {
-      var connected = !!value;
-      return "<div class='setting-row'><div><strong>" + label + "</strong><div class='help'>" + esc(connected ? "Read back: " + value : "Not connected") + "</div></div>" +
-        (connected ? pill("connected") : '<button class="btn btn-sm" type="button" data-action="send-link" data-id="' + esc(b.id) + '" data-kind="social">Connect</button>') + "</div>";
+    ensureIntegrations(b);
+    function row(label, value, provider) {
+      var saved = !!(value && String(value).trim());
+      var really = integrationConnected(b, provider);
+      var help = really ? "Connected" + (saved ? " · " + value : "") : (saved ? String(value) : "Not connected");
+      var aside = really
+        ? pill("connected")
+        : saved
+          ? '<span class="pill neutral">Handle saved, not connected</span>'
+          : '<button class="btn btn-sm" type="button" data-action="send-link" data-id="' + esc(b.id) + '" data-kind="social">Connect</button>';
+      return "<div class='setting-row'><div><strong>" + esc(label) + "</strong><div class='help'>" + esc(help) + "</div></div>" + aside + "</div>";
     }
     var posts = (b.posts || []).map(function (post) {
       return "<tr><td>" + esc(post.when) + "</td><td>" + esc(post.channel) + "</td><td>" + esc(post.text) + "</td><td>" + esc(post.status) + "</td></tr>";
     }).join("");
     return (LIVE ? '<p class="help" style="margin-bottom:8px"><a href="integrations.html?id=' + encodeURIComponent(b.id) + '">Open Integrations for a real connection status</a></p>' : '') +
-      '<section class="card" style="margin-bottom:12px"><div class="card-b">' + row("Facebook", accounts.facebook) + row("Instagram", accounts.instagram) + row("Google Business Profile", accounts.gbp) +
+      '<section class="card" style="margin-bottom:12px"><div class="card-h"><h2>Accounts</h2>' + badge("social") + '</div><div class="card-b">' +
+      row("Facebook", accounts.facebook, "facebook") + row("Instagram", accounts.instagram, "instagram") + row("Google Business Profile", accounts.gbp, "google_business") +
       '<button class="btn" type="button" data-action="new-post" data-id="' + esc(b.id) + '">New draft</button></div></section>' +
-      '<section class="card"><div class="card-h"><h2>Posts</h2></div><div class="table-wrap"><table class="data"><thead><tr><th>When</th><th>Channel</th><th>Post</th><th>Status</th></tr></thead><tbody>' +
+      '<section class="card"><div class="card-h"><h2>Posts</h2>' + badge("social") + '</div><div class="table-wrap"><table class="data"><thead><tr><th>When</th><th>Channel</th><th>Post</th><th>Status</th></tr></thead><tbody>' +
       (posts || '<tr><td colspan="4"><div class="empty">No posts yet.</div></td></tr>') + "</tbody></table></div></section>";
   }
 
@@ -1267,7 +1376,7 @@
     var phone = (b.phone && b.phone.aiNumber) ? "Call uses the AI number " + b.phone.aiNumber + "." : "No AI number is on file, so the call button is left off.";
     return '<div class="split"><div class="browser"><div class="browser-bar"><i></i><i></i><i></i><span class="url">' + esc(urlLabel) + "</span></div>" + preview + "</div>" +
       '<section class="card"><div class="card-b">' + banner +
-      "<h2>Website</h2><p class='help'>Two real designs: Classic and Modern. The eight industry names are not eight layouts. They pick an accent color and a suggested design.</p>" +
+      "<h2>Website</h2>" + badge("website_generator") + "<p class='help'>Two real designs: Classic and Modern. The eight industry names are not eight layouts. They pick an accent color and a suggested design.</p>" +
       "<p class='sub'>" + esc(b.category || "This business") + " suggests " + (suggested === "modern" ? "Modern" : "Classic") + ". You can choose either.</p>" +
       '<div class="choice-grid">' +
       templateChoice(b, "classic", "Classic", "Warm page, rounded buttons, large call button.") +
@@ -1313,7 +1422,7 @@
       return "<tr><td>" + esc(campaign.name) + "</td><td>" + esc(campaign.channel) + "</td><td>" + esc(campaign.when) + "</td><td>" + campaign.sent + "</td><td>" + campaign.clicked + "</td><td>" + campaign.bookings + "</td><td>" + esc(campaign.status) + "</td></tr>";
     }).join("");
     return '<div class="note">Only people who gave this business their email or number, with the date and source recorded. Emails include an unsubscribe link and the business’s postal address. Text replies of STOP are honored immediately. Texts stay off until registration is approved.</div>' +
-      '<div class="head-actions" style="margin:12px 0"><button class="btn" type="button" data-action="import-contacts" data-id="' + esc(b.id) + '">Import customers</button>' +
+      '<div class="head-actions" style="margin:12px 0">' + badge("outreach") + '<button class="btn" type="button" data-action="import-contacts" data-id="' + esc(b.id) + '">Import customers</button>' +
       '<button class="btn" type="button" data-action="new-campaign">New campaign</button>' +
       '<button class="btn btn-primary" type="button" data-action="test-send">Send a test</button></div>' +
       '<p class="help">' + (b.contacts || 0) + " contacts · " + (b.suppressed || 0) + " suppressed</p>" +
@@ -1323,7 +1432,7 @@
 
   function tabBilling(b) {
     var cost = estimate(b);
-    return minuteBanner(b) + '<div class="split"><section class="card"><div class="card-b"><h2>' + esc(b.plan) + "</h2><p class='sub'>" + esc(b.tier) + " · " + (b.pilot ? "Pilot, $0" : money(b.price) + " a month") + "</p>" +
+    return minuteBanner(b) + '<div class="split"><section class="card"><div class="card-b"><h2>' + esc(b.plan) + "</h2>" + badge("billing") + "<p class='sub'>" + esc(b.tier) + " · " + (b.pilot ? "Pilot, $0" : money(b.price) + " a month") + "</p>" +
       '<dl class="kvs" style="margin-top:12px"><dt>Setup fee</dt><dd>' + (b.setupFee ? money(b.setupFee) : "$0 waived") + "</dd><dt>Trial</dt><dd>" + esc(b.trial || "None") +
       "</dd><dt>Next invoice</dt><dd>" + esc(b.nextInvoice || "—") + "</dd><dt>Card</dt><dd>" + esc(b.card || "—") + "</dd><dt>Minutes</dt><dd>" + minuteCell(b) + "</dd></dl>" +
       '<button class="btn" type="button" data-action="payment-link" data-id="' + esc(b.id) + '">Send card update link</button></div></section>' +
@@ -1334,7 +1443,7 @@
   }
 
   function tabSettings(b) {
-    return '<section class="card"><div class="card-b"><div class="grid-2">' +
+    return '<section class="card"><div class="card-h"><h2>Settings</h2>' + badge("business_settings") + '</div><div class="card-b"><div class="grid-2">' +
       '<div class="field"><label>Hours</label><input class="ctrl" data-set="hours" value="' + esc(b.hours || "") + '"></div>' +
       '<div class="field"><label>Time zone</label><input class="ctrl" data-set="timezone" value="' + esc(b.timezone || "") + '"></div>' +
       '<div class="field"><label>Transfer-to number</label><input class="ctrl" data-set="transfer" value="' + esc(b.transfer || "") + '"></div>' +
@@ -1359,7 +1468,7 @@
     document.title = b.name + " · ReceptWise";
     var tab = currentTab();
     var tabs = TABS.map(function (item) {
-      return '<a class="tab' + (item[0] === tab ? " on" : "") + '" href="#' + item[0] + '">' + item[1] + "</a>";
+      return '<a class="tab' + (item[0] === tab ? " on" : "") + '" href="#' + item[0] + '">' + esc(item[1]) + statusMarks(TAB_FEATURES[item[0]]) + "</a>";
     }).join("");
     var body = tab === "receptionist" ? tabReceptionist(b)
       : tab === "bookings" ? tabBookings(b)
@@ -1375,7 +1484,7 @@
       "</p><div class='pills'>" + pill(b.status) + '<span class="pill neutral">' + esc(b.plan) + "</span>" + (b.pilot ? '<span class="pill pilot">Pilot</span>' : "") + "</div></div></div>" +
       '<div class="head-actions"><button class="btn" type="button" data-action="call-receptionist" data-id="' + esc(b.id) + '">Call the receptionist</button>' +
       '<button class="btn btn-primary" type="button" data-action="send-steps" data-id="' + esc(b.id) + '">Send owner their steps</button></div></section>' +
-      '<nav class="tabs">' + tabs + "</nav>" + body + legal();
+      '<nav class="tabs">' + tabs + "</nav>" + featureBar(TAB_FEATURES[tab]) + body + legal();
     if (tab === "website") loadSitePreview(b);
   }
 
@@ -2306,7 +2415,7 @@
   function renderPhone(view) {
     var id = pageBizId();
     if (!LIVE) {
-      view.innerHTML = '<div class="page-head"><div><h1>Phone</h1><p class="sub">Numbers attached to the receptionist</p></div></div>' +
+      view.innerHTML = '<div class="page-head"><div><h1>Phone</h1>' + featureBar(["phone_number"]) + '<p class="sub">Numbers attached to the receptionist</p></div></div>' +
         '<div class="card"><div class="empty">This demo does not call the phone provider. On the live control panel this page shows the number, the assistant it is attached to, and a clear not-connected state when keys are missing.</div></div>' + legal();
       return;
     }
@@ -2325,7 +2434,7 @@
           (n.twilioStatus ? "<dt>Twilio</dt><dd>" + esc(n.twilioStatus) + "</dd>" : "") +
           "</dl><p class='help'>" + esc(n.detail || "") + "</p></div></article>";
       }).join("");
-      view.innerHTML = '<div class="page-head"><div><h1>Phone</h1><p class="sub">The line attached to this receptionist</p></div>' + bizSelect() + "</div>" +
+      view.innerHTML = '<div class="page-head"><div><h1>Phone</h1>' + featureBar(["phone_number"]) + '<p class="sub">The line attached to this receptionist</p></div>' + bizSelect() + "</div>" +
         phoneStateBanner(data) +
         (data.testCallHint ? '<div class="note calm">' + esc(data.testCallHint) + "</div>" : "") +
         (cards || '<div class="card"><div class="empty">No number is on file for this business.</div></div>') + legal();
@@ -2358,7 +2467,7 @@
     var faqs = (s.faqs && s.faqs.length ? s.faqs : [{ q: "", a: "" }]).map(function (f) { return faqRow(f.q, f.a); }).join("");
     var pushed = payload && payload.lastPushedAt ? '<p class="help">Last pushed ' + esc(String(payload.lastPushedAt)) + ".</p>" : "";
     var hint = payload && payload.testCall ? payload.testCall.hint : "";
-    return '<div class="page-head"><div><h1>Receptionist</h1><p class="sub">Saved here, then pushed to the live assistant when Vapi is connected.</p></div>' + bizSelect() + "</div>" +
+    return '<div class="page-head"><div><h1>Receptionist</h1>' + featureBar(["receptionist"]) + '<p class="sub">Saved here, then pushed to the live assistant when Vapi is connected.</p></div>' + bizSelect() + "</div>" +
       (hint ? '<div class="note calm">' + esc(hint) + "</div>" : "") +
       (payload && payload.vapiConfigured ? '<div class="banner ok">Vapi is connected. Saving updates the live greeting and instructions.</div>' : '<div class="banner warn">Vapi is not connected. Settings save in the panel and push after VAPI_API_KEY is set.</div>') +
       '<section class="card"><div class="card-b">' +

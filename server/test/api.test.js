@@ -212,6 +212,17 @@ describe('control panel API', () => {
     assert.equal(res.json.ok, true);
   });
 
+  it('serves the feature status registry', async () => {
+    const res = await request('GET', '/api/feature-status', { headers: { 'X-RW-Client': '' } });
+    assert.equal(res.status, 200);
+    assert.equal(res.json.phone_number.status, 'real');
+    assert.equal(res.json.number_search.status, 'mockup');
+    assert.equal(res.json.calendar_connection.status, 'in_progress');
+    assert.equal(res.json.receptionist.status, 'real');
+    assert.equal(res.json.website_generator.status, 'in_progress');
+    assert.equal(res.json.website, undefined);
+  });
+
   it('logs in with the seeded admin', async () => {
     const res = await request('POST', '/api/auth/login', {
       body: { email: 'admin@receptwise.example', password: 'pilot-password-10' }

@@ -1,0 +1,97 @@
+/* Feature status registry — the only place feature badges are defined.
+   Badges in the admin panel and GET /api/feature-status both read this file.
+   To ship a feature, change its status here. Nothing else needs a copy of the list.
+
+   status:
+     real        — working against the server with real data (green "Real")
+     mockup      — placeholder, sample data, or a canned toast (gray "Mockup")
+     in_progress — being built (blue "In progress")
+*/
+(function (root, factory) {
+  var registry = factory();
+  if (typeof module === "object" && module.exports) module.exports = registry;
+  if (root) root.RW_FEATURE_STATUS = registry;
+})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+  return {
+    phone_number: {
+      label: "AI number",
+      status: "real",
+      note: "Buy and connect purchases a Twilio number and attaches it to the receptionist."
+    },
+    test_call: {
+      label: "Test call",
+      status: "real",
+      note: "The business page places a real outbound test call through Vapi."
+    },
+    bookings: {
+      label: "Bookings",
+      status: "real",
+      note: "Appointment rows are bookings stored from calls."
+    },
+    call_log: {
+      label: "Call log",
+      status: "real",
+      note: "Calls are stored from Vapi and loaded from the server."
+    },
+    receptionist: {
+      label: "Receptionist",
+      status: "real",
+      note: "Greeting and prompt save in the panel and publish to Vapi."
+    },
+    business_settings: {
+      label: "Settings",
+      status: "real",
+      note: "Hours, time zone, transfer number, and pause save on the business."
+    },
+    number_search: {
+      label: "Number search",
+      status: "mockup",
+      note: "Show numbers lists 555 sample numbers. It does not search Twilio."
+    },
+    calendar_connection: {
+      label: "Calendar",
+      status: "in_progress",
+      note: "Per-business Google or Cal.com connect is being built. Sign-in and booking test are still placeholders."
+    },
+    social: {
+      label: "Social",
+      status: "mockup",
+      note: "Facebook, Instagram, and post drafts on the Social tab are placeholders. A typed handle is not a connection."
+    },
+    reviews: {
+      label: "Reviews",
+      status: "mockup",
+      note: "Review cards and the review link are sample data."
+    },
+    website_generator: {
+      label: "Website generator",
+      status: "in_progress",
+      note: "Classic and Modern templates generate a GitHub repository, and Regenerate opens a pull request. It needs GITHUB_TOKEN on Render."
+    },
+    outreach: {
+      label: "Outreach",
+      status: "mockup",
+      note: "Import customers, New campaign, and the campaign table are sample only."
+    },
+    voice_dropdown: {
+      label: "Voice",
+      status: "mockup",
+      note: "The voice picker does not change the live Vapi voice. That voice comes from server configuration."
+    },
+    email_domain: {
+      label: "Email domain",
+      status: "mockup",
+      note: "SPF and DKIM checks are simulated."
+    },
+    billing: {
+      label: "Billing",
+      status: "mockup",
+      note: "Plan math is a local estimate. Payment links are sample URLs, not Stripe."
+    },
+    texting: {
+      label: "Texting",
+      status: "mockup",
+      note: "Registration status is a canned message. Texting stays off until SMS is enabled."
+    }
+  };
+});
