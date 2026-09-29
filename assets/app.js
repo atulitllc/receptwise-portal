@@ -739,6 +739,13 @@
     return entry;
   }
 
+  // One legend for the whole view. Chips and nav items keep the dot only.
+  function statusLegend() {
+    return '<p class="status-legend"><span><i class="legend-dot real" aria-hidden="true"></i> Real</span>' +
+      '<span><i class="legend-dot in_progress" aria-hidden="true"></i> In progress</span>' +
+      '<span><i class="legend-dot mockup" aria-hidden="true"></i> Mockup</span></p>';
+  }
+
   // Pill for one feature. Every badge in the panel goes through here.
   function badge(key) {
     var entry = featureEntry(key);
@@ -746,15 +753,18 @@
     var word = FEATURE_WORD[entry.status];
     var name = entry.label || key;
     var tip = name + " — " + word + (entry.note ? ". " + entry.note : "");
-    return '<span class="pill feat ' + entry.status + '" title="' + esc(tip) + '"><i class="feat-dot" aria-hidden="true"></i><span class="feat-name">' + esc(name) + "</span> " + esc(word) + "</span>";
+    return '<span class="pill feat ' + entry.status + '" title="' + esc(tip) + '"><i class="feat-dot" role="img" aria-label="' + esc(word) + '" title="' + esc(word) + '"></i><span class="feat-name">' + esc(name) + "</span></span>";
   }
 
-  function featureBar(keys) {
+  function featureBar(keys, withLegend) {
     var html = (keys || []).map(badge).join("");
-    return html ? '<div class="feat-bar" aria-label="Feature status">' + html + "</div>" : "";
+    if (!html) return "";
+    var bar = '<div class="feat-bar" aria-label="Feature status">' + html + "</div>";
+    if (withLegend === false) return bar;
+    return '<div class="feat-block">' + statusLegend() + bar + "</div>";
   }
 
-  // One mini badge per distinct status, for tab and wizard step buttons.
+  // One dot per distinct status, for tab and wizard step buttons.
   function statusMarks(keys) {
     var groups = { real: [], in_progress: [], mockup: [] };
     (keys || []).forEach(function (key) {
@@ -765,8 +775,8 @@
     return ["real", "in_progress", "mockup"].map(function (status) {
       var names = groups[status];
       if (!names.length) return "";
-      var word = FEATURE_WORD[status];
-      return '<span class="feat-mini ' + status + '" title="' + esc(names.join(", ") + " — " + word) + '"><i aria-hidden="true"></i>' + esc(word) + '<span class="sr-only">: ' + esc(names.join(", ")) + "</span></span>";
+      var label = FEATURE_WORD[status] + ": " + names.join(", ");
+      return '<span class="feat-mini ' + status + '" role="img" title="' + esc(label) + '" aria-label="' + esc(label) + '"><i aria-hidden="true"></i></span>';
     }).join("");
   }
 
@@ -1207,7 +1217,7 @@
         choice("phoneMode", "forward", "Forward the current number", "The number on the door stays. Calls roll to the receptionist.") +
         choice("phoneMode", "port", "Move the number to us", "Porting takes days. Forwarding is the usual start.") +
         "</div>" +
-        '<div class="field"><label>Area code</label>' + featureBar(["number_search"]) + '<div class="inline">' + input("areaCode", wizard.areaCode, "415") +
+        '<div class="field"><label>Area code</label>' + featureBar(["number_search"], false) + '<div class="inline">' + input("areaCode", wizard.areaCode, "415") +
         ((!LIVE || (isAdmin() && !numberKeys.length))
           ? '<button class="btn" type="button" data-action="show-numbers"' + (wizard.numberStatus === "loading" ? " disabled" : "") + ">Show numbers</button>"
           : "") +
@@ -1347,7 +1357,7 @@
       }).join("") + "</dl>" +
         '<button class="btn btn-primary" type="button" data-action="create-business">Create business</button>';
     }
-    return "<h2>" + esc(STEPS[wizard.step][0]) + "</h2><p class='sub'>" + esc(STEPS[wizard.step][1]) + "</p>" + featureBar(STEP_FEATURES[wizard.step]) + error + '<div style="margin-top:14px">' + body + "</div>";
+    return "<h2>" + esc(STEPS[wizard.step][0]) + "</h2><p class='sub'>" + esc(STEPS[wizard.step][1]) + "</p>" + featureBar(STEP_FEATURES[wizard.step], false) + error + '<div style="margin-top:14px">' + body + "</div>";
   }
 
   function ensurePreviewGreeting() {
@@ -1366,7 +1376,7 @@
     var savedNote = wizard.saved && wizard.step !== 10 ? '<p class="help">Draft saved. This business stays on the Businesses list as Setup incomplete until you finish.</p>' : "";
     var deleteDraft = wizard.draftId && wizard.step !== 10 ? '<button class="btn btn-sm" type="button" data-action="delete-draft" data-id="' + esc(wizard.draftId) + '" data-name="' + esc(wizard.name || "this draft") + '">Delete draft</button>' : "";
     view.innerHTML = '<div class="page-head"><div><h1>Add business</h1><p class="sub">About ten minutes. The owner only handles the steps a phone company or Google requires.</p>' + savedNote + '</div>' + deleteDraft + "</div>" +
-      '<div class="wizard"><aside class="step-list">' + steps + '</aside><section class="wizard-panel">' + wizardBody() + nav + "</section></div>" + legal();
+      '<div class="wizard"><aside class="step-list">' + statusLegend() + steps + '</aside><section class="wizard-panel">' + wizardBody() + nav + "</section></div>" + legal();
   }
 
   function slug(name) {
@@ -1743,7 +1753,43 @@
       '</div></section><section class="card"><div class="card-h"><h2>Activity</h2></div><div class="card-b">' + activity +
       '</div></section><section class="card"><div class="card-h"><h2>Business</h2></div><div class="card-b"><dl class="kvs">' + facts.map(function (row) {
         return "<dt>" + esc(row[0]) + "</dt><dd>" + esc(row[1]) + "</dd>";
-      }).join("") + "</dl></div></section>" + domainsCard(b) + supportCard(b) + "</div></div>" + phonePanel(b);
+      }).join("") + "</dl></div></section>" + panelLoginCard(b) + domainsCard(b) + supportCard(b) + "</div></div>" + phonePanel(b);
+  }
+
+  function panelLoginCard(b) {
+    if (!liveAdmin() || onCustomerHost()) return "";
+    return '<section class="card" id="panel-login-card"><div class="card-h"><h2>Panel login</h2></div><div class="card-b">' +
+      '<p class="help" id="panel-login-status">Loading the current login…</p>' +
+      '<form data-action="save-panel-login" data-id="' + esc(b.id) + '" autocomplete="off">' +
+      '<div class="field"><label for="panel-login-username">Username</label>' +
+      '<input class="ctrl" id="panel-login-username" name="username" type="email" autocomplete="off" spellcheck="false" placeholder="owner@business.example"></div>' +
+      '<div class="field"><label for="panel-login-password">Password</label>' +
+      '<input class="ctrl" id="panel-login-password" name="password" type="password" autocomplete="new-password" placeholder="At least 10 characters"></div>' +
+      '<p class="help">Username is the email they type on the sign-in page. The password is saved hashed and is not shown again.</p>' +
+      '<button class="btn btn-primary" type="submit">Save login</button></form></div></section>';
+  }
+
+  function panelLoginNote(data) {
+    if (!data || !data.hasLogin) return "No panel login yet. Saving creates the owner account for this business.";
+    if (data.role === "staff") return "This resets the first staff login. The password is not shown again.";
+    return "This resets the owner login. The password is not shown again.";
+  }
+
+  var panelLoginSeq = 0;
+  function loadPanelLogin(b) {
+    if (!liveAdmin() || onCustomerHost() || !b) return;
+    var seq = ++panelLoginSeq;
+    api("GET", "api/businesses/" + encodeURIComponent(b.id) + "/panel-login").then(function (data) {
+      if (seq !== panelLoginSeq) return;
+      var status = document.getElementById("panel-login-status");
+      var input = document.getElementById("panel-login-username");
+      if (status) status.textContent = panelLoginNote(data);
+      if (input && document.activeElement !== input) input.value = (data && data.username) || "";
+    }).catch(function (err) {
+      if (seq !== panelLoginSeq) return;
+      var status = document.getElementById("panel-login-status");
+      if (status) status.textContent = (err && err.message) || "Could not load the panel login.";
+    });
   }
 
   function domainsCard(b) {
@@ -1751,7 +1797,9 @@
     return '<section class="card" id="domains-card"><div class="card-h"><h2>Domains</h2><div>' + badge("domains_hosting") +
       '<button class="btn btn-sm" type="button" data-action="recheck-domains" data-id="' + esc(b.id) + '">Re-check</button></div></div>' +
       '<div class="card-b"><div id="domains-body"><p class="help">Checking the panel…</p></div>' +
-      '<div class="field"><label for="domains-host">Website domain</label><input class="ctrl" id="domains-host" value="" placeholder="www.cafe.example"></div></div></section>';
+      siteHostChoices(b) +
+      '<div class="field"><label for="domains-host">Custom domain</label><input class="ctrl" id="domains-host" value="' + esc(domainDraft(b)) + '" placeholder="www.cafe.example"></div>' +
+      '<p class="help">Leave the custom domain blank to publish on the free receptwise.com address. The customer does not have to buy a domain.</p></div></section>';
   }
 
   var domainsSeq = 0;
@@ -1767,9 +1815,24 @@
     if (panel.url) html += "<p><strong>Customer panel</strong><br><a href='" + esc(panel.url) + "' target='_blank' rel='noopener'>" + esc(panel.url) + "</a></p>";
     if (panel.reservedNote) html += "<p class='banner warn'>" + esc(panel.reservedNote) + "</p>";
     html += "<p class='banner " + (health.ok ? "ok" : "bad") + "'>" + esc(health.detail || "Not checked") + "</p>";
+    if (site.hostedUrl) {
+      html += "<p><strong>Free site address</strong><br><a href='" + esc(site.hostedUrl) + "' target='_blank' rel='noopener'>" + esc(site.hostedUrl) + "</a></p>";
+    }
+    if (site.siteHost === "custom" && site.customDomain) {
+      html += "<p class='help'>Publishing on the custom domain.</p>";
+    } else if (site.siteHost === "custom") {
+      html += "<p class='help'>Custom domain is selected, but none is saved, so the free receptwise.com address is used.</p>";
+    } else if (site.siteHost) {
+      html += "<p class='help'>Publishing on the receptwise.com subdomain.</p>";
+    }
     if (site.message) html += "<p>" + esc(site.message) + "</p>";
     var input = document.getElementById("domains-host");
-    if (input && document.activeElement !== input) input.value = site.domain || "";
+    var recheckBtn = document.querySelector("[data-action='recheck-domains']");
+    var pickedId = recheckBtn && recheckBtn.getAttribute("data-id");
+    if (!(pickedId && siteHostPick[pickedId])) markSiteHost(site.siteHost);
+    if (input && document.activeElement !== input && !(pickedId && Object.prototype.hasOwnProperty.call(siteDomainDraft, pickedId))) {
+      input.value = site.customDomain || "";
+    }
     if (site.verification || site.ssl) {
       html += "<dl class='kvs'><dt>Verification</dt><dd>" + esc(site.verification || "—") + "</dd><dt>SSL</dt><dd>" + esc(site.ssl || "—") + "</dd></dl>";
     }
@@ -2251,6 +2314,8 @@
   }
 
   var siteTemplatePick = {};
+  var siteHostPick = {};
+  var siteDomainDraft = {};
   var SITE_SUGGEST = {
     Restaurant: "classic",
     Clinic: "classic",
@@ -2274,6 +2339,68 @@
     var stored = b.generatedWebsite && b.generatedWebsite.template;
     if (stored === "classic" || stored === "modern") return stored;
     return SITE_SUGGEST[b.category] || "classic";
+  }
+
+  function hostedSiteUrl(b) {
+    if (b && b.hostedUrl) return b.hostedUrl;
+    var source = (b && b.subdomain) || (b && b.slug) || (b && b.id) || (b && b.name) || "";
+    var slug = String(source).toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 57).replace(/-+$/g, "");
+    if (!slug || slug === "panel" || slug === "www" || slug === "api" || /-admin$/.test(slug)) {
+      var fromName = String((b && b.name) || "").toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 57).replace(/-+$/g, "");
+      slug = fromName;
+    }
+    if (!slug || slug === "panel" || slug === "www" || slug === "api" || /-admin$/.test(slug)) return "";
+    return "https://" + slug + ".receptwise.com";
+  }
+
+  function domainDraft(b) {
+    if (b && Object.prototype.hasOwnProperty.call(siteDomainDraft, b.id)) return siteDomainDraft[b.id];
+    return (b && b.domain) || "";
+  }
+
+  function chosenSiteHost(b) {
+    if (!b) return "hosted";
+    var picked = siteHostPick[b.id];
+    if (picked === "hosted" || picked === "custom") return picked;
+    if (b.siteHost === "hosted" || b.siteHost === "custom") return b.siteHost;
+    return b.domain && String(b.domain).trim() ? "custom" : "hosted";
+  }
+
+  function websitePublishBody(b) {
+    var domainInput = document.getElementById("site-custom-domain");
+    var body = { template: chosenSiteTemplate(b), siteHost: chosenSiteHost(b) };
+    if (domainInput) body.domain = domainInput.value.trim();
+    return body;
+  }
+
+  function siteHostChoices(b) {
+    var mode = chosenSiteHost(b);
+    var hosted = hostedSiteUrl(b);
+    var panel = (b && (b.panelUrl || (b.subdomain ? "https://" + b.subdomain + "-admin.receptwise.com" : ""))) || "";
+    function one(id, title, detail) {
+      var on = mode === id ? " on" : "";
+      return '<button class="choice' + on + '" type="button" data-action="pick-site-host" data-id="' + esc(b.id) + '" data-host="' + id + '" aria-pressed="' + (mode === id ? "true" : "false") + '"><b>' +
+        esc(title) + "</b><span>" + esc(detail) + "</span></button>";
+    }
+    var note = hosted
+      ? "<p class='help'>Public site: <a href='" + esc(hosted) + "' target='_blank' rel='noopener'>" + esc(hosted) + "</a>" +
+        (panel ? ". The panel stays at " + esc(panel) + "." : ".") + "</p>"
+      : "";
+    return '<div class="choice-grid" id="site-host-choice">' +
+      one("hosted", "receptwise.com subdomain", hosted ? hosted.replace(/^https:\/\//, "") : "Free hostname") +
+      one("custom", "Custom domain", "A domain the customer buys") +
+      "</div>" + note;
+  }
+
+  function markSiteHost(mode) {
+    if (mode !== "hosted" && mode !== "custom") return;
+    var grid = document.getElementById("site-host-choice");
+    if (!grid) return;
+    grid.querySelectorAll("[data-host]").forEach(function (btn) {
+      var on = btn.getAttribute("data-host") === mode;
+      btn.classList.toggle("on", on);
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+    });
   }
 
   function templateChoice(b, id, title, detail) {
@@ -2339,6 +2466,10 @@
       templateChoice(b, "classic", "Classic", "Cream page, sticky header, rounded cards, and a large call button.") +
       templateChoice(b, "modern", "Modern", "Black header, sharp type, ruled services, and a thin accent bar.") +
       "</div>" +
+      "<h3>Where it is published</h3>" +
+      "<p class='help'>Use the free receptwise.com address when the customer does not buy a domain. That address is separate from the customer panel.</p>" +
+      siteHostChoices(b) +
+      '<div class="field"><label for="site-custom-domain">Custom domain</label><input class="ctrl" id="site-custom-domain" value="' + esc(domainDraft(b)) + '" placeholder="www.cafe.example"></div>' +
       '<div class="head-actions">' + button + "</div>" +
       links +
       "<p class='help'>" + esc(phone) + " Book now uses a saved booking or calendar link, or the AI number when there is no link.</p>" +
@@ -2454,9 +2585,12 @@
       '<div class="head-actions">' + (b.status === "draft" ? '<a class="btn btn-primary" href="add.html?draft=' + encodeURIComponent(b.id) + '">Resume setup</a>' : '') +
       '<button class="btn" type="button" data-action="call-receptionist" data-id="' + esc(b.id) + '">Call the receptionist</button>' +
       '<button class="btn btn-primary" type="button" data-action="send-steps" data-id="' + esc(b.id) + '">Send owner their steps</button></div></section>' +
-      '<nav class="tabs">' + tabs + "</nav>" + featureBar(TAB_FEATURES[tab]) + body + legal();
+      '<div class="tab-row"><nav class="tabs">' + tabs + "</nav>" + statusLegend() + "</div>" + featureBar(TAB_FEATURES[tab], false) + body + legal();
     if (tab === "website") loadSitePreview(b);
-    if (tab === "overview") loadDomains(b);
+    if (tab === "overview") {
+      loadDomains(b);
+      loadPanelLogin(b);
+    }
   }
 
   function noteCalendarReturn() {
@@ -2570,14 +2704,15 @@
 
   function panelAddress(b) {
     if (!b || !b.subdomain) return "";
-    var url = b.panelUrl || ("https://" + b.subdomain + ".receptwise.com");
+    var url = b.panelUrl || ("https://" + b.subdomain + "-admin.receptwise.com");
+    var site = b.hostedUrl || ("https://" + b.subdomain + ".receptwise.com");
     var link = '<a href="' + esc(url) + '">' + esc(url) + "</a>";
     if (isAdmin()) {
       return '<form class="subdomain-row" data-action="save-subdomain" data-id="' + esc(b.id) + '">' +
         '<label for="panel-subdomain">Customer panel</label><span>https://</span>' +
-        '<input class="ctrl" id="panel-subdomain" name="subdomain" value="' + esc(b.subdomain) + '" maxlength="63" autocomplete="off" spellcheck="false">' +
-        "<span>.receptwise.com</span><button class='btn' type='submit'>Save</button></form>" +
-        '<p class="help">Customer panel: ' + link + "</p>";
+        '<input class="ctrl" id="panel-subdomain" name="subdomain" value="' + esc(b.subdomain) + '" maxlength="57" autocomplete="off" spellcheck="false">' +
+        "<span>-admin.receptwise.com</span><button class='btn' type='submit'>Save</button></form>" +
+        '<p class="help">Customer panel: ' + link + ". Public site: " + esc(site) + ".</p>";
     }
     return '<p class="help">Customer panel: ' + link + "</p>";
   }
@@ -3058,6 +3193,13 @@
     "pick-site-template": function (el) {
       if (el.dataset.template !== "classic" && el.dataset.template !== "modern") return;
       siteTemplatePick[el.dataset.id] = el.dataset.template;
+      currentRender();
+    },
+    "pick-site-host": function (el) {
+      if (el.dataset.host !== "hosted" && el.dataset.host !== "custom") return;
+      var typed = document.getElementById("site-custom-domain") || document.getElementById("domains-host");
+      if (typed) siteDomainDraft[el.dataset.id] = typed.value;
+      siteHostPick[el.dataset.id] = el.dataset.host;
       currentRender();
     },
     "generate-website": function () {
@@ -3701,14 +3843,19 @@
     },
     "recheck-domains": function (el) {
       var input = document.getElementById("domains-host");
-      var body = {};
+      var biz = findBiz(el.dataset.id);
+      var body = { siteHost: chosenSiteHost(biz) };
       if (input) body.domain = input.value.trim();
       var node = document.getElementById("domains-body");
       if (node) node.innerHTML = "<p class='help'>Checking…</p>";
       el.disabled = true;
       api("POST", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/domains/recheck", body).then(function (data) {
         el.disabled = false;
-        if (data.business) replaceBiz(data.business);
+        if (data.business) {
+          replaceBiz(data.business);
+          delete siteHostPick[data.business.id];
+          delete siteDomainDraft[data.business.id];
+        }
         paintDomains(data);
         toast("Domains re-checked.");
       }).catch(function (err) {
@@ -3721,8 +3868,10 @@
       var b = findBiz(el.dataset.id);
       if (!b) return;
       el.disabled = true;
-      api("POST", "api/businesses/" + encodeURIComponent(b.id) + "/website/generate", { template: chosenSiteTemplate(b) }).then(function (data) {
+      api("POST", "api/businesses/" + encodeURIComponent(b.id) + "/website/generate", websitePublishBody(b)).then(function (data) {
         replaceBiz(data.business);
+        delete siteHostPick[b.id];
+        delete siteDomainDraft[b.id];
         toast(data.pagesEnabled ? "Website repository created." : "Website repository created. Turn on GitHub Pages from the repository settings.");
         currentRender();
       }).catch(function (err) {
@@ -3734,8 +3883,10 @@
       var b = findBiz(el.dataset.id);
       if (!b) return;
       el.disabled = true;
-      api("POST", "api/businesses/" + encodeURIComponent(b.id) + "/website/regenerate", { template: chosenSiteTemplate(b) }).then(function (data) {
+      api("POST", "api/businesses/" + encodeURIComponent(b.id) + "/website/regenerate", websitePublishBody(b)).then(function (data) {
         replaceBiz(data.business);
+        delete siteHostPick[b.id];
+        delete siteDomainDraft[b.id];
         toast("Pull request opened. Main was not overwritten.");
         currentRender();
       }).catch(function (err) {
@@ -3818,6 +3969,31 @@
   function onSubmit(event) {
     var form = event.target;
     if (!form || !form.dataset) return;
+    if (form.dataset.action === "save-panel-login") {
+      event.preventDefault();
+      var loginBiz = findBiz(form.dataset.id);
+      if (!loginBiz) return;
+      var username = (form.username && form.username.value || "").trim();
+      var password = form.password ? form.password.value : "";
+      var button = form.querySelector("button");
+      if (button) button.disabled = true;
+      api("PUT", "api/businesses/" + encodeURIComponent(loginBiz.id) + "/panel-login", {
+        username: username,
+        password: password
+      }).then(function (data) {
+        if (button) button.disabled = false;
+        if (form.password) form.password.value = "";
+        var status = document.getElementById("panel-login-status");
+        if (status) status.textContent = panelLoginNote(data);
+        var kept = document.getElementById("panel-login-username");
+        if (kept) kept.value = (data && data.username) || username;
+        toast(data && data.created ? "Owner login created." : "Panel login updated.");
+      }).catch(function (err) {
+        if (button) button.disabled = false;
+        liveFail(err);
+      });
+      return;
+    }
     if (form.dataset.action === "save-subdomain") {
       event.preventDefault();
       var current = findBiz(form.dataset.id);

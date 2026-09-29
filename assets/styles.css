@@ -310,33 +310,60 @@ a.avatar.me {
 .pill.pilot { background: var(--teal-soft); color: var(--teal-dark); }
 .pill.neutral { background: #eef2f6; color: var(--ink-soft); }
 
-/* Feature status: text plus a dot, so status is not color alone. */
+/* Feature status: a colored dot on each item, and one legend for the words. */
 .pill.feat { gap: 6px; }
 .pill.feat .feat-dot,
-.feat-mini i {
-  width: 7px;
-  height: 7px;
+.feat-mini i,
+.legend-dot {
+  width: 8px;
+  height: 8px;
   border-radius: 99px;
   background: currentColor;
   flex: none;
+  display: inline-block;
 }
-.pill.feat.real, .feat-mini.real { background: var(--green-soft); color: var(--green); }
-.pill.feat.mockup, .feat-mini.mockup { background: #e7edf3; color: #24364c; }
-.pill.feat.in_progress, .feat-mini.in_progress { background: var(--blue-soft); color: #0a3d73; }
+.pill.feat.real { background: var(--green-soft); color: var(--ink); }
+.pill.feat.in_progress { background: #fbf6d4; color: var(--ink); }
+.pill.feat.mockup { background: #ffedd5; color: var(--ink); }
+.pill.feat.real .feat-dot,
+.feat-mini.real i,
+.legend-dot.real { background: var(--green); }
+.pill.feat.in_progress .feat-dot,
+.feat-mini.in_progress i,
+.legend-dot.in_progress { background: #e6b000; }
+.pill.feat.mockup .feat-dot,
+.feat-mini.mockup i,
+.legend-dot.mockup { background: #ef7d14; }
 .feat-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 12px; }
+.feat-block .status-legend { margin: 0 0 8px; }
 .feat-row { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: flex-end; }
 .feat-mini {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 1px 6px;
-  border-radius: 99px;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1.5;
-  letter-spacing: 0;
+  line-height: 0;
   vertical-align: middle;
 }
+.tab-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 18px;
+  margin: 12px 0;
+}
+.tab-row .tabs { margin: 0; }
+.status-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 2px 8px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  align-items: center;
+}
+.tab-row .status-legend { margin: 0; }
+.status-legend span { display: inline-flex; align-items: center; gap: 5px; }
 .head-actions .pill { align-self: center; }
 .check-label { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .sr-only {

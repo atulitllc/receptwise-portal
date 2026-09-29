@@ -1,9 +1,20 @@
 'use strict';
-// Host routing for per-business panels. panel.receptwise.com (and the other
-// reserved names) stay the main control panel. <slug>.receptwise.com is a customer panel.
+// Host routing.
+// panel.receptwise.com, www, and api stay the platform panel.
+// <slug>.receptwise.com is the public website.
+// <slug>-admin.receptwise.com is that business's panel.
+// The stored businesses.subdomain value is <slug>, not the -admin label.
 
 const RESERVED = Object.freeze(['panel', 'www', 'api']);
 const ROOT = 'receptwise.com';
+const PANEL_SUFFIX = '-admin';
+
+function isReservedSlug(label) {
+  const s = String(label || '').trim().toLowerCase();
+  if (!s) return false;
+  if (RESERVED.includes(s)) return true;
+  return s.length > PANEL_SUFFIX.length && s.endsWith(PANEL_SUFFIX);
+}
 
 function classifyHost(host) {
   const value = String(host || '').trim().toLowerCase().replace(/\.$/, '');
@@ -13,7 +24,13 @@ function classifyHost(host) {
   const label = bare.slice(0, -(ROOT.length + 1));
   if (!label || label.includes('.')) return { kind: 'primary' };
   if (RESERVED.includes(label)) return { kind: 'primary', reserved: label };
-  return { kind: 'customer', label };
+  if (label.endsWith(PANEL_SUFFIX)) {
+    const slug = label.slice(0, -PANEL_SUFFIX.length).replace(/-+$/g, '');
+    if (!slug || RESERVED.includes(slug) || isReservedSlug(slug)) return { kind: 'primary', reserved: label };
+    return { kind: 'customer', label: slug };
+  }
+  // A bare slug is the public site. It is not the customer panel.
+  return { kind: 'site', label };
 }
 
 // DNS for the apex is a DNS-only CNAME to this Render service. Send browsers to www.
@@ -27,7 +44,7 @@ function apexRedirectTarget(hostHeader, originalUrl) {
 
 function notFoundPage(label) {
   const safe = String(label || '').replace(/[^a-z0-9-]/gi, '');
-  const host = safe + '.receptwise.com';
+  const host = safe + PANEL_SUFFIX + '.receptwise.com';
   return '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width, initial-scale=1">' +
     '<title>Panel not found · ReceptWise</title>' +
@@ -40,4 +57,4 @@ function notFoundPage(label) {
     '</main></body></html>';
 }
 
-module.exports = { RESERVED, ROOT, classifyHost, apexRedirectTarget, notFoundPage };
+module.exports = { RESERVED, ROOT, PANEL_SUFFIX, isReservedSlug, classifyHost, apexRedirectTarget, notFoundPage };

@@ -27,6 +27,7 @@ const appointments = require('./appointments');
 const privacy = require('./privacy');
 const phoneForwarding = require('./phoneForwarding');
 const portalHost = require('./portalHost');
+const panelLogin = require('./panelLogin');
 
 // The portal pages live at the repo root (also published as the GitHub Pages demo).
 const SITE_ROOT = path.join(__dirname, '..', '..');
@@ -118,7 +119,7 @@ function createApp() {
   app.set('trust proxy', 1);
   app.disable('x-powered-by');
   // receptwise.com is on this service as a DNS-only custom domain. Send it to www
-  // before any other route. www, panel, api, and <slug>.receptwise.com are not redirected.
+  // before any other route. www, panel, api, <slug>.receptwise.com, and <slug>-admin.receptwise.com are not redirected.
   app.use((req, res, next) => {
     const target = portalHost.apexRedirectTarget(req.headers.host, req.originalUrl);
     if (!target) return next();
@@ -197,7 +198,8 @@ function createApp() {
   // Public marketing form. Own body limit, no session and no X-RW-Client header.
   demoRequests.mountPublic(app, wrap);
 
-  // <slug>.receptwise.com is that business's panel. Reserved names and every other host stay the main panel.
+  // <slug>-admin.receptwise.com is that business's panel. <slug>.receptwise.com is the public site.
+  // panel, www, api, and every other host stay the main panel.
   app.use(wrap(async (req, res, next) => {
     if (req.path.startsWith('/webhooks')) return next();
     const host = portalHost.classifyHost(req.hostname);
@@ -475,7 +477,9 @@ function createApp() {
     res.json(await websites.preview(req.biz, req.query.template));
   }));
   api.post('/businesses/:slug/website/generate', auth.requireAdmin, wrap(loadBiz), wrap(async (req, res) => {
-    const result = await websites.generate(req.biz, (req.body || {}).template, req.user.id);
+    const body = req.body || {};
+    const biz = await domains.saveSiteChoice(req.biz, body, req.user);
+    const result = await websites.generate(biz, body.template, req.user.id);
     res.status(201).json(Object.assign({ ok: true }, result));
   }));
   api.get('/businesses/:slug/domains', auth.requireAdmin, wrap(loadBiz), wrap(async (req, res) => {
@@ -485,8 +489,20 @@ function createApp() {
     res.json(await domains.recheck(req.biz, req.body || {}, req.user));
   }));
   api.post('/businesses/:slug/website/regenerate', auth.requireAdmin, wrap(loadBiz), wrap(async (req, res) => {
-    const result = await websites.regenerate(req.biz, req.user.id, (req.body || {}).template);
+    const body = req.body || {};
+    const biz = await domains.saveSiteChoice(req.biz, body, req.user);
+    const result = await websites.regenerate(biz, req.user.id, body.template);
     res.json(Object.assign({ ok: true }, result));
+  }));
+
+  // Panel sign-in for one business. Platform admins on the main panel host only. Password is write-only.
+  api.get('/businesses/:slug/panel-login', auth.requireAdmin, wrap(loadBiz), wrap(async (req, res) => {
+    if (portalBiz(req)) return res.status(403).json({ error: 'Set the panel login from the main panel.' });
+    res.json(await panelLogin.present(req.biz));
+  }));
+  api.put('/businesses/:slug/panel-login', auth.requireAdmin, wrap(loadBiz), wrap(async (req, res) => {
+    if (portalBiz(req)) return res.status(403).json({ error: 'Set the panel login from the main panel.' });
+    res.json(await panelLogin.save(req.biz, req.body || {}, req.user.id));
   }));
 
   api.get('/businesses/:slug/support-access', withBiz, wrap(async (req, res) => {

@@ -398,6 +398,7 @@ test('github create skips a taken name and the first commit targets main', async
     assert.equal(sha, 'commit1');
     const commit = calls.find((call) => call.method === 'POST' && call.url.endsWith('/git/commits'));
     assert.deepEqual(commit.body.parents, []);
+    assert.equal(calls.some((call) => call.method === 'PUT'), false);
     const ref = calls.find((call) => call.method === 'POST' && call.url.endsWith('/git/refs'));
     assert.equal(ref.body.ref, 'refs/heads/main');
     assert.equal(ref.body.sha, 'commit1');
@@ -420,6 +421,131 @@ test('github create skips a taken name and the first commit targets main', async
     const pages = await github.enablePages('atulitllc', created.name);
     assert.equal(pages.already, true);
     assert.equal(github.pagesUrlFor('AtulitLLC', 'Harbor-And-Rye-Site-2'), 'https://atulitllc.github.io/harbor-and-rye-site-2/');
+  } finally {
+    github.clearOwnerCache();
+    config.github.token = previousToken;
+    global.fetch = previousFetch;
+  }
+});
+
+test('an empty repository is seeded with the Contents API, then the full site is committed', async () => {
+  const previousToken = config.github.token;
+  const previousFetch = global.fetch;
+  github.clearOwnerCache();
+  config.github.token = 'test-token';
+  const calls = [];
+  let blobs = 0;
+  global.fetch = async (url, opts = {}) => {
+    const target = String(url);
+    const method = opts.method || 'GET';
+    const body = opts.body ? JSON.parse(opts.body) : null;
+    calls.push({ url: target, method, body });
+    if (method === 'POST' && target.endsWith('/git/blobs')) {
+      blobs += 1;
+      if (blobs === 1) return json(409, { message: 'Git Repository is empty.' });
+      return json(201, { sha: 'blob' + blobs });
+    }
+    if (method === 'PUT' && target.includes('/contents/.nojekyll')) {
+      assert.equal(Object.prototype.hasOwnProperty.call(body, 'sha'), false);
+      assert.equal(body.message, 'Initial commit');
+      assert.equal(typeof body.content, 'string');
+      assert.ok(body.content.length > 0);
+      return json(201, { commit: { sha: 'seedsha' } });
+    }
+    if (method === 'GET' && target.endsWith('/git/ref/heads/main')) return json(200, { object: { sha: 'seedsha' } });
+    if (method === 'GET' && target.endsWith('/git/commits/seedsha')) return json(200, { sha: 'seedsha', tree: { sha: 'seedtree' } });
+    if (method === 'POST' && target.endsWith('/git/trees')) {
+      assert.equal(body.base_tree, 'seedtree');
+      return json(201, { sha: 'tree-full' });
+    }
+    if (method === 'POST' && target.endsWith('/git/commits')) {
+      assert.deepEqual(body.parents, ['seedsha']);
+      return json(201, { sha: 'fullsha' });
+    }
+    if (method === 'PATCH' && target.endsWith('/git/refs/heads/main')) {
+      assert.equal(body.sha, 'fullsha');
+      assert.equal(body.force, false);
+      return json(200, { object: { sha: 'fullsha' } });
+    }
+    if (method === 'POST' && target.endsWith('/git/refs')) return json(201, { ref: body.ref });
+    return json(404, { message: 'unexpected ' + method + ' ' + target });
+  };
+  try {
+    const sha = await github.initialCommit('atulitllc', 'empty-site', 'Add website', {
+      'index.html': '<p>Hi</p>',
+      '.nojekyll': ''
+    });
+    assert.equal(sha, 'fullsha');
+    const seeded = calls.find((call) => call.method === 'PUT');
+    assert.ok(seeded);
+    assert.equal(calls.filter((call) => call.method === 'PUT').length, 1);
+    const full = calls.find((call) => call.method === 'POST' && call.url.endsWith('/git/commits'));
+    assert.equal(full.body.message, 'Add website');
+    assert.deepEqual(full.body.parents, ['seedsha']);
+    assert.equal(calls.some((call) => call.method === 'POST' && call.url.endsWith('/git/refs')), false);
+    calls.length = 0;
+    await github.branchCommit('atulitllc', 'empty-site', {
+      branch: 'site-update-20260929T034700Z',
+      message: 'Update website',
+      files: { 'index.html': '<p>Updated</p>' }
+    });
+    const update = calls.find((call) => call.method === 'POST' && call.url.endsWith('/git/commits'));
+    assert.deepEqual(update.body.parents, ['seedsha']);
+    const branchRef = calls.find((call) => call.method === 'POST' && call.url.endsWith('/git/refs'));
+    assert.equal(branchRef.body.ref, 'refs/heads/site-update-20260929T034700Z');
+    assert.equal(calls.some((call) => call.method === 'PUT'), false);
+    assert.equal(calls.some((call) => call.method === 'PATCH'), false);
+  } finally {
+    github.clearOwnerCache();
+    config.github.token = previousToken;
+    global.fetch = previousFetch;
+  }
+});
+
+test('github failures explain the problem to an admin', async () => {
+  const previousToken = config.github.token;
+  const previousFetch = global.fetch;
+  github.clearOwnerCache();
+  config.github.token = 'test-token';
+  function install(status, body) {
+    github.clearOwnerCache();
+    global.fetch = async (url, opts = {}) => {
+      const path = new URL(String(url)).pathname;
+      const method = opts.method || 'GET';
+      if (method === 'GET' && path === '/user') return json(200, { login: 'member-bot' });
+      return json(status, body);
+    };
+  }
+  try {
+    install(401, { message: 'Bad credentials' });
+    await assert.rejects(() => github.createRepo('atulitllc', 'cafe-site', 'Website'), (err) => {
+      assert.equal(err.message, 'GitHub rejected GITHUB_TOKEN.');
+      assert.equal(err.message.includes('{'), false);
+      return true;
+    });
+    install(403, { message: 'Resource not accessible by integration', documentation_url: 'https://docs.github.com/rest' });
+    await assert.rejects(() => github.createRepo('atulitllc', 'cafe-site', 'Website'), (err) => {
+      assert.match(err.message, /permission to create public repositories/);
+      assert.equal(err.message.includes('documentation_url'), false);
+      assert.equal(err.message.includes('{'), false);
+      assert.equal(err.upstreamStatus, 403);
+      return true;
+    });
+    global.fetch = async () => json(404, { message: 'Not Found', documentation_url: 'https://docs.github.com/rest' });
+    await assert.rejects(() => github.openPullRequest('atulitllc', 'cafe-site', {
+      title: 'Update', head: 'site-update', base: 'main'
+    }), (err) => {
+      assert.equal(err.message, 'GitHub could not find that repository or branch.');
+      return true;
+    });
+    global.fetch = async () => json(422, { message: 'Validation Failed', errors: [{ field: 'head' }] });
+    await assert.rejects(() => github.openPullRequest('atulitllc', 'cafe-site', {
+      title: 'Update', head: 'site-update', base: 'main'
+    }), (err) => {
+      assert.equal(err.message, 'GitHub rejected the request: Validation Failed');
+      assert.equal(err.message.includes('errors'), false);
+      return true;
+    });
   } finally {
     github.clearOwnerCache();
     config.github.token = previousToken;

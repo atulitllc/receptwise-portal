@@ -9,7 +9,12 @@ const cloudflare = require('./website/cloudflare');
 
 const ROOT = 'receptwise.com';
 const WILDCARD = '*.' + ROOT;
-const RESERVED = new Set(['panel', 'www', 'api', 'sphere-admin']);
+const RESERVED = new Set(['panel', 'www', 'api']);
+
+function isPanelHost(slug) {
+  const s = String(slug || '').trim().toLowerCase();
+  return RESERVED.has(s) || (s.length > 6 && s.endsWith('-admin'));
+}
 const HEALTH_MS = 8000;
 
 function hostingConfigured() {
@@ -21,8 +26,12 @@ function panelSlug(biz) {
 }
 
 function panelAddress(slug) {
-  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(slug || '')) return '';
-  return 'https://' + slug + '.' + ROOT;
+  const s = String(slug || '').trim().toLowerCase();
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(s)) return '';
+  if (isPanelHost(s)) return '';
+  const label = s + '-admin';
+  if (label.length > 63) return '';
+  return 'https://' + label + '.' + ROOT;
 }
 
 function projectFor(site) {
@@ -88,8 +97,16 @@ async function checkHealth(url) {
 }
 
 function emptyWebsite(biz, site, message) {
+  const custom = cloudflare.customDomain(biz);
+  const hosted = cloudflare.hostedHostname(biz);
+  const mode = cloudflare.effectiveSiteHost(biz);
+  const active = cloudflare.publishHostname(biz);
   return {
-    domain: cloudflare.customDomain(biz),
+    domain: active,
+    customDomain: custom,
+    hostedHostname: hosted,
+    hostedUrl: hosted ? ('https://' + hosted) : '',
+    siteHost: mode,
     project: projectFor(site),
     message,
     verification: '',
@@ -111,7 +128,12 @@ function presentDomain(domainObj) {
 }
 
 function recordsFor(hostname, project, domainObj) {
-  const records = [{ type: 'CNAME', name: hostname, content: project + '.pages.dev', proxied: true }];
+  const records = [{
+    type: 'CNAME',
+    name: hostname,
+    content: project + '.pages.dev',
+    proxied: !cloudflare.isHostedSiteHostname(hostname)
+  }];
   const validation = domainObj && domainObj.validation_data;
   if (validation && validation.txt_name && validation.txt_value) {
     records.push({ type: 'TXT', name: validation.txt_name, content: validation.txt_value });
@@ -120,7 +142,7 @@ function recordsFor(hostname, project, domainObj) {
 }
 
 async function websiteSection(biz, site, write) {
-  const host = cloudflare.customDomain(biz);
+  const host = cloudflare.publishHostname(biz);
   const project = projectFor(site);
   const blocked = cloudflare.pagesBlockedReason(host);
   const base = emptyWebsite(biz, site, '');
@@ -285,7 +307,7 @@ async function collect(biz, site, opts) {
   const write = Boolean(opts && opts.write);
   const slug = panelSlug(biz);
   const url = panelAddress(slug);
-  const reserved = RESERVED.has(slug);
+  const reserved = isPanelHost(slug);
   const health = url ? await checkHealth(url) : { ok: false, detail: 'No panel address.' };
   const panel = {
     slug,
@@ -320,19 +342,27 @@ async function status(biz) {
   return collect(biz, await loadSite(biz && biz.id), { write: false });
 }
 
-async function recheck(biz, body, user) {
-  let current = biz;
-  if (body && Object.prototype.hasOwnProperty.call(body, 'domain')) {
-    const raw = String(body.domain || '').trim();
+async function saveSiteChoice(biz, body, user) {
+  if (!biz || !body) return biz;
+  const patch = {};
+  if (body.siteHost === 'hosted' || body.siteHost === 'custom') patch.siteHost = body.siteHost;
+  if (Object.prototype.hasOwnProperty.call(body, 'domain')) {
+    const raw = String(body.domain == null ? '' : body.domain).trim();
     const host = raw ? cloudflare.hostnameOf(raw) : '';
     if (raw && !host) {
       const err = new Error('Enter a domain like www.cafe.example.');
       err.status = 400;
       throw err;
     }
-    const saved = await businesses.updateBusiness(biz.slug, { domain: host }, user && user.id);
-    if (saved) current = saved;
+    patch.domain = host;
   }
+  if (!Object.keys(patch).length) return biz;
+  const saved = await businesses.updateBusiness(biz.slug, patch, user && user.id);
+  return saved || biz;
+}
+
+async function recheck(biz, body, user) {
+  const current = await saveSiteChoice(biz, body, user);
   const site = await loadSite(current && current.id);
   const result = await collect(current, site, { write: true });
   if (site && current && current.id && hostingConfigured()) {
@@ -358,12 +388,14 @@ async function recheck(biz, body, user) {
 }
 
 module.exports = {
-  RESERVED: ['panel', 'www', 'api', 'sphere-admin'],
+  RESERVED: ['panel', 'www', 'api'],
+  isPanelHost,
   hostingConfigured,
   panelSlug,
   panelAddress,
   checkHealth,
   collect,
   status,
+  saveSiteChoice,
   recheck
 };

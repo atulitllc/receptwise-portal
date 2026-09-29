@@ -2573,7 +2573,7 @@ describe('control panel API', () => {
     assert.equal(withPort.status, 301);
     assert.equal(withPort.headers.location, 'https://www.receptwise.com/pricing?plan=growth');
 
-    for (const host of ['www.receptwise.com', 'panel.receptwise.com', 'api.receptwise.com', 'receptwise.receptwise.com', 'sphere.receptwise.com']) {
+    for (const host of ['www.receptwise.com', 'panel.receptwise.com', 'api.receptwise.com', 'receptwise.receptwise.com', 'sphere.receptwise.com', 'sphere-admin.receptwise.com']) {
       const page = await request('GET', '/', { headers: { Host: host, 'X-RW-Client': '' } });
       assert.notEqual(page.status, 301, host);
       assert.equal(page.headers.location, undefined, host);
@@ -2582,12 +2582,12 @@ describe('control panel API', () => {
 
   it('routes customer panel hosts and keeps the main panel on reserved names', async () => {
     const pilot = await request('GET', '/assets/data.js', {
-      headers: { Host: 'receptwise.receptwise.com', 'X-RW-Client': '' }
+      headers: { Host: 'receptwise-admin.receptwise.com', 'X-RW-Client': '' }
     });
     assert.equal(pilot.status, 200, pilot.text);
     assert.match(pilot.text, /"businessName":"ReceptWise"/);
     assert.match(pilot.text, /"subdomain":"receptwise"/);
-    assert.match(pilot.text, /"panelUrl":"https:\/\/receptwise\.receptwise\.com"/);
+    assert.match(pilot.text, /"panelUrl":"https:\/\/receptwise-admin\.receptwise\.com"/);
 
     for (const host of ['panel.receptwise.com', 'www.receptwise.com', 'api.receptwise.com', 'receptwise-portal.onrender.com']) {
       const page = await request('GET', '/', { headers: { Host: host, 'X-RW-Client': '' } });
@@ -2598,12 +2598,16 @@ describe('control panel API', () => {
       assert.match(data.text, /"portal":null/);
     }
 
-    const missing = await request('GET', '/', { headers: { Host: 'missing.receptwise.com', 'X-RW-Client': '' } });
+    const siteHost = await request('GET', '/', { headers: { Host: 'missing.receptwise.com', 'X-RW-Client': '' } });
+    assert.equal(siteHost.status, 200, siteHost.text);
+    assert.match(siteHost.text, /Sign in/);
+    const missing = await request('GET', '/', { headers: { Host: 'missing-admin.receptwise.com', 'X-RW-Client': '' } });
     assert.equal(missing.status, 404);
     assert.match(missing.text, /This panel was not found/);
+    assert.match(missing.text, /missing-admin\.receptwise\.com/);
     assert.equal(missing.text.includes('data-page="login"'), false);
     const missingApi = await request('POST', '/api/auth/login', {
-      headers: { Host: 'missing.receptwise.com' },
+      headers: { Host: 'missing-admin.receptwise.com' },
       body: { email: 'admin@receptwise.example', password: 'pilot-password-10' }
     });
     assert.equal(missingApi.status, 404);
@@ -2612,7 +2616,7 @@ describe('control panel API', () => {
     const created = await request('GET', '/api/businesses/harbor-cafe', { cookie });
     assert.equal(created.status, 200, created.text);
     assert.equal(created.json.business.subdomain, 'harbor-cafe');
-    assert.equal(created.json.business.panelUrl, 'https://harbor-cafe.receptwise.com');
+    assert.equal(created.json.business.panelUrl, 'https://harbor-cafe-admin.receptwise.com');
 
     const reservedName = await request('POST', '/api/businesses', {
       cookie,
@@ -2627,7 +2631,7 @@ describe('control panel API', () => {
     });
     assert.equal(renamed.status, 200, renamed.text);
     assert.equal(renamed.json.business.subdomain, 'harbor');
-    assert.equal(renamed.json.business.panelUrl, 'https://harbor.receptwise.com');
+    assert.equal(renamed.json.business.panelUrl, 'https://harbor-admin.receptwise.com');
 
     const reserved = await request('PUT', '/api/businesses/harbor-cafe', {
       cookie,
@@ -2670,7 +2674,7 @@ describe('control panel API', () => {
     assert.equal(customer.json.user.businessSlug, 'harbor-cafe');
 
     const ownerLogin = await request('POST', '/api/auth/login', {
-      headers: { Host: 'harbor.receptwise.com' },
+      headers: { Host: 'harbor-admin.receptwise.com' },
       body: { email: 'owner@harbor.test', password: 'harbor-password-10' }
     });
     assert.equal(ownerLogin.status, 200, ownerLogin.text);
@@ -2678,39 +2682,39 @@ describe('control panel API', () => {
     const ownerCookie = cookieFrom(ownerLogin.setCookie);
 
     const wrongHost = await request('POST', '/api/auth/login', {
-      headers: { Host: 'receptwise.receptwise.com' },
+      headers: { Host: 'receptwise-admin.receptwise.com' },
       body: { email: 'owner@harbor.test', password: 'harbor-password-10' }
     });
     assert.equal(wrongHost.status, 403);
 
     const adminThere = await request('POST', '/api/auth/login', {
-      headers: { Host: 'harbor.receptwise.com' },
+      headers: { Host: 'harbor-admin.receptwise.com' },
       body: { email: 'admin@receptwise.example', password: 'pilot-password-10' }
     });
     assert.equal(adminThere.status, 200, adminThere.text);
     assert.equal(adminThere.json.home, 'dashboard.html');
 
-    const ownList = await request('GET', '/api/businesses', { cookie: ownerCookie, headers: { Host: 'harbor.receptwise.com' } });
+    const ownList = await request('GET', '/api/businesses', { cookie: ownerCookie, headers: { Host: 'harbor-admin.receptwise.com' } });
     assert.equal(ownList.status, 200, ownList.text);
     assert.deepEqual(ownList.json.businesses.map((b) => b.id), ['harbor-cafe']);
-    const other = await request('GET', '/api/businesses/receptwise', { cookie: ownerCookie, headers: { Host: 'harbor.receptwise.com' } });
+    const other = await request('GET', '/api/businesses/receptwise', { cookie: ownerCookie, headers: { Host: 'harbor-admin.receptwise.com' } });
     assert.equal(other.status, 404);
     const blocked = await request('POST', '/api/businesses', {
       cookie: ownerCookie,
-      headers: { Host: 'harbor.receptwise.com' },
+      headers: { Host: 'harbor-admin.receptwise.com' },
       body: { name: 'Nope Cafe', category: 'Cafe' }
     });
     assert.equal(blocked.status, 403);
 
     const scoped = await request('GET', '/assets/data.js', {
       cookie: ownerCookie,
-      headers: { Host: 'harbor.receptwise.com', 'X-RW-Client': '' }
+      headers: { Host: 'harbor-admin.receptwise.com', 'X-RW-Client': '' }
     });
     assert.match(scoped.text, /"businessName":"Harbor Cafe"/);
     assert.match(scoped.text, /"role":"owner"/);
   });
 
-  it('scopes an admin on sphere.receptwise.com to that business only', async () => {
+  it('scopes an admin on sphere-admin.receptwise.com to that business only', async () => {
     const created = await request('POST', '/api/businesses', {
       cookie,
       body: { name: 'SPHERE', category: 'Retail', city: 'Boston, MA' }
@@ -2726,7 +2730,11 @@ describe('control panel API', () => {
     const pinned = await db.query("SELECT subdomain FROM businesses WHERE slug = 'sphere'");
     assert.equal(pinned.rows[0].subdomain, 'sphere');
 
-    const host = { Host: 'sphere.receptwise.com' };
+    const host = { Host: 'sphere-admin.receptwise.com' };
+    const publicSite = await request('GET', '/api/businesses', { cookie, headers: { Host: 'sphere.receptwise.com' } });
+    assert.equal(publicSite.status, 200, publicSite.text);
+    assert.ok(publicSite.json.businesses.length > 1);
+    assert.ok(publicSite.json.businesses.some((b) => b.id === 'receptwise'));
     const list = await request('GET', '/api/businesses', { cookie, headers: host });
     assert.equal(list.status, 200, list.text);
     assert.deepEqual(list.json.businesses.map((b) => b.id), ['sphere']);
@@ -2773,5 +2781,241 @@ describe('control panel API', () => {
       body: { name: 'Other Shop', category: 'Retail' }
     });
     assert.equal(add.status, 403);
+  });
+
+  it('lets a platform admin set the business panel login from the main panel', async () => {
+    const bcrypt = require('bcryptjs');
+    const created = await request('POST', '/api/businesses', {
+      cookie,
+      headers: { Host: 'panel.receptwise.com' },
+      body: {
+        name: 'Panel Login Cafe',
+        category: 'Cafe',
+        owner: { name: 'Ada Owner', email: 'ada@cafe.test', mobile: '' }
+      }
+    });
+    assert.equal(created.status, 201, created.text);
+    const slug = created.json.business.id;
+    const subdomain = created.json.business.subdomain;
+    const path = '/api/businesses/' + slug + '/panel-login';
+
+    const anon = await request('GET', path, { headers: { Host: 'panel.receptwise.com' } });
+    assert.equal(anon.status, 401);
+
+    const team = await request('POST', '/api/users', {
+      cookie,
+      headers: { Host: 'panel.receptwise.com' },
+      body: { email: 'panel-login-team@receptwise.example', name: 'Panel Team', password: 'team-password-10', role: 'team' }
+    });
+    assert.equal(team.status, 201, team.text);
+    const teamLogin = await request('POST', '/api/auth/login', {
+      headers: { Host: 'panel.receptwise.com' },
+      body: { email: 'panel-login-team@receptwise.example', password: 'team-password-10' }
+    });
+    const teamCookie = cookieFrom(teamLogin.setCookie);
+    const teamDenied = await request('PUT', path, {
+      cookie: teamCookie,
+      headers: { Host: 'panel.receptwise.com' },
+      body: { username: 'owner@panel-login.test', password: 'panel-password-10' }
+    });
+    assert.equal(teamDenied.status, 403);
+
+    const empty = await request('GET', path, { cookie, headers: { Host: 'panel.receptwise.com' } });
+    assert.equal(empty.status, 200, empty.text);
+    assert.deepEqual(empty.json, { username: '', role: '', hasLogin: false });
+
+    const short = await request('PUT', path, {
+      cookie,
+      headers: { Host: 'panel.receptwise.com' },
+      body: { username: 'owner@panel-login.test', password: 'short' }
+    });
+    assert.equal(short.status, 400);
+    assert.match(short.json.error, /at least 10/);
+    const badName = await request('PUT', path, {
+      cookie,
+      headers: { Host: 'panel.receptwise.com' },
+      body: { username: 'not-an-email', password: 'panel-password-10' }
+    });
+    assert.equal(badName.status, 400);
+
+    const password = 'panel-password-10';
+    const saved = await request('PUT', path, {
+      cookie,
+      headers: { Host: 'panel.receptwise.com' },
+      body: { username: 'owner@panel-login.test', password }
+    });
+    assert.equal(saved.status, 200, saved.text);
+    assert.equal(saved.json.username, 'owner@panel-login.test');
+    assert.equal(saved.json.role, 'owner');
+    assert.equal(saved.json.hasLogin, true);
+    assert.equal(saved.json.created, true);
+    assert.equal(Object.prototype.hasOwnProperty.call(saved.json, 'password'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(saved.json, 'password_hash'), false);
+    assert.equal(JSON.stringify(saved.json).includes(password), false);
+
+    const row = await db.query(
+      `SELECT u.email, u.name, u.role, u.password_hash
+       FROM users u JOIN businesses b ON b.id = u.business_id
+       WHERE b.slug = $1`,
+      [slug]
+    );
+    assert.equal(row.rows.length, 1);
+    assert.equal(row.rows[0].email, 'owner@panel-login.test');
+    assert.equal(row.rows[0].name, 'Ada Owner');
+    assert.equal(row.rows[0].role, 'owner');
+    assert.notEqual(row.rows[0].password_hash, password);
+    assert.equal(await bcrypt.compare(password, row.rows[0].password_hash), true);
+    const audit = await db.query(
+      "SELECT detail FROM audit_log WHERE action = 'panel.login.set' AND business_id = (SELECT id FROM businesses WHERE slug = $1)",
+      [slug]
+    );
+    assert.equal(JSON.stringify(audit.rows).includes(password), false);
+
+    const ownerLogin = await request('POST', '/api/auth/login', {
+      headers: { Host: subdomain + '-admin.receptwise.com' },
+      body: { email: 'owner@panel-login.test', password }
+    });
+    assert.equal(ownerLogin.status, 200, ownerLogin.text);
+    const ownerCookie = cookieFrom(ownerLogin.setCookie);
+    const ownerDenied = await request('PUT', path, {
+      cookie: ownerCookie,
+      headers: { Host: 'panel.receptwise.com' },
+      body: { username: 'owner@panel-login.test', password: 'another-password-10' }
+    });
+    assert.equal(ownerDenied.status, 403);
+
+    const taken = await request('PUT', path, {
+      cookie,
+      headers: { Host: 'panel.receptwise.com' },
+      body: { username: 'admin@receptwise.example', password: 'another-password-10' }
+    });
+    assert.equal(taken.status, 409);
+    const still = await db.query(
+      'SELECT email FROM users WHERE business_id = (SELECT id FROM businesses WHERE slug = $1)',
+      [slug]
+    );
+    assert.equal(still.rows[0].email, 'owner@panel-login.test');
+
+    const nextPassword = 'updated-password-10';
+    const updated = await request('PUT', path, {
+      cookie,
+      headers: { Host: 'www.receptwise.com' },
+      body: { username: 'owner@panel-login.test', password: nextPassword }
+    });
+    assert.equal(updated.status, 200, updated.text);
+    assert.equal(updated.json.created, false);
+    assert.equal(updated.json.role, 'owner');
+    assert.equal(JSON.stringify(updated.json).includes(nextPassword), false);
+    const oldSession = await request('GET', '/api/me', {
+      cookie: ownerCookie,
+      headers: { Host: subdomain + '-admin.receptwise.com' }
+    });
+    assert.equal(oldSession.status, 401);
+    const oldPassword = await request('POST', '/api/auth/login', {
+      headers: { Host: subdomain + '-admin.receptwise.com' },
+      body: { email: 'owner@panel-login.test', password }
+    });
+    assert.equal(oldPassword.status, 401);
+    const newPassword = await request('POST', '/api/auth/login', {
+      headers: { Host: subdomain + '-admin.receptwise.com' },
+      body: { email: 'owner@panel-login.test', password: nextPassword }
+    });
+    assert.equal(newPassword.status, 200, newPassword.text);
+
+    const fromCustomerHost = await request('PUT', path, {
+      cookie,
+      headers: { Host: subdomain + '-admin.receptwise.com' },
+      body: { username: 'other@panel-login.test', password: 'customer-host-password-10' }
+    });
+    assert.equal(fromCustomerHost.status, 403);
+    assert.match(fromCustomerHost.json.error, /main panel/);
+    const unchanged = await db.query(
+      'SELECT email FROM users WHERE business_id = (SELECT id FROM businesses WHERE slug = $1)',
+      [slug]
+    );
+    assert.equal(unchanged.rows[0].email, 'owner@panel-login.test');
+
+    const staffBiz = await request('POST', '/api/businesses', {
+      cookie,
+      headers: { Host: 'panel.receptwise.com' },
+      body: { name: 'Panel Staff Cafe', category: 'Cafe' }
+    });
+    assert.equal(staffBiz.status, 201, staffBiz.text);
+    const staffSlug = staffBiz.json.business.id;
+    const staffPath = '/api/businesses/' + staffSlug + '/panel-login';
+    const staff = await request('POST', '/api/users', {
+      cookie,
+      headers: { Host: 'panel.receptwise.com' },
+      body: { email: 'staff@panel-staff.test', name: 'First Staff', password: 'staff-password-10', role: 'staff', business: staffSlug }
+    });
+    assert.equal(staff.status, 201, staff.text);
+    const loaded = await request('GET', staffPath, { cookie, headers: { Host: 'panel.receptwise.com' } });
+    assert.equal(loaded.json.username, 'staff@panel-staff.test');
+    assert.equal(loaded.json.role, 'staff');
+    assert.equal(loaded.json.hasLogin, true);
+    await db.query("UPDATE users SET disabled = true WHERE email = 'staff@panel-staff.test'");
+    const staffPassword = 'staff-reset-password-10';
+    const staffSaved = await request('PUT', staffPath, {
+      cookie,
+      headers: { Host: 'panel.receptwise.com' },
+      body: { username: 'desk@panel-staff.test', password: staffPassword }
+    });
+    assert.equal(staffSaved.status, 200, staffSaved.text);
+    assert.equal(staffSaved.json.created, false);
+    assert.equal(staffSaved.json.role, 'staff');
+    assert.equal(staffSaved.json.username, 'desk@panel-staff.test');
+    assert.equal(JSON.stringify(staffSaved.json).includes(staffPassword), false);
+    const staffRows = await db.query(
+      `SELECT email, role, disabled, password_hash FROM users
+       WHERE business_id = (SELECT id FROM businesses WHERE slug = $1) ORDER BY id`,
+      [staffSlug]
+    );
+    assert.equal(staffRows.rows.length, 1);
+    assert.equal(staffRows.rows[0].role, 'staff');
+    assert.equal(staffRows.rows[0].email, 'desk@panel-staff.test');
+    assert.equal(staffRows.rows[0].disabled, false);
+    assert.equal(await bcrypt.compare(staffPassword, staffRows.rows[0].password_hash), true);
+    const staffLogin = await request('POST', '/api/auth/login', {
+      headers: { Host: staffBiz.json.business.subdomain + '-admin.receptwise.com' },
+      body: { email: 'desk@panel-staff.test', password: staffPassword }
+    });
+    assert.equal(staffLogin.status, 200, staffLogin.text);
+
+    const both = await request('POST', '/api/businesses', {
+      cookie,
+      headers: { Host: 'panel.receptwise.com' },
+      body: { name: 'Panel Both Cafe', category: 'Cafe' }
+    });
+    const bothSlug = both.json.business.id;
+    const bothPath = '/api/businesses/' + bothSlug + '/panel-login';
+    const bothStaff = await request('POST', '/api/users', {
+      cookie,
+      headers: { Host: 'panel.receptwise.com' },
+      body: { email: 'staff@panel-both.test', name: 'Staff', password: 'staff-password-10', role: 'staff', business: bothSlug }
+    });
+    assert.equal(bothStaff.status, 201, bothStaff.text);
+    const bothOwner = await request('POST', '/api/users', {
+      cookie,
+      headers: { Host: 'panel.receptwise.com' },
+      body: { email: 'owner@panel-both.test', name: 'Owner', password: 'owner-password-10', role: 'owner', business: bothSlug }
+    });
+    assert.equal(bothOwner.status, 201, bothOwner.text);
+    const preferOwner = await request('PUT', bothPath, {
+      cookie,
+      headers: { Host: 'panel.receptwise.com' },
+      body: { username: 'owner2@panel-both.test', password: 'owner-reset-password-10' }
+    });
+    assert.equal(preferOwner.status, 200, preferOwner.text);
+    assert.equal(preferOwner.json.role, 'owner');
+    assert.equal(preferOwner.json.username, 'owner2@panel-both.test');
+    const bothRows = await db.query(
+      `SELECT email, role FROM users
+       WHERE business_id = (SELECT id FROM businesses WHERE slug = $1) ORDER BY role, email`,
+      [bothSlug]
+    );
+    assert.deepEqual(bothRows.rows.map((item) => item.email + ':' + item.role), [
+      'owner2@panel-both.test:owner',
+      'staff@panel-both.test:staff'
+    ]);
   });
 });

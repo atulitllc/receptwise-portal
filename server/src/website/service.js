@@ -43,7 +43,7 @@ async function publishCloudflare(files, repoName, biz) {
     return await cloudflare.deploy({
       project: repoName,
       files,
-      domain: cloudflare.customDomain(biz)
+      domain: cloudflare.publishHostname(biz)
     });
   } catch (err) {
     return {
@@ -91,7 +91,10 @@ function cloudflareSentence(result) {
   if (!result || result.status === 'not_configured') return ' Cloudflare not configured.';
   if (result.status === 'deployed') {
     let sentence = ' Cloudflare Pages: ' + result.url + '.';
-    if (result.domain) sentence += ' Custom domain ' + result.domain + ' (' + (result.domainStatus || 'pending') + ').';
+    if (result.domain) {
+      const label = cloudflare.isHostedSiteHostname(result.domain) ? 'Hosted at ' : 'Custom domain ';
+      sentence += ' ' + label + result.domain + ' (' + (result.domainStatus || 'pending') + ').';
+    }
     if (result.error) sentence += ' ' + result.error;
     return sentence;
   }
@@ -133,6 +136,7 @@ async function generate(biz, templateInput, userId) {
      VALUES ($1, $2, $3, $4, $5, now())`,
     [biz.id, fullName, repoUrl, pagesUrl, templateId]
   );
+  // Cloudflare is independent of GitHub Pages. A Cloudflare failure is stored and does not delete the repository.
   const cf = await publishCloudflare(files, created.name, biz);
   await saveCloudflare(biz.id, cf);
   const detail = (pagesEnabled

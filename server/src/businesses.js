@@ -7,6 +7,7 @@ const voices = require('./voices');
 const privacy = require('./privacy');
 const phoneForwarding = require('./phoneForwarding');
 const portalHost = require('./portalHost');
+const cloudflare = require('./website/cloudflare');
 
 const STEPS = [
   ['number', 'AI number'],
@@ -28,7 +29,7 @@ const TEXTING_HOLD = 'Texting stays off until the final company tax ID is on fil
 const PROFILE_KEYS = [
   'address', 'website', 'hours', 'staff', 'locations', 'tier', 'plan', 'price', 'minutesCap', 'setupFee',
   'card', 'nextInvoice', 'trial', 'owner', 'phone', 'greeting', 'voice', 'languages', 'transfer',
-  'capabilities', 'services', 'faqs', 'blurb', 'template', 'domain', 'domainStatus', 'reviewLink', 'socialAccounts',
+  'capabilities', 'services', 'faqs', 'blurb', 'template', 'domain', 'domainStatus', 'siteHost', 'reviewLink', 'socialAccounts',
   'reviews', 'posts', 'campaigns', 'contacts', 'suppressed', 'activity', 'paused'
 ];
 
@@ -43,20 +44,28 @@ function normalizeSubdomain(value) {
 }
 
 function panelUrl(subdomain) {
-  return subdomain ? 'https://' + subdomain + '.receptwise.com' : '';
+  const slug = normalizeSubdomain(subdomain);
+  if (!slug || portalHost.isReservedSlug(slug)) return '';
+  const label = slug + '-admin';
+  if (label.length > 63) return '';
+  return 'https://' + label + '.receptwise.com';
 }
 
 async function uniqueSubdomain(client, base) {
   let stem = normalizeSubdomain(base) || 'business';
-  if (portalHost.RESERVED.includes(stem)) stem = stem + '-panel';
+  if (portalHost.isReservedSlug(stem)) {
+    const bare = stem.endsWith('-admin') ? stem.slice(0, -'-admin'.length).replace(/-+$/g, '') : stem;
+    stem = (bare || 'business') + '-panel';
+  }
+  if (stem.length > 57) stem = stem.slice(0, 57).replace(/-+$/g, '') || 'business';
   let candidate = stem;
   for (let i = 2; i < 100; i++) {
-    if (!portalHost.RESERVED.includes(candidate)) {
+    if (!portalHost.isReservedSlug(candidate)) {
       const { rows } = await client.query('SELECT 1 FROM businesses WHERE lower(subdomain) = lower($1)', [candidate]);
       if (!rows.length) return candidate;
     }
     const suffix = '-' + i;
-    candidate = stem.slice(0, 63 - suffix.length) + suffix;
+    candidate = stem.slice(0, 57 - suffix.length) + suffix;
   }
   return stem.slice(0, 48) + '-' + Date.now();
 }
@@ -84,6 +93,7 @@ async function backfillSubdomains() {
 function pickProfile(input) {
   const out = {};
   for (const k of PROFILE_KEYS) if (input && input[k] !== undefined) out[k] = input[k];
+  if (out.siteHost !== undefined && out.siteHost !== 'hosted' && out.siteHost !== 'custom') out.siteHost = '';
   // Phone "aiNumber" is owned by the server (phone_numbers table), never by the client.
   if (out.phone && typeof out.phone === 'object') {
     out.phone = Object.assign({}, out.phone);
@@ -206,7 +216,7 @@ async function createBusiness(input, userId, opts) {
       e.status = 400;
       throw e;
     }
-    if (requested && portalHost.RESERVED.includes(requested)) {
+    if (requested && portalHost.isReservedSlug(requested)) {
       const e = new Error('That address is reserved.');
       e.status = 400;
       throw e;
@@ -242,7 +252,7 @@ async function resolveSubdomain(biz, input, role) {
     e.status = 400;
     throw e;
   }
-  if (portalHost.RESERVED.includes(next)) {
+  if (portalHost.isReservedSlug(next)) {
     const e = new Error('That address is reserved.');
     e.status = 400;
     throw e;
@@ -525,7 +535,10 @@ async function toUi(biz, user, ctx) {
     live: true,
     generatedWebsite: generatedWebsite(website.rows[0]),
     subdomain: biz.subdomain || '',
-    panelUrl: panelUrl(biz.subdomain)
+    panelUrl: panelUrl(biz.subdomain),
+    hostedHostname: cloudflare.hostedHostname(biz),
+    hostedUrl: cloudflare.hostedUrl(biz),
+    siteHost: cloudflare.effectiveSiteHost(biz)
   });
   const grants = ctx && ctx.grants ? ctx.grants : await privacy.activeGrantSet();
   const support = ctx && Object.prototype.hasOwnProperty.call(ctx, 'support') ? ctx.support : await privacy.supportRow(biz.id);
