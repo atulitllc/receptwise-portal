@@ -124,6 +124,7 @@
   var integrationByBiz = {};
   var apptCache = null;
   var apptShown = [];
+  var calendarByBiz = {};
 
   function defaultWizard() {
     return {
@@ -2039,19 +2040,111 @@
       "</span></div><div class='card-b'>" + calls + "</div></section></div>";
   }
 
+  function ensureCalendar(b) {
+    if (!LIVE || !b || !b.id || calendarByBiz[b.id]) return;
+    calendarByBiz[b.id] = { pending: true };
+    api("GET", "api/businesses/" + encodeURIComponent(b.id) + "/google-calendar").then(function (data) {
+      calendarByBiz[b.id] = data || { failed: true };
+      if ((document.body.dataset.page || "") === "client" && currentTab() === "bookings") currentRender();
+    }).catch(function () {
+      calendarByBiz[b.id] = { failed: true };
+      if ((document.body.dataset.page || "") === "client" && currentTab() === "bookings") currentRender();
+    });
+  }
+
+  function calendarProviderButtons(selected, enabled, businessId) {
+    function one(id, title, detail) {
+      var on = selected === id ? " on" : "";
+      var action = enabled
+        ? ' data-action="calendar-provider" data-provider="' + id + '" data-id="' + esc(businessId || "") + '"'
+        : " disabled";
+      return '<button class="choice' + on + '" type="button"' + action + '><b>' + esc(title) + "</b><span>" + esc(detail) + "</span></button>";
+    }
+    return '<div class="choice-grid">' +
+      one("google", "Google Calendar", "Owner approves with one sign-in link.") +
+      one("calcom", "Cal.com", "Paste an API key and pick an event type.") +
+      "</div>";
+  }
+
+  function googleCalendarBody(b, cal) {
+    if (!cal.configured) {
+      var missing = (cal.missing || []).join(", ");
+      return '<p class="help">Google Calendar is not configured' + (missing ? " (" + esc(missing) + ")" : "") + ".</p>" +
+        '<button class="btn" type="button" disabled>Connect Google Calendar</button>';
+    }
+    if (cal.connected) {
+      var name = cal.calendarName || cal.calendarId || "calendar";
+      return '<p class="banner ok">Connected · ' + esc(name) + (cal.email ? " · " + esc(cal.email) : "") + "</p>" +
+        '<button class="btn" type="button" data-action="calendar-disconnect" data-id="' + esc(b.id) + '">Disconnect</button>';
+    }
+    var options = (cal.calendars || []).map(function (item) {
+      return '<option value="' + esc(item.id) + '">' + esc(item.summary || item.id) + (item.primary ? " (primary)" : "") + "</option>";
+    }).join("");
+    var pick = cal.authorized
+      ? (options
+        ? '<div class="field"><label for="calendar-choice">Calendar</label><select class="ctrl" id="calendar-choice">' + options + "</select></div>" +
+          '<button class="btn btn-primary" type="button" data-action="calendar-save" data-id="' + esc(b.id) + '">Use this calendar</button>'
+        : '<p class="help">' + esc(cal.calendarsError || "No calendars were returned. Reconnect Google Calendar.") + "</p>")
+      : "";
+    return '<button class="btn btn-primary" type="button" data-action="calendar-connect" data-id="' + esc(b.id) + '">' +
+      (cal.authorized ? "Reconnect Google Calendar" : "Connect Google Calendar") + "</button>" + pick;
+  }
+
+  function calcomCalendarBody(b, cal) {
+    var info = cal.calcom || {};
+    var saved = info.keySaved ? '<p class="help">A Cal.com API key is stored encrypted. Paste a new key only to replace it. The key is not shown again.</p>' : "";
+    var types = info.eventTypes || [];
+    var typeOptions = types.map(function (item) {
+      var id = String(item.id);
+      var label = (item.title || item.slug || ("Event type " + id)) + (item.lengthInMinutes ? " · " + item.lengthInMinutes + " min" : "");
+      return '<option value="' + esc(id) + '" data-title="' + esc(item.title || "") + '" data-length="' + esc(item.lengthInMinutes || "") + '"' +
+        (id === String(info.eventTypeId || "") ? " selected" : "") + ">" + esc(label) + "</option>";
+    }).join("");
+    var picker = info.keySaved
+      ? (typeOptions
+        ? '<div class="field"><label for="calcom-event-type">Event type</label><select class="ctrl" id="calcom-event-type">' + typeOptions + "</select></div>" +
+          '<button class="btn btn-primary" type="button" data-action="calcom-pick" data-id="' + esc(b.id) + '">Use this event type</button>'
+        : '<p class="help">' + esc(info.eventTypesError || "Save the API key, then load event types.") + "</p>" +
+          '<button class="btn" type="button" data-action="calcom-load" data-id="' + esc(b.id) + '">Show event types</button>')
+      : "";
+    var connected = info.connected
+      ? '<p class="banner ok">Connected · ' + esc(info.eventTypeTitle || ("Event type " + info.eventTypeId)) + "</p>"
+      : "";
+    return connected + saved +
+      '<div class="field"><label for="calcom-key">Cal.com API key</label><input class="ctrl" id="calcom-key" type="password" autocomplete="off" placeholder="cal_live_…"></div>' +
+      '<div class="head-actions"><button class="btn" type="button" data-action="calcom-save" data-id="' + esc(b.id) + '">Save API key</button>' +
+      (info.keySaved ? '<button class="btn" type="button" data-action="calcom-test" data-id="' + esc(b.id) + '">Test connection</button>' +
+        '<button class="btn" type="button" data-action="calcom-disconnect" data-id="' + esc(b.id) + '">Remove key</button>' : "") +
+      "</div>" + picker +
+      (info.testNote ? '<p class="help">' + esc(info.testNote) + "</p>" : "");
+  }
+
+  function calendarSection(b) {
+    var head = '<section class="card" id="google-calendar" style="margin-bottom:12px"><div class="card-h"><h2>Calendar</h2>' + badge("calendar_connection") + '</div><div class="card-b">';
+    if (!LIVE) {
+      return head +
+        '<p class="banner warn">Using the shared demo calendar</p>' +
+        '<p class="help">This demo does not connect Google Calendar or Cal.com.</p>' +
+        calendarProviderButtons("google", false) +
+        '<button class="btn" type="button" disabled>Connect Google Calendar</button></div></section>';
+    }
+    ensureCalendar(b);
+    var cal = calendarByBiz[b.id];
+    if (!cal || cal.pending) return head + '<p class="help">Loading calendar…</p></div></section>';
+    if (cal.failed) return head + '<p class="banner bad">Could not load calendar status.</p></div></section>';
+    var selected = cal.provider === "calcom" ? "calcom" : "google";
+    var warn = cal.warning ? '<p class="banner warn">' + esc(cal.warning) + "</p>" : "";
+    var body = selected === "calcom" ? calcomCalendarBody(b, cal) : googleCalendarBody(b, cal);
+    return head + warn + calendarProviderButtons(selected, true, b.id) + body + "</div></section>";
+  }
+
   function tabBookings(b) {
     var rows = (b.bookings || []).map(function (booking) {
       var item = detailsOpen(b) ? booking : veilBooking(booking);
       return "<tr><td>" + esc(item.when) + "</td><td>" + esc(item.customer) + "</td><td>" + esc(item.phone || "—") + "</td><td>" + esc(item.service || "—") + "</td><td>" + esc(item.source) + "</td><td>" + esc(item.status) + "</td></tr>";
     }).join("");
-    var calendarActions = calendarSignIn(b)
-      ? '<div class="head-actions" style="margin-bottom:12px">' + badge("calendar_connection") +
-        '<a class="btn btn-primary" href="appointments.html?business=' + encodeURIComponent(b.id) + '">Open calendar</a>' +
-        '<button class="btn" type="button" data-action="booking-test" data-id="' + esc(b.id) + '">Run booking test</button>' +
-        '<button class="btn" type="button" data-action="send-link" data-id="' + esc(b.id) + '" data-kind="calendar">Send calendar link</button></div>'
-      : '<p class="help" style="margin-bottom:12px">' + badge("calendar_connection") + esc(calendarDescribe(window.RWCalendarStep ? window.RWCalendarStep.choiceValue((b.calendar && b.calendar.provider) || "none") : "none").checklist) +
-        ' <a href="appointments.html?business=' + encodeURIComponent(b.id) + '">Open calendar</a></p>';
-    return calendarActions +
+    return calendarSection(b) +
+      '<div class="head-actions" style="margin-bottom:12px"><a class="btn" href="appointments.html?business=' + encodeURIComponent(b.id) + '">Open calendar</a></div>' +
       '<section class="card"><div class="card-h"><h2>Upcoming</h2>' + badge("bookings") + '</div><div class="table-wrap"><table class="data"><thead><tr><th>When</th><th>Customer</th><th>Phone</th><th>Service</th><th>Source</th><th>Status</th></tr></thead><tbody>' +
       (rows || '<tr><td colspan="6"><div class="empty">No upcoming bookings.</div></td></tr>') + "</tbody></table></div></section>";
   }
@@ -2282,6 +2375,7 @@
     }
     if (title) title.textContent = b.name;
     document.title = b.name + " · ReceptWise";
+    noteCalendarReturn();
     var tab = currentTab();
     var tabs = TABS.map(function (item) {
       return '<a class="tab' + (item[0] === tab ? " on" : "") + '" href="#' + item[0] + '">' + esc(item[1]) + statusMarks(TAB_FEATURES[item[0]]) + "</a>";
@@ -2303,6 +2397,20 @@
       '<button class="btn btn-primary" type="button" data-action="send-steps" data-id="' + esc(b.id) + '">Send owner their steps</button></div></section>' +
       '<nav class="tabs">' + tabs + "</nav>" + featureBar(TAB_FEATURES[tab]) + body + legal();
     if (tab === "website") loadSitePreview(b);
+  }
+
+  function noteCalendarReturn() {
+    if (!LIVE) return;
+    var params = new URLSearchParams(location.search);
+    var flag = params.get("calendar");
+    if (!flag) return;
+    if (flag === "connected") toast("Google account connected. Choose which calendar to use.");
+    else if (flag === "error") toast(params.get("message") || "Google Calendar connection failed.");
+    params.delete("calendar");
+    params.delete("message");
+    var id = params.get("id");
+    if (id) delete calendarByBiz[id];
+    history.replaceState(null, "", location.pathname + (params.toString() ? "?" + params.toString() : "") + location.hash);
   }
 
   function renderBilling(view) {
@@ -3104,6 +3212,123 @@
   }
 
   var liveActions = {
+    "calendar-connect": function (el) {
+      api("POST", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/google-calendar/start").then(function (data) {
+        if (data && data.url) location.href = data.url;
+        else toast("Google Calendar did not return a sign-in link.");
+      }).catch(liveFail);
+    },
+    "calendar-save": function (el) {
+      var choice = document.getElementById("calendar-choice");
+      if (!choice || !choice.value) { toast("Choose a calendar."); return; }
+      api("PUT", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/google-calendar", { calendarId: choice.value }).then(function (data) {
+        calendarByBiz[el.dataset.id] = data;
+        toast(data.calendarName ? "Using " + data.calendarName + "." : "Calendar saved.");
+        if (currentRender) currentRender();
+      }).catch(liveFail);
+    },
+    "calendar-disconnect": function (el) {
+      api("DELETE", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/google-calendar").then(function (data) {
+        calendarByBiz[el.dataset.id] = data;
+        toast("Google Calendar disconnected.");
+        if (currentRender) currentRender();
+      }).catch(liveFail);
+    },
+    "calendar-provider": function (el) {
+      var provider = el.dataset.provider === "calcom" ? "calcom" : "google";
+      api("PUT", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/calendar", { provider: provider }).then(function (data) {
+        return api("GET", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/google-calendar").then(function (status) {
+          if (data.business) replaceBiz(data.business);
+          calendarByBiz[el.dataset.id] = status;
+          if (currentRender) currentRender();
+        });
+      }).catch(liveFail);
+    },
+    "calcom-save": function (el) {
+      var key = document.getElementById("calcom-key");
+      var value = key ? key.value.trim() : "";
+      if (value.length < 8) { toast("Paste the Cal.com API key."); return; }
+      var body = { provider: "calcom", apiKey: value };
+      var current = calendarByBiz[el.dataset.id] && calendarByBiz[el.dataset.id].calcom;
+      if (current && current.eventTypeId) body.calcomEventTypeId = current.eventTypeId;
+      api("PUT", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/calendar", body).then(function () {
+        if (key) key.value = "";
+        toast("Cal.com API key saved.");
+        return api("GET", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/calcom/event-types").then(function (listed) {
+          return { eventTypes: listed.eventTypes || [], eventTypesError: "" };
+        }).catch(function (err) {
+          return { eventTypes: [], eventTypesError: err.message || "Could not load event types." };
+        }).then(function (listed) {
+          return api("GET", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/google-calendar").then(function (status) {
+            status.calcom = status.calcom || {};
+            status.calcom.eventTypes = listed.eventTypes;
+            status.calcom.eventTypesError = listed.eventTypesError;
+            var previousNote = calendarByBiz[el.dataset.id] && calendarByBiz[el.dataset.id].calcom;
+            if (previousNote && previousNote.testNote) status.calcom.testNote = previousNote.testNote;
+            calendarByBiz[el.dataset.id] = status;
+            if (currentRender) currentRender();
+          });
+        });
+      }).catch(liveFail);
+    },
+    "calcom-load": function (el) {
+      api("GET", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/calcom/event-types").then(function (listed) {
+        var status = calendarByBiz[el.dataset.id] || {};
+        status.calcom = status.calcom || {};
+        status.calcom.eventTypes = listed.eventTypes || [];
+        status.calcom.eventTypesError = "";
+        calendarByBiz[el.dataset.id] = status;
+        if (currentRender) currentRender();
+      }).catch(function (err) {
+        var status = calendarByBiz[el.dataset.id] || {};
+        status.calcom = status.calcom || {};
+        status.calcom.eventTypesError = err.message || "Could not load event types.";
+        calendarByBiz[el.dataset.id] = status;
+        if (currentRender) currentRender();
+      });
+    },
+    "calcom-pick": function (el) {
+      var select = document.getElementById("calcom-event-type");
+      if (!select || !select.value) { toast("Choose an event type."); return; }
+      var option = select.options[select.selectedIndex];
+      api("PUT", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/calendar", {
+        provider: "calcom",
+        calcomEventTypeId: select.value,
+        eventTypeTitle: option ? option.getAttribute("data-title") || "" : "",
+        lengthInMinutes: option ? option.getAttribute("data-length") || "" : ""
+      }).then(function () {
+        toast("Event type saved.");
+        return api("GET", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/google-calendar").then(function (status) {
+          var previous = calendarByBiz[el.dataset.id] && calendarByBiz[el.dataset.id].calcom;
+          status.calcom = status.calcom || {};
+          if (previous && previous.eventTypes) status.calcom.eventTypes = previous.eventTypes;
+          if (previous && previous.testNote) status.calcom.testNote = previous.testNote;
+          calendarByBiz[el.dataset.id] = status;
+          if (currentRender) currentRender();
+        });
+      }).catch(liveFail);
+    },
+    "calcom-test": function (el) {
+      api("POST", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/calcom/test").then(function (data) {
+        var status = calendarByBiz[el.dataset.id] || {};
+        status.calcom = status.calcom || {};
+        status.calcom.eventTypes = data.eventTypes || [];
+        var count = data.eventTypes ? data.eventTypes.length : 0;
+        function plural(n, word) { return n + " " + word + (n === 1 ? "" : "s"); }
+        var slots = data.slotCount == null ? "" : " " + plural(data.slotCount, "open slot") + " in the next day.";
+        status.calcom.testNote = "Connection works. " + plural(count, "event type") + "." + slots;
+        calendarByBiz[el.dataset.id] = status;
+        toast("Cal.com connection works.");
+        if (currentRender) currentRender();
+      }).catch(liveFail);
+    },
+    "calcom-disconnect": function (el) {
+      api("DELETE", "api/businesses/" + encodeURIComponent(el.dataset.id) + "/calcom").then(function (data) {
+        calendarByBiz[el.dataset.id] = data;
+        toast("Cal.com key removed.");
+        if (currentRender) currentRender();
+      }).catch(liveFail);
+    },
     "sign-out": function () {
       api("POST", "api/auth/logout").catch(function () {}).then(function () { location.href = "index.html"; });
     },

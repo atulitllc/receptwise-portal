@@ -156,6 +156,70 @@ test('toE164', () => {
   assert.equal(vapi.toE164('12'), '');
 });
 
+test('own calendar tools replace the shared tool ids', () => {
+  const biz = {
+    id: 9, slug: 'harbor', name: 'Harbor Cafe', timezone: 'America/Los_Angeles',
+    profile: { capabilities: { book: true, transfer: false } }
+  };
+  const shared = vapi.assistantPayload(biz, { ownCalendar: true });
+  assert.deepEqual(shared.model.toolIds, ['tool-check', 'tool-book']);
+  assert.match(shared.model.messages[0].content, /results come back in UTC/);
+  const own = vapi.assistantPayload(biz, {
+    ownCalendar: true,
+    toolsUrl: 'https://panel.example.test/webhooks/vapi/tools'
+  });
+  assert.deepEqual(own.model.toolIds, []);
+  const names = own.model.tools.map((tool) => tool.function && tool.function.name).filter(Boolean);
+  assert.deepEqual(names, ['check_availability', 'book_appointment']);
+  assert.equal(own.model.tools[0].server.url, 'https://panel.example.test/webhooks/vapi/tools');
+  const prompt = own.model.messages[0].content;
+  assert.match(prompt, /check_availability and then book_appointment/);
+  assert.match(prompt, /startLocal, endLocal, startLabel, and endLabel/);
+  assert.match(prompt, /Harbor Cafe appointment – \{service\} – \{caller name\} – \{phone\}/);
+  assert.equal(prompt.includes('results come back in UTC'), false);
+  assert.equal(prompt.includes('the booking tool'), false);
+  const calcom = vapi.assistantPayload(biz, {
+    ownCalendar: true,
+    calendarProvider: 'calcom',
+    toolsUrl: 'https://panel.example.test/webhooks/vapi/tools'
+  });
+  const calPrompt = calcom.model.messages[0].content;
+  assert.match(calPrompt, /chosen Cal.com event type/);
+  assert.match(calPrompt, /stores the business name and phone in the booking notes/);
+  assert.match(calPrompt, /Speak the confirmed local time from the tool result/);
+  assert.equal(calPrompt.includes('Harbor Cafe appointment'), false);
+});
+
+test('calendar times, titles, and the Google consent URL', () => {
+  const { parseWhen, localStamp, overlaps, eventTitle } = require('../src/calendarTime');
+  const google = require('../src/integrations/googleCalendar');
+  const { missingConfig, redirectUri } = require('../src/businessCalendar');
+  const zoned = parseWhen('2026-10-06T10:00:00', 'America/New_York');
+  const absolute = parseWhen('2026-10-06T10:00:00-04:00', 'America/Los_Angeles');
+  assert.equal(zoned.toISOString(), '2026-10-06T14:00:00.000Z');
+  assert.equal(absolute.toISOString(), '2026-10-06T14:00:00.000Z');
+  const stamp = localStamp(absolute, 'America/New_York');
+  assert.equal(stamp.iso, '2026-10-06T10:00:00-04:00');
+  assert.match(stamp.label, /10:00/);
+  const start = parseWhen('2026-10-06T10:00:00-04:00', 'America/New_York');
+  const end = parseWhen('2026-10-06T10:30:00-04:00', 'America/New_York');
+  assert.equal(overlaps(start, end, parseWhen('2026-10-06T14:15:00Z', 'UTC'), parseWhen('2026-10-06T15:00:00Z', 'UTC')), true);
+  assert.equal(overlaps(start, end, end, parseWhen('2026-10-06T11:00:00-04:00', 'America/New_York')), false);
+  assert.equal(eventTitle('Harbor Cafe', 'Brunch', 'Ada Lovelace', '7815550100'),
+    'Harbor Cafe appointment – Brunch – Ada Lovelace – 7815550100');
+  const url = new URL(google.authUrl({
+    clientId: 'client',
+    redirectUri: 'https://panel.example.test/oauth/google/callback',
+    state: 'abc'
+  }));
+  assert.equal(url.searchParams.get('access_type'), 'offline');
+  assert.equal(url.searchParams.get('prompt'), 'consent');
+  assert.match(url.searchParams.get('scope'), /https:\/\/www\.googleapis\.com\/auth\/calendar\.events/);
+  assert.match(url.searchParams.get('scope'), /calendar\.readonly/);
+  assert.ok(missingConfig().includes('GOOGLE_OAUTH_CLIENT_ID'));
+  assert.equal(redirectUri(), '');
+});
+
 test('bookings are extracted from calendar tool calls only', () => {
   const b = extractBookings([
     { role: 'tool_calls', toolCalls: [{ function: { name: 'checkAvailability', arguments: '{}' } }] },
@@ -330,7 +394,7 @@ test('feature status registry is the single badge source', () => {
     test_call: 'real',
     bookings: 'real',
     number_search: 'real',
-    calendar_connection: 'in_progress',
+    calendar_connection: 'real',
     social: 'mockup',
     reviews: 'mockup',
     website_generator: 'in_progress',

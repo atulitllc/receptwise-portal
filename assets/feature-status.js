@@ -50,8 +50,8 @@
     },
     calendar_connection: {
       label: "Calendar",
-      status: "in_progress",
-      note: "Per-business Google or Cal.com connect is being built. Sign-in and booking test are still placeholders."
+      status: "real",
+      note: "On the Bookings tab, choose Google Calendar or Cal.com. Google uses OAuth. Cal.com uses an encrypted API key and an event type from GET /v2/event-types. Until one is connected, the assistant uses the shared demo calendar and the page says so. The demo does not connect either provider."
     },
     social: {
       label: "Social",

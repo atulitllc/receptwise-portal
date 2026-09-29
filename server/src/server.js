@@ -18,6 +18,7 @@ const meta = require('./integrations/meta');
 const trelloSync = require('./trelloSync');
 const exportData = require('./exportData');
 const calendarConnection = require('./calendarConnection');
+const businessCalendar = require('./businessCalendar');
 const voices = require('./voices');
 const websites = require('./website/service');
 const appointments = require('./appointments');
@@ -78,14 +79,23 @@ function createApp() {
     next();
   });
 
-  // ---- Vapi webhooks (no session; authenticated by shared secret) ----
-  app.post('/webhooks/vapi', express.json({ limit: '5mb' }), wrap(async (req, res) => {
+  function rejectBadVapiSecret(req, res) {
     if (config.vapi.webhookSecret) {
       const given = req.get('X-Vapi-Secret') || String(req.get('Authorization') || '').replace(/^Bearer\s+/i, '');
-      if (!timingSafeEqual(given, config.vapi.webhookSecret)) return res.status(401).json({ error: 'bad secret' });
+      if (!timingSafeEqual(given, config.vapi.webhookSecret)) {
+        res.status(401).json({ error: 'bad secret' });
+        return true;
+      }
     } else if (config.production) {
-      return res.status(503).json({ error: 'VAPI_WEBHOOK_SECRET is not set' });
+      res.status(503).json({ error: 'VAPI_WEBHOOK_SECRET is not set' });
+      return true;
     }
+    return false;
+  }
+
+  // ---- Vapi webhooks (no session; authenticated by shared secret) ----
+  app.post('/webhooks/vapi', express.json({ limit: '5mb' }), wrap(async (req, res) => {
+    if (rejectBadVapiSecret(req, res)) return;
     const msg = (req.body && req.body.message) || {};
     if (msg.type === 'end-of-call-report' || msg.type === 'status-update') {
       const call = Object.assign({}, msg.call || {});
@@ -100,6 +110,36 @@ function createApp() {
   app.post('/webhooks/twilio/voice', express.urlencoded({ extended: false }), wrap(async (req, res) => {
     const twiml = await phoneForwarding.handleVoice(req);
     res.type('text/xml').send(twiml);
+  }));
+
+  app.post('/webhooks/vapi/tools', express.json({ limit: '1mb' }), wrap(async (req, res) => {
+    if (rejectBadVapiSecret(req, res)) return;
+    res.json(await businessCalendar.handleToolRequest(req.body || {}));
+  }));
+
+  app.post('/webhooks/calcom', express.json({
+    limit: '1mb',
+    verify: (req, _res, buf) => { req.rawBody = buf; }
+  }), wrap(async (req, res) => {
+    res.json(await businessCalendar.handleCalcomWebhook(req));
+  }));
+
+  app.get('/oauth/google/callback', wrap(async (req, res) => {
+    const sendError = (slug, message) => {
+      const text = String(message || 'Google Calendar connection failed.').slice(0, 300);
+      if (slug) {
+        res.redirect('/client.html?id=' + encodeURIComponent(slug) + '&calendar=error&message=' + encodeURIComponent(text) + '#bookings');
+      } else {
+        res.redirect('/clients.html?error=' + encodeURIComponent(text));
+      }
+    };
+    try {
+      if (req.query.error) return sendError('', req.query.error_description || req.query.error);
+      const result = await businessCalendar.finish(String(req.query.code || ''), String(req.query.state || ''));
+      res.redirect('/client.html?id=' + encodeURIComponent(result.slug) + '&calendar=connected#bookings');
+    } catch (err) {
+      sendError(err.slug || '', err.message);
+    }
   }));
 
   app.use(express.json({ limit: '1mb' }));
@@ -203,11 +243,34 @@ function createApp() {
   }));
   api.put('/businesses/:slug/calendar', withBiz, wrap(async (req, res) => {
     const saved = await calendarConnection.saveConnection(req.biz, req.body || {}, req.user.id);
+    const assistant = await businessCalendar.syncAssistant(saved.biz);
     res.json({
       calendar: saved.calendar,
       calcomKeySaved: saved.calcomKeySaved,
+      assistantUpdated: assistant.assistantUpdated,
       business: await businesses.toUi(saved.biz, req.user)
     });
+  }));
+  api.get('/businesses/:slug/calcom/event-types', withBiz, wrap(async (req, res) => {
+    res.json(await businessCalendar.listCalcomEventTypes(req.biz));
+  }));
+  api.post('/businesses/:slug/calcom/test', withBiz, wrap(async (req, res) => {
+    res.json(await businessCalendar.testCalcom(req.biz));
+  }));
+  api.delete('/businesses/:slug/calcom', withBiz, wrap(async (req, res) => {
+    res.json(await businessCalendar.disconnectCalcom(req.biz, req.user.id));
+  }));
+  api.get('/businesses/:slug/google-calendar', withBiz, wrap(async (req, res) => {
+    res.json(await businessCalendar.status(req.biz));
+  }));
+  api.post('/businesses/:slug/google-calendar/start', withBiz, wrap(async (req, res) => {
+    res.json(await businessCalendar.begin(req.biz, req.user.id));
+  }));
+  api.put('/businesses/:slug/google-calendar', withBiz, wrap(async (req, res) => {
+    res.json(await businessCalendar.selectCalendar(req.biz, (req.body || {}).calendarId, req.user.id));
+  }));
+  api.delete('/businesses/:slug/google-calendar', withBiz, wrap(async (req, res) => {
+    res.json(await businessCalendar.disconnect(req.biz, req.user.id));
   }));
   api.delete('/businesses/:slug', withBiz, wrap(async (req, res) => {
     await businesses.deleteDraft(req.biz, req.user.id);

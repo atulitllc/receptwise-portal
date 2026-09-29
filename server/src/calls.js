@@ -304,6 +304,19 @@ async function saveExtractedBookings(businessId, callId, list) {
     }
     const humanOwnsOnlyRow = existing.length === 1 && existing[0].portal_edited && list.length === 1;
     if (humanOwnsOnlyRow) continue;
+    if (item.startsAt) {
+      const linked = await db.query(
+        `UPDATE bookings
+         SET call_id = coalesce(call_id, $2), updated_at = now()
+         WHERE business_id = $1
+           AND source <> 'Phone'
+           AND starts_at IS NOT DISTINCT FROM $3::timestamptz
+           AND lower(coalesce(customer, '')) = lower(coalesce($4, ''))
+         RETURNING id`,
+        [businessId, callId, item.startsAt, item.customer || '']
+      );
+      if (linked.rows.length) continue;
+    }
     await db.query(
       `INSERT INTO bookings (business_id, call_id, starts_at, ends_at, customer, phone, email, service, timezone, source, status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'Phone','Confirmed')`,

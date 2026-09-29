@@ -1,6 +1,6 @@
 'use strict';
-// Stores the wizard's calendar choice. The Cal.com API key goes in integrations.token_enc.
-// Booking against Cal.com is intentionally not implemented here.
+// Stores the calendar choice. The Cal.com API key goes in integrations.token_enc.
+// Availability and booking live in businessCalendar.js.
 const db = require('./db');
 const config = require('./config');
 const cryptoBox = require('./cryptoBox');
@@ -26,7 +26,7 @@ function calendarFromInput(input) {
   const provider = providerId(choice);
   if (!provider) return null;
   const out = { provider };
-  if (provider === 'calcom') out.calcomEventTypeId = String(eventRaw || '').trim().slice(0, 200);
+  if (provider === 'calcom' && eventRaw != null) out.calcomEventTypeId = String(eventRaw).trim().slice(0, 200);
   return out;
 }
 
@@ -73,31 +73,55 @@ async function saveConnection(biz, input, userId) {
     throw err;
   }
 
+  if (calendar.provider === 'calcom' && calendar.calcomEventTypeId == null) {
+    const previous = biz.profile && biz.profile.calendar;
+    calendar.calcomEventTypeId = previous && previous.provider === 'calcom'
+      ? String(previous.calcomEventTypeId || '')
+      : '';
+  }
   const profile = Object.assign({}, biz.profile || {}, { calendar });
   if (profile.wizard) profile.wizard = scrubWizard(profile.wizard);
   const { rows } = await db.query(
     'UPDATE businesses SET profile = $2, updated_at = now() WHERE id = $1 RETURNING *',
     [biz.id, profile]
   );
-  if (apiKey) {
-    const tokenEnc = cryptoBox.encrypt(apiKey);
-    await db.query(
-      `INSERT INTO integrations (business_id, provider, account_label, token_enc, status, meta, updated_at)
-       VALUES ($1, 'calcom', '', $2, 'saved', $3::jsonb, now())
-       ON CONFLICT (business_id, provider) DO UPDATE SET
-         token_enc = EXCLUDED.token_enc,
-         status = 'saved',
-         meta = EXCLUDED.meta,
-         updated_at = now()`,
-      [biz.id, tokenEnc, JSON.stringify({ eventTypeId: calendar.calcomEventTypeId || '' })]
+  if (calendar.provider === 'calcom') {
+    const existing = await db.query(
+      `SELECT meta FROM integrations WHERE business_id = $1 AND provider = 'calcom'`,
+      [biz.id]
     );
-    await audit.record(userId, biz.id, 'calendar.calcom_key', { provider: 'calcom' });
-  } else if (calendar.provider === 'calcom') {
-    await db.query(
-      `UPDATE integrations SET meta = $2::jsonb, updated_at = now()
-       WHERE business_id = $1 AND provider = 'calcom'`,
-      [biz.id, JSON.stringify({ eventTypeId: calendar.calcomEventTypeId || '' })]
-    );
+    const previous = existing.rows[0] && existing.rows[0].meta && typeof existing.rows[0].meta === 'object'
+      ? existing.rows[0].meta : {};
+    const meta = {
+      eventTypeId: calendar.calcomEventTypeId || ''
+    };
+    const title = input.eventTypeTitle != null ? String(input.eventTypeTitle).trim().slice(0, 200) : (previous.eventTypeTitle || '');
+    const length = input.lengthInMinutes != null && input.lengthInMinutes !== ''
+      ? Number(input.lengthInMinutes)
+      : Number(previous.lengthInMinutes);
+    if (title) meta.eventTypeTitle = title;
+    if (Number.isFinite(length) && length > 0) meta.lengthInMinutes = length;
+    const status = /^\d+$/.test(meta.eventTypeId) ? 'connected' : 'saved';
+    if (apiKey) {
+      const tokenEnc = cryptoBox.encrypt(apiKey);
+      await db.query(
+        `INSERT INTO integrations (business_id, provider, account_label, token_enc, status, meta, updated_at)
+         VALUES ($1, 'calcom', '', $2, $3, $4::jsonb, now())
+         ON CONFLICT (business_id, provider) DO UPDATE SET
+           token_enc = EXCLUDED.token_enc,
+           status = EXCLUDED.status,
+           meta = EXCLUDED.meta,
+           updated_at = now()`,
+        [biz.id, tokenEnc, status, JSON.stringify(meta)]
+      );
+      await audit.record(userId, biz.id, 'calendar.calcom_key', { provider: 'calcom' });
+    } else if (existing.rows[0]) {
+      await db.query(
+        `UPDATE integrations SET meta = $2::jsonb, status = $3, updated_at = now()
+         WHERE business_id = $1 AND provider = 'calcom'`,
+        [biz.id, JSON.stringify(meta), status]
+      );
+    }
   }
   return { biz: rows[0], calendar, calcomKeySaved: await keySaved(biz.id) };
 }

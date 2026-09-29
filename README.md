@@ -36,6 +36,8 @@ The company that owns the product is **[Placeholder]** in the footer and on the 
 | `VAPI_WEBHOOK_SECRET` plus the Vapi server URL | End-of-call reports are stored (summary, caller, outcome, recording, and bookings). A `book_demo` tool call stores the start, customer, and phone from its arguments. Sync from Vapi backfills the same fields. |
 | `META_APP_ID`, `META_APP_SECRET`, `TOKEN_ENCRYPTION_KEY`, and a public `APP_BASE_URL` | Facebook Login for Business stores the Page and Instagram tokens encrypted. The page shows the account name. |
 | `TRELLO_API_KEY`, `TRELLO_TOKEN`, or a key pasted on Integrations, plus `TOKEN_ENCRYPTION_KEY` for a pasted key | Test connection, choose a board and list, and open a card for each new booking and missed call. A booking card is updated when the booking changes. |
+| `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `TOKEN_ENCRYPTION_KEY`, and `APP_BASE_URL` | Each business can connect its own Google Calendar. The assistant then checks availability and books on that calendar. |
+| A Cal.com API key pasted on the Bookings tab, plus `TOKEN_ENCRYPTION_KEY` and `APP_BASE_URL` | Each business can use Cal.com instead. The key is stored encrypted. The owner picks an event type, and the assistant books that event type. |
 | `GITHUB_TOKEN` (and optional `GITHUB_ORG` or `GITHUB_OWNER`, default `atulitllc`) | On the Website tab, an admin generates a public one-page site in a new GitHub repository. The account can be a user or an organization. Regenerate opens a pull request. The panel does not host the site. |
 | `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` | The same Generate and Regenerate action also uploads those files to Cloudflare Pages (Direct Upload, production branch `main`). A custom domain on the business is attached when one is saved. |
 
@@ -45,7 +47,7 @@ Without those keys the panel stays honest: phone says **Not connected**, setting
 
 - **Meta app.** Create a Meta app, add Facebook Login for Business, and set the redirect URI to `https://<your-host>/api/integrations/meta/callback`. Then set `META_APP_ID`, `META_APP_SECRET`, and `TOKEN_ENCRYPTION_KEY`. Optional: `META_LOGIN_CONFIG_ID` if the login uses a saved configuration instead of the default scopes. Google Business Profile has no OAuth flow yet; you can only record the listing URL.
 - **Vapi server URL.** In the Vapi assistant, set the server URL to `https://<your-host>/webhooks/vapi` and send header `X-Vapi-Secret` with the same value as `VAPI_WEBHOOK_SECRET`. The free web service sleeps, so use **Sync from Vapi** after it wakes up.
-- **Calendar tools.** The pilot assistant already has `check_availability` and `book_demo`. `VAPI_CALENDAR_TOOL_IDS` is that pair. A later client needs its own tools; the settings push keeps whatever tool ids are already on that assistant.
+- **Calendar.** Each business chooses Google Calendar or Cal.com on the Bookings tab. Until one is ready, the assistant keeps using `VAPI_CALENDAR_TOOL_IDS` (the shared demo calendar) and the page says **Using the shared demo calendar**. Setup steps are below.
 - **Voice.** The live assistant already uses ElevenLabs. `VAPI_VOICE_ID` is only required when publishing a brand-new assistant from the business page.
 - **Trello.** Create a Power-Up API key and token (steps below), paste them on Integrations, or set `TRELLO_API_KEY` and `TRELLO_TOKEN`. Choose a board and a list. Cards are not created until that list is saved. Set `APP_BASE_URL` so each card links back to the call.
 
@@ -113,7 +115,7 @@ The in-app SQL file does not restore sign-in. The admin created from `ADMIN_EMAI
 | `DATABASE_URL` | yes | Postgres connection string (wired from the Blueprint database) |
 | `PORT` | no | Set by Render. The server binds `0.0.0.0:$PORT`. |
 | `RENDER_EXTERNAL_URL` | no | Set by Render. Used as the public base URL when `APP_BASE_URL` is empty. |
-| `APP_BASE_URL` | no | Optional custom origin, no trailing slash. Used for the Vapi webhook URL and the Meta redirect. |
+| `APP_BASE_URL` | no | Optional custom origin, no trailing slash. Used for the Vapi webhook URL, the Meta redirect, the Google Calendar redirect (`/oauth/google/callback`), and the Cal.com webhook (`/webhooks/calcom`). |
 | `SESSION_DAYS` | no | Session lifetime. Default 14. |
 | `ADMIN_EMAIL` | yes | First admin, created only when the users table is empty |
 | `ADMIN_PASSWORD` | yes | First admin password, 10+ characters |
@@ -130,7 +132,11 @@ The in-app SQL file does not restore sign-in. The admin created from `ADMIN_EMAI
 | `VAPI_VOICE_MODEL` | no | Default `eleven_flash_v2_5` |
 | `VAPI_MODEL` | no | Default `gpt-4.1` |
 | `VAPI_TRANSCRIBER_MODEL` | no | Default `nova-3` |
-| `VAPI_CALENDAR_TOOL_IDS` | no | Comma-separated Vapi tool ids |
+| `VAPI_CALENDAR_TOOL_IDS` | no | Shared demo calendar tools, used only when a business has not chosen its own calendar |
+| `GOOGLE_OAUTH_CLIENT_ID` | yes | Google OAuth client for per-business calendars. See below. |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | yes | Google OAuth client secret |
+| `CALCOM_API_BASE` | no | Optional. Defaults to `https://api.cal.com`. |
+| `CALCOM_WEBHOOK_SECRET` | yes | Optional. Verifies `POST /webhooks/calcom`. Same value as the Cal.com webhook secret. |
 | `VAPI_MAX_CALL_SECONDS` | no | Default 600 |
 | `VAPI_ASSISTANT_ID` | no | Pilot assistant id |
 | `VAPI_PHONE_NUMBER_ID` | no | Pilot Vapi phone number id |
@@ -150,6 +156,35 @@ The in-app SQL file does not restore sign-in. The admin created from `ADMIN_EMAI
 | `GITHUB_OWNER` | no | Optional override of `GITHUB_ORG`. Same meaning: the repo owner, user or organization. |
 | `CLOUDFLARE_API_TOKEN` | no | Uploads the generated site to Cloudflare Pages. Create an API token with Account → Cloudflare Pages → Edit. To create the CNAME when the domain's zone is in this account, also grant Zone → Zone → Read and Zone → DNS → Edit. |
 | `CLOUDFLARE_ACCOUNT_ID` | no | Cloudflare account id. Both this and `CLOUDFLARE_API_TOKEN` must be set. If either is blank, Cloudflare is skipped. |
+
+## How to create the Google Calendar OAuth client
+
+The Bookings tab shows **not configured** until these exist. The redirect URI has to match exactly.
+
+1. Open [Google Cloud Console](https://console.cloud.google.com/) and create or choose a project.
+2. **APIs & Services → Library**. Enable **Google Calendar API**.
+3. **APIs & Services → OAuth consent screen**. Choose External (or Internal for a Workspace org). Add the app name and support email. Add the scopes `https://www.googleapis.com/auth/calendar.events` and `https://www.googleapis.com/auth/calendar.readonly`. Add the Google accounts that will connect a calendar as test users while the app is in testing.
+4. **APIs & Services → Credentials → Create credentials → OAuth client ID**. Application type: **Web application**.
+5. Under **Authorized redirect URIs**, add `https://<your-host>/oauth/google/callback` (local example: `http://localhost:3000/oauth/google/callback`). This must be the same origin as `APP_BASE_URL`, with no trailing slash on the origin.
+6. Copy the client id and secret into `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`.
+7. Set `APP_BASE_URL` and `TOKEN_ENCRYPTION_KEY` (Render generates the encryption key). Restart the service.
+
+On the business Bookings tab, choose **Google Calendar**, then **Connect Google Calendar**, approve the consent screen, and pick the calendar. The refresh token is encrypted before it is stored and is not sent back to the browser. Disconnect removes it. While a calendar is connected, the assistant calls `check_availability` and `book_appointment` on this server (`/webhooks/vapi/tools`, header `X-Vapi-Secret`). Those tools use the chosen calendar only.
+
+## How to connect Cal.com
+
+The Bookings tab stores one Cal.com API key per business. `TOKEN_ENCRYPTION_KEY` and `APP_BASE_URL` must be set. The key is never sent back to the browser.
+
+1. In Cal.com, open **Settings → Developer → API keys** and create a key.
+2. On the business Bookings tab, choose **Cal.com**, paste the key, and click **Save API key**.
+3. Click **Show event types** if they are not listed yet. The server calls `GET https://api.cal.com/v2/event-types` with `Authorization: Bearer <api key>` and `cal-api-version: 2026-06-12` ([list event types](https://cal.com/docs/api-reference/v2/event-types/list-event-types)). Pick one, for example **20 min demo**, and click **Use this event type**. A slug alone is saved but does not switch the assistant off the shared demo calendar. The id has to be the numeric event type id.
+4. Click **Test connection**. That lists event types again and, once a numeric event type is chosen, calls `GET /v2/slots` for the next day with `cal-api-version: 2024-09-04`, `eventTypeId`, `start`, `end` (UTC), `timeZone` (the business time zone), and `format=range` ([available slots](https://cal.com/docs/api-reference/v2/slots/get-available-time-slots-for-an-event-type)).
+
+`check_availability` uses that same slots request for the range the assistant sends. `book_appointment` calls `POST /v2/bookings` with `cal-api-version: 2026-02-25` ([create a booking](https://cal.com/docs/api-reference/v2/bookings/create-a-booking)). The body sends `eventTypeId`, `start` as a UTC ISO time, and `attendee` (`name`, `email`, `timeZone`, `language`, and `phoneNumber` when the caller gave a phone number). The business name, caller phone, and business id go in `metadata`. The tool result includes the confirmed local time. If Cal.com says the slot was taken, the server checks slots again and does not store a second booking.
+
+Each Cal.com booking is also stored in `bookings` with `source` `calcom` and `calcom_uid`.
+
+Optional: in Cal.com, add a webhook whose subscriber URL is `https://<your-host>/webhooks/calcom`. Subscribe to **Booking created**, **Booking cancelled**, and **Booking rescheduled** (`BOOKING_CREATED`, `BOOKING_CANCELLED`, `BOOKING_RESCHEDULED`). Set a secret and put the same value in `CALCOM_WEBHOOK_SECRET`. Cal.com sends `X-Cal-Signature-256`, the HMAC-SHA256 hex of the raw body ([webhooks](https://cal.com/help/webhooks)). Those events update the same bookings list. A booking made in Cal.com is matched by `metadata.businessId` (set on bookings this server creates) or by a single business using that event type id. Other triggers are acknowledged and ignored. Leave the secret unset and the webhook answers `503`.
 
 ## How to get your Trello key and token
 
