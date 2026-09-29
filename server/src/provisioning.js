@@ -171,7 +171,8 @@ function status() {
     webhookUrl: webhookUrl(),
     webhookSecret: Boolean(config.vapi.webhookSecret),
     transferNumber: Boolean(config.transferToNumber),
-    smsEnabled: config.smsEnabled
+    smsEnabled: config.smsEnabled,
+    github: config.github.configured
   };
 }
 

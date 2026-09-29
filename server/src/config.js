@@ -57,6 +57,11 @@ const config = {
     token: env.TRELLO_TOKEN || '',
     baseUrl: 'https://api.trello.com'
   },
+  // Website generator. Inert until GITHUB_TOKEN is set. GITHUB_ORG defaults to the company org.
+  github: {
+    token: env.GITHUB_TOKEN || '',
+    org: (env.GITHUB_ORG || 'atulitllc').trim() || 'atulitllc'
+  },
   // Pilot client #1 is ReceptWise itself. Ids are overridable; they are not secrets.
   pilot: {
     assistantId: env.VAPI_ASSISTANT_ID || 'c3c8899c-e42d-494b-bf47-3af37f942341',
@@ -70,5 +75,6 @@ config.twilio.configured = Boolean(config.twilio.accountSid && config.twilio.aut
 config.vapi.configured = Boolean(config.vapi.apiKey);
 config.meta.configured = Boolean(config.meta.appId && config.meta.appSecret);
 config.trello.configured = Boolean(config.trello.apiKey && config.trello.token);
+config.github.configured = Boolean(config.github.token);
 
 module.exports = config;

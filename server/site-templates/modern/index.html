@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{name}}</title>
+{{#blurb}}<meta name="description" content="{{blurb}}">{{/blurb}}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;700&family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet">
+<!--ASSETS-->
+<style>:root{--accent:{{accent}};--accent-ink:{{accentInk}};--accent-soft:{{accentSoft}};}</style>
+</head>
+<body class="tpl-modern">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-row">
+    <a class="brand" href="#top">{{name}}</a>
+    <nav class="nav" aria-label="On this page">
+      {{#services}}<a href="#services">Services</a>{{/services}}
+      {{#hours}}<a href="#hours">Hours</a>{{/hours}}
+      {{#address}}<a href="#visit">Visit</a>{{/address}}
+      {{#showContact}}<a href="#contact">Contact</a>{{/showContact}}
+    </nav>
+  </div>
+</header>
+<main id="main">
+  <section class="hero hero-dark" id="top">
+    <div class="wrap">
+      {{#category}}<p class="eyebrow">{{category}}</p>{{/category}}
+      <h1>{{name}}</h1>
+      {{#city}}<p class="city">{{city}}</p>{{/city}}
+      {{#blurb}}<p class="lead">{{blurb}}</p>{{/blurb}}
+      <div class="hero-actions">
+        {{#phoneHref}}<a class="btn btn-call" href="{{phoneHref}}">Call {{phoneDisplay}}</a>{{/phoneHref}}
+        {{#bookHref}}<a class="btn btn-book" href="{{bookHref}}"{{#bookExternal}} target="_blank" rel="noopener"{{/bookExternal}}>Book now</a>{{/bookHref}}
+      </div>
+    </div>
+  </section>
+  {{#services}}
+  <section class="section" id="services">
+    <div class="wrap">
+      <h2>Services</h2>
+      <ol class="service-list">
+        {{#each services}}
+        <li><h3>{{name}}</h3>{{#meta}}<p>{{meta}}</p>{{/meta}}</li>
+        {{/each}}
+      </ol>
+    </div>
+  </section>
+  {{/services}}
+  <div class="split-sections">
+    {{#hours}}
+    <section class="section" id="hours">
+      <div class="wrap">
+        <h2>Hours</h2>
+        <p class="hours">{{hours}}</p>
+      </div>
+    </section>
+    {{/hours}}
+    {{#address}}
+    <section class="section" id="visit">
+      <div class="wrap">
+        <h2>Visit</h2>
+        <p class="address">{{address}}</p>
+        <p><a class="text-link" href="{{mapUrl}}" target="_blank" rel="noopener">Open in Maps</a></p>
+      </div>
+    </section>
+    {{/address}}
+  </div>
+  {{#showContact}}
+  <section class="contact-band" id="contact">
+    <div class="wrap">
+      <h2>Contact</h2>
+      <div class="hero-actions">
+        {{#phoneHref}}<a class="btn btn-call" href="{{phoneHref}}">Call {{phoneDisplay}}</a>{{/phoneHref}}
+        {{#bookHref}}<a class="btn btn-book" href="{{bookHref}}"{{#bookExternal}} target="_blank" rel="noopener"{{/bookExternal}}>Book now</a>{{/bookHref}}
+      </div>
+    </div>
+  </section>
+  {{/showContact}}
+</main>
+<footer class="site-footer">
+  <div class="wrap"><p>{{name}}{{#city}} · {{city}}{{/city}}</p></div>
+</footer>
+<script src="site.js" defer></script>
+</body>
+</html>
