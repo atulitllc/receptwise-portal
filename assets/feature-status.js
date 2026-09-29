@@ -3,9 +3,9 @@
    To ship a feature, change its status here. Nothing else needs a copy of the list.
 
    status:
-     real        — working against the server with real data (green "Real")
-     mockup      — placeholder, sample data, or a canned toast (gray "Mockup")
-     in_progress — being built (blue "In progress")
+     real        — working against the server with real data (green dot)
+     mockup      — placeholder, sample data, or a canned toast (orange dot)
+     in_progress — being built (yellow dot)
 */
 (function (root, factory) {
   var registry = factory();

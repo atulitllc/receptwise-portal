@@ -322,12 +322,18 @@ a.avatar.me {
   flex: none;
   display: inline-block;
 }
-.pill.feat.real { background: var(--green-soft); color: var(--green); }
-.pill.feat.mockup { background: #e7edf3; color: #24364c; }
-.pill.feat.in_progress { background: var(--blue-soft); color: #0a3d73; }
-.feat-mini.real, .legend-dot.real { color: var(--green); }
-.feat-mini.mockup, .legend-dot.mockup { color: #24364c; }
-.feat-mini.in_progress, .legend-dot.in_progress { color: #0a3d73; }
+.pill.feat.real { background: var(--green-soft); color: var(--ink); }
+.pill.feat.in_progress { background: #fbf6d4; color: var(--ink); }
+.pill.feat.mockup { background: #ffedd5; color: var(--ink); }
+.pill.feat.real .feat-dot,
+.feat-mini.real i,
+.legend-dot.real { background: var(--green); }
+.pill.feat.in_progress .feat-dot,
+.feat-mini.in_progress i,
+.legend-dot.in_progress { background: #e6b000; }
+.pill.feat.mockup .feat-dot,
+.feat-mini.mockup i,
+.legend-dot.mockup { background: #ef7d14; }
 .feat-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 12px; }
 .feat-block .status-legend { margin: 0 0 8px; }
 .feat-row { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: flex-end; }
