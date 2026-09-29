@@ -13,6 +13,13 @@ function webhookUrl() {
   return config.appBaseUrl ? config.appBaseUrl + '/webhooks/vapi' : '';
 }
 
+// The webhook secret is sent to Vapi. It is not stored on the assistant row.
+function configForStorage(payload) {
+  const copy = JSON.parse(JSON.stringify(payload));
+  if (copy.server && copy.server.headers) delete copy.server.headers;
+  return copy;
+}
+
 async function getAssistantRow(bizId) {
   const { rows } = await db.query('SELECT * FROM assistants WHERE business_id = $1', [bizId]);
   return rows[0] || null;
@@ -38,11 +45,16 @@ async function publishAssistant(biz, userId) {
   } else {
     result = await vapi.createAssistant(payload);
   }
+  if (!result || !result.id) {
+    const e = new Error('Vapi did not return an assistant id.');
+    e.status = 502;
+    throw e;
+  }
   await db.query(
     `INSERT INTO assistants (business_id, vapi_assistant_id, config, published_at, updated_at)
      VALUES ($1, $2, $3, now(), now())
      ON CONFLICT (business_id) DO UPDATE SET vapi_assistant_id = EXCLUDED.vapi_assistant_id, config = EXCLUDED.config, published_at = now(), updated_at = now()`,
-    [biz.id, result.id, payload]
+    [biz.id, result.id, configForStorage(payload)]
   );
   const phone = await getPhoneRow(biz.id);
   if (phone && phone.vapi_phone_number_id && (!existing || existing.vapi_assistant_id !== result.id)) {
@@ -80,9 +92,19 @@ async function provisionNumber(biz, { e164, areaCode } = {}, userId) {
     assistant = await getAssistantRow(biz.id);
   }
   const bought = await twilio.buyNumber(chosen, 'ReceptWise · ' + biz.name);
+  if (!bought || !bought.e164) {
+    const e = new Error('Twilio did not return the purchased number.');
+    e.status = 502;
+    throw e;
+  }
   const imported = await vapi.importTwilioNumber({
     e164: bought.e164, assistantId: assistant.vapi_assistant_id, name: biz.name, serverUrl: webhookUrl()
   });
+  if (!imported || !imported.id) {
+    const e = new Error('Vapi did not return a phone number id after import. The Twilio number ' + bought.e164 + ' was purchased and is not attached yet.');
+    e.status = 502;
+    throw e;
+  }
   await db.query(
     `INSERT INTO phone_numbers (business_id, e164, provider, twilio_sid, vapi_phone_number_id, sms_enabled)
      VALUES ($1, $2, 'twilio', $3, $4, $5)`,
