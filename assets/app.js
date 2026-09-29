@@ -228,32 +228,6 @@
     return "(" + d.slice(0, 3) + ") " + d.slice(3, 6) + "-" + d.slice(6);
   }
 
-  // 555-0100–0199 are fictional. The GitHub Pages demo may list them. Live search must not.
-  function isSampleNumber(value) {
-    var d = digits(value);
-    return d.length === 10 && d.slice(3, 6) === "555";
-  }
-
-  function demoSampleNumbers(area) {
-    var code = String(area || "").replace(/\D/g, "").slice(0, 3);
-    if (!/^[2-9]\d{2}$/.test(code)) code = "415";
-    return ["0148", "0162", "0190"].map(function (suffix) {
-      return {
-        e164: "+1" + code + "555" + suffix,
-        friendly: "(" + code + ") 555-" + suffix,
-        locality: "Sample",
-        region: ""
-      };
-    });
-  }
-
-  function friendlySearchError(err) {
-    var message = (err && err.message) || "";
-    if (!message) return "Number search failed. Nothing was bought. Try again in a moment.";
-    if (/^Twilio returned HTTP/.test(message)) return "Number search failed. Twilio did not return numbers, so nothing was bought. " + message;
-    return message;
-  }
-
   function storageGet(key) {
     try { return sessionStorage.getItem(key); } catch (e) { return null; }
   }
@@ -971,8 +945,7 @@
     if (state.status === "error") return '<p class="error">' + esc(state.error || "Number search failed.") + "</p>";
     if (state.status === "empty") return '<p class="help">' + esc(emptyNumberCopy(state.areaCode)) + "</p>";
     if (!state.options || !state.options.length) return '<p class="help">Enter an area code and choose Show numbers.</p>';
-    var heading = state.demo ? "Sample numbers (demo)" : "Available numbers";
-    return '<div class="field"><label>' + heading + '</label><div class="choice-grid">' + state.options.map(function (num) {
+    return '<div class="field"><label>Available numbers</label><div class="choice-grid">' + state.options.map(function (num) {
       var title = num.friendly || pretty(digits(num.e164)) || num.e164;
       var where = [num.locality, num.region].filter(Boolean).join(", ") || "Local voice";
       var on = state.chosenE164 === num.e164 ? " on" : "";
@@ -1064,28 +1037,19 @@
         "</div>" +
         '<div class="help">Used to list local numbers.</div></div>';
       if (!LIVE) {
-        body += '<div class="banner warn">Sample numbers (demo). These are not real phone numbers, and nothing is bought in this prototype. A real number is purchased only on Buy and connect, about $1.15 a month.</div>' +
-          numberResultBlock({
-            status: wizard.numberStatus,
-            error: wizard.numberError,
-            areaCode: wizard.areaCode,
-            options: wizard.numberOptions,
-            chosenE164: wizard.chosenE164,
-            demo: true
-          }, "pick", "");
+        body += '<div class="note calm">Number search works in the live control panel.</div>';
       } else if (numberKeys.length) {
         body += "<p class='banner warn'>Not connected yet. Add " + esc(numberKeys.join(" and ")) + " on the server, then come back.</p>";
       } else if (!isAdmin()) {
         body += '<div class="note">Admins search available numbers. You can continue, and an admin can buy one from Overview.</div>';
       } else {
-        body += '<div class="banner warn">Searching lists real available numbers and does not buy one. The number is purchased only when you choose Buy and connect, about $1.15 a month.</div>' +
+        body += '<div class="note calm">Searching does not buy a number. It is purchased only when you choose Buy and connect on the business Overview, and a local number costs about $1.15 a month.</div>' +
           numberResultBlock({
             status: wizard.numberStatus,
             error: wizard.numberError,
             areaCode: wizard.areaCode,
             options: wizard.numberOptions,
-            chosenE164: wizard.chosenE164,
-            demo: false
+            chosenE164: wizard.chosenE164
           }, "pick", "");
       }
       if (wizard.phoneMode === "forward") {
@@ -1106,7 +1070,7 @@
           field("Account number", input("taxId", wizard.taxId, "From a recent bill")) +
           '<div class="field"><label>Recent bill</label><input class="ctrl" type="file" data-action="bill-file"></div>';
       } else {
-        body += '<div class="note calm">Callers will use ' + esc(wizard.chosenNumber || "the number you pick") + ". Nothing is bought until Buy and connect (about $1.15 a month). Update the website, Google listing, and window once the test call passes.</div>";
+        body += '<div class="note calm">Callers will use ' + esc(wizard.chosenNumber || "the number you pick") + ". Nothing is bought until Buy and connect. Update the website, Google listing, and window once the test call passes.</div>";
       }
     } else if (wizard.step === 3) {
       var target = wizard.phoneMode === "forward" ? (wizard.businessNumber || "the business number") : wizard.chosenNumber;
@@ -1439,10 +1403,6 @@
     wizard.numberError = "";
     wizard.numberOptions = [];
     wizard.numberStatus = "idle";
-    if (LIVE && isSampleNumber(wizard.chosenE164 || wizard.chosenNumber)) {
-      wizard.chosenE164 = "";
-      wizard.chosenNumber = "";
-    }
     if (!wizard.name) wizard.name = biz.name || "";
     if (!wizard.category) wizard.category = biz.category || "";
     if (biz.calendar && biz.calendar.provider && window.RWCalendarStep) {
@@ -2124,21 +2084,7 @@
     "show-numbers": function () {
       readWizard();
       syncAreaCode();
-      if (LIVE) return;
-      if (String(wizard.areaCode || "").length !== 3) {
-        wizard.numberStatus = "error";
-        wizard.numberError = "Enter a 3-digit area code.";
-        wizard.numberOptions = [];
-        renderWizard();
-        return;
-      }
-      wizard.numberOptions = demoSampleNumbers(wizard.areaCode);
-      wizard.numberStatus = "ready";
-      wizard.numberError = "";
-      if (wizard.chosenE164 && !wizard.numberOptions.some(function (n) { return n.e164 === wizard.chosenE164; })) {
-        wizard.chosenE164 = "";
-        wizard.chosenNumber = "";
-      }
+      toast("Number search works in the live control panel.");
       renderWizard();
     },
     "lookup-carrier": function () {
@@ -2610,7 +2556,6 @@
     if (!b) return;
     if (numberPick.bizId === b.id) return;
     var requested = (b.phone && b.phone.requestedE164) || "";
-    if (isSampleNumber(requested)) requested = "";
     var area = digits(requested).slice(0, 3) || "781";
     numberPick = {
       bizId: b.id,
@@ -2636,7 +2581,7 @@
     }
     if (!isAdmin()) return '<p class="help">Admins only.</p>';
     var loading = numberPick.status === "loading";
-    return '<div class="number-search"><div class="banner warn">Searching does not buy a number. It is purchased only when you choose Buy and connect, about $1.15 a month. Texting stays off.</div>' +
+    return '<div class="number-search"><p class="help">Searching does not buy a number. It is purchased only when you choose Buy and connect, and a local number costs about $1.15 a month. Texting stays off.</p>' +
       '<div class="field"><label>Area code</label><div class="inline"><input class="ctrl" data-number-area value="' + esc(numberPick.areaCode || "") + '" placeholder="781">' +
       '<button class="btn" type="button" data-action="show-biz-numbers" data-id="' + esc(b.id) + '"' + (loading ? " disabled" : "") + ">Show numbers</button></div></div>" +
       numberResultBlock(numberPick, "pick-biz-number", b.id) +
@@ -2791,7 +2736,7 @@
         renderWizard();
       }).catch(function (err) {
         wizard.numberStatus = "error";
-        wizard.numberError = friendlySearchError(err);
+        wizard.numberError = (err && err.message) || "Number search failed.";
         wizard.numberOptions = [];
         renderWizard();
       });
@@ -2822,7 +2767,7 @@
         refreshNumbers(b);
       }).catch(function (err) {
         numberPick.status = "error";
-        numberPick.error = friendlySearchError(err);
+        numberPick.error = (err && err.message) || "Number search failed.";
         numberPick.options = [];
         refreshNumbers(b);
       });
