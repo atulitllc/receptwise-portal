@@ -180,7 +180,8 @@ function status() {
     webhookSecret: Boolean(config.vapi.webhookSecret),
     transferNumber: Boolean(config.transferToNumber),
     smsEnabled: config.smsEnabled,
-    github: config.github.configured
+    github: config.github.configured,
+    cloudflare: config.cloudflare.configured
   };
 }
 

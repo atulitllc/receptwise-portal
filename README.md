@@ -36,8 +36,9 @@ The company that owns the product is **[Placeholder]** in the footer and on the 
 | `META_APP_ID`, `META_APP_SECRET`, `TOKEN_ENCRYPTION_KEY`, and a public `APP_BASE_URL` | Facebook Login for Business stores the Page and Instagram tokens encrypted. The page shows the account name. |
 | `TRELLO_API_KEY`, `TRELLO_TOKEN`, or a key pasted on Integrations, plus `TOKEN_ENCRYPTION_KEY` for a pasted key | Test connection, choose a board and list, and open a card for each new booking and missed call. A booking card is updated when the booking changes. |
 | `GITHUB_TOKEN` (and optional `GITHUB_ORG` or `GITHUB_OWNER`, default `atulitllc`) | On the Website tab, an admin generates a public one-page site in a new GitHub repository. The account can be a user or an organization. Regenerate opens a pull request. The panel does not host the site. |
+| `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` | The same Generate and Regenerate action also uploads those files to Cloudflare Pages (Direct Upload, production branch `main`). A custom domain on the business is attached when one is saved. |
 
-Without those keys the panel stays honest: phone says **Not connected**, settings save locally and are not pushed, integrations say **Needs Meta app setup**, and Trello says **Not connected**. Without `GITHUB_TOKEN`, the Website tab says **Needs GITHUB_TOKEN on Render** and does not create a repository. Recording a handle does not mark the account connected. A pasted Trello key is stored encrypted and is not sent back to the browser. LinkedIn, X, TikTok, and YouTube stay **Coming soon**. Texting stays off (`SMS_ENABLED=false`).
+Without those keys the panel stays honest: phone says **Not connected**, settings save locally and are not pushed, integrations say **Needs Meta app setup**, and Trello says **Not connected**. Without `GITHUB_TOKEN`, the Website tab says **Needs GITHUB_TOKEN on Render** and does not create a repository. Without `CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_ACCOUNT_ID`, the Website tab says **Cloudflare not configured** and the GitHub publish still runs. Recording a handle does not mark the account connected. A pasted Trello key is stored encrypted and is not sent back to the browser. LinkedIn, X, TikTok, and YouTube stay **Coming soon**. Texting stays off (`SMS_ENABLED=false`).
 
 ## What still needs setup
 
@@ -146,6 +147,8 @@ The in-app SQL file does not restore sign-in. The admin created from `ADMIN_EMAI
 | `GITHUB_TOKEN` | yes | Creates public repos, commits the site, and opens pull requests. Classic `repo` scope, or a fine-grained token with Contents, Pull requests, and Administration on the org. Pages permission is optional. |
 | `GITHUB_ORG` | no | GitHub user or organization that owns new site repos. Default `atulitllc`. If that login is the token's own user, repos are created with `POST /user/repos`. |
 | `GITHUB_OWNER` | no | Optional override of `GITHUB_ORG`. Same meaning: the repo owner, user or organization. |
+| `CLOUDFLARE_API_TOKEN` | no | Uploads the generated site to Cloudflare Pages. Create an API token with Account → Cloudflare Pages → Edit. To create the CNAME when the domain's zone is in this account, also grant Zone → Zone → Read and Zone → DNS → Edit. |
+| `CLOUDFLARE_ACCOUNT_ID` | no | Cloudflare account id. Both this and `CLOUDFLARE_API_TOKEN` must be set. If either is blank, Cloudflare is skipped. |
 
 ## How to get your Trello key and token
 

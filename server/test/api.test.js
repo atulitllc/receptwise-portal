@@ -237,6 +237,7 @@ describe('control panel API', () => {
     assert.equal(res.json.calendar_connection.status, 'in_progress');
     assert.equal(res.json.receptionist.status, 'real');
     assert.equal(res.json.website_generator.status, 'in_progress');
+    assert.equal(res.json.cloudflare_pages.status, 'in_progress');
     assert.equal(res.json.website, undefined);
   });
 

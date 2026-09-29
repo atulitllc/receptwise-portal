@@ -3,6 +3,7 @@ const db = require('../db');
 const businesses = require('../businesses');
 const audit = require('../audit');
 const github = require('./github');
+const cloudflare = require('./cloudflare');
 const { buildSite, resolveTemplate, repoBaseName, renderFiles, previewHtml } = require('./render');
 
 async function activeE164(businessId) {
@@ -35,6 +36,66 @@ function publicRepo(created, org, name) {
   const fullName = (created && created.full_name) || (org + '/' + name);
   const repoUrl = (created && created.html_url) || ('https://github.com/' + org + '/' + name);
   return { fullName, repoUrl };
+}
+
+async function publishCloudflare(files, repoName, biz) {
+  try {
+    return await cloudflare.deploy({
+      project: repoName,
+      files,
+      domain: cloudflare.customDomain(biz)
+    });
+  } catch (err) {
+    return {
+      status: 'error',
+      project: '',
+      url: '',
+      domain: '',
+      domainStatus: '',
+      dns: '',
+      error: (err && err.message) || 'Cloudflare deploy failed.',
+      message: (err && err.message) || 'Cloudflare deploy failed.'
+    };
+  }
+}
+
+async function saveCloudflare(businessId, result) {
+  const deployed = result && result.status === 'deployed';
+  await db.query(
+    `UPDATE business_websites
+     SET cloudflare_project = $2,
+         cloudflare_url = $3,
+         cloudflare_domain = $4,
+         cloudflare_domain_status = $5,
+         cloudflare_dns = $6,
+         cloudflare_error = $7,
+         cloudflare_status = $8,
+         cloudflare_deployed_at = CASE WHEN $9::boolean THEN now() ELSE cloudflare_deployed_at END,
+         updated_at = now()
+     WHERE business_id = $1`,
+    [
+      businessId,
+      (result && result.project) || '',
+      (result && result.url) || '',
+      (result && result.domain) || '',
+      (result && result.domainStatus) || '',
+      (result && result.dns) || '',
+      (result && result.error) || '',
+      (result && result.status) || '',
+      deployed
+    ]
+  );
+}
+
+function cloudflareSentence(result) {
+  if (!result || result.status === 'not_configured') return ' Cloudflare not configured.';
+  if (result.status === 'deployed') {
+    let sentence = ' Cloudflare Pages: ' + result.url + '.';
+    if (result.domain) sentence += ' Custom domain ' + result.domain + ' (' + (result.domainStatus || 'pending') + ').';
+    if (result.error) sentence += ' ' + result.error;
+    return sentence;
+  }
+  return ' Cloudflare deploy did not finish: ' + (result.error || 'unknown error') + '.';
 }
 
 async function generate(biz, templateInput, userId) {
@@ -72,11 +133,14 @@ async function generate(biz, templateInput, userId) {
      VALUES ($1, $2, $3, $4, $5, now())`,
     [biz.id, fullName, repoUrl, pagesUrl, templateId]
   );
-  const detail = pagesEnabled
+  const cf = await publishCloudflare(files, created.name, biz);
+  await saveCloudflare(biz.id, cf);
+  const detail = (pagesEnabled
     ? 'Repository ' + fullName + ' is ready. GitHub Pages was requested. The site address is ' + pagesUrl + '.'
-    : 'Repository ' + fullName + ' is ready. Turn on GitHub Pages (branch main, folder /) to publish. The site address will be ' + pagesUrl + '.';
-  await businesses.setStep(biz.id, 'website', 'action', detail, { repo: fullName });
-  await audit.record(userId, biz.id, 'website.generate', { repo: fullName, template: templateId, pagesEnabled });
+    : 'Repository ' + fullName + ' is ready. Turn on GitHub Pages (branch main, folder /) to publish. The site address will be ' + pagesUrl + '.')
+    + cloudflareSentence(cf);
+  await businesses.setStep(biz.id, 'website', 'action', detail, { repo: fullName, cloudflare: cf.status });
+  await audit.record(userId, biz.id, 'website.generate', { repo: fullName, template: templateId, pagesEnabled, cloudflare: cf.status, cloudflareUrl: cf.url || '' });
   const fresh = await businesses.getBySlug(biz.slug);
   return {
     repoFullName: fullName,
@@ -85,6 +149,7 @@ async function generate(biz, templateInput, userId) {
     template: templateId,
     pagesEnabled,
     prUrl: '',
+    cloudflare: cf,
     business: await businesses.toUi(fresh)
   };
 }
@@ -127,10 +192,12 @@ async function regenerate(biz, userId, templateInput) {
      WHERE business_id = $1`,
     [biz.id, templateId, pagesUrl, prUrl]
   );
+  const cf = await publishCloudflare(files, repoName, biz);
+  await saveCloudflare(biz.id, cf);
   await businesses.setStep(biz.id, 'website', 'action',
-    'Pull request opened for ' + row.repo_full_name + '. Main is unchanged until it is merged. ' + prUrl,
-    { repo: row.repo_full_name, prUrl });
-  await audit.record(userId, biz.id, 'website.regenerate', { repo: row.repo_full_name, template: templateId, prUrl });
+    'Pull request opened for ' + row.repo_full_name + '. Main is unchanged until it is merged. ' + prUrl + cloudflareSentence(cf),
+    { repo: row.repo_full_name, prUrl, cloudflare: cf.status });
+  await audit.record(userId, biz.id, 'website.regenerate', { repo: row.repo_full_name, template: templateId, prUrl, cloudflare: cf.status, cloudflareUrl: cf.url || '' });
   const fresh = await businesses.getBySlug(biz.slug);
   return {
     repoFullName: row.repo_full_name,
@@ -138,6 +205,7 @@ async function regenerate(biz, userId, templateInput) {
     pagesUrl,
     template: templateId,
     prUrl,
+    cloudflare: cf,
     business: await businesses.toUi(fresh)
   };
 }
