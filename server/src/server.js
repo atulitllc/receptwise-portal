@@ -126,6 +126,10 @@ function createApp() {
   }));
 
   api.get('/businesses', auth.requireUser, wrap(async (_req, res) => res.json({ businesses: await businesses.listUi() })));
+  api.post('/businesses/draft', auth.requireUser, wrap(async (req, res) => {
+    const biz = await businesses.createDraft(req.body || {}, req.user.id);
+    res.status(201).json({ business: await businesses.toUi(biz) });
+  }));
   api.post('/businesses', auth.requireUser, wrap(async (req, res) => {
     const biz = await businesses.createBusiness(req.body || {}, req.user.id);
     res.status(201).json({ business: await businesses.toUi(biz) });
@@ -143,6 +147,18 @@ function createApp() {
   api.put('/businesses/:slug', withBiz, wrap(async (req, res) => {
     const updated = await businesses.updateBusiness(req.params.slug, req.body || {}, req.user.id);
     res.json({ business: await businesses.toUi(updated) });
+  }));
+  api.put('/businesses/:slug/draft', withBiz, wrap(async (req, res) => {
+    const updated = await businesses.updateDraft(req.biz, req.body || {}, req.user.id);
+    res.json({ business: await businesses.toUi(updated) });
+  }));
+  api.post('/businesses/:slug/draft/finish', withBiz, wrap(async (req, res) => {
+    const updated = await businesses.finishDraft(req.biz, req.body || {}, req.user.id);
+    res.json({ business: await businesses.toUi(updated) });
+  }));
+  api.delete('/businesses/:slug', withBiz, wrap(async (req, res) => {
+    await businesses.deleteDraft(req.biz, req.user.id);
+    res.json({ ok: true });
   }));
   api.put('/businesses/:slug/setup/:step', withBiz, wrap(async (req, res) => {
     if (!businesses.STEP_KEYS.includes(req.params.step)) return res.status(400).json({ error: 'Unknown setup step.' });

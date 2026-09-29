@@ -38,6 +38,7 @@
   var STATUS_LABEL = {
     live: "Live",
     setup: "In setup",
+    draft: "Setup incomplete",
     waiting: "Waiting on client",
     attention: "Needs attention",
     connected: "Connected",
@@ -109,7 +110,11 @@
       sampleSms: "Your appointment is confirmed. Reply STOP to opt out.",
       consent: "Number collected at booking",
       error: "",
-      createdId: ""
+      createdId: "",
+      draftId: "",
+      saved: false,
+      finished: false,
+      saving: false
     };
   }
 
@@ -226,8 +231,70 @@
     return extraCache;
   }
 
+  function localGet(key) {
+    try { return localStorage.getItem(key); } catch (e) { return null; }
+  }
+
+  function localSet(key, value) {
+    try { localStorage.setItem(key, value); return true; }
+    catch (e) { toast("This browser blocked saving the draft."); return false; }
+  }
+
+  function draftRecords() {
+    try { return JSON.parse(localGet("rw_drafts") || "[]"); }
+    catch (e) { return []; }
+  }
+
+  function writeDraftRecords(list) {
+    localSet("rw_drafts", JSON.stringify(list));
+  }
+
+  function upsertDraftRecord(business) {
+    var list = draftRecords().filter(function (item) { return item.id !== business.id; });
+    list.push(business);
+    writeDraftRecords(list);
+  }
+
+  function removeDraftRecord(id) {
+    writeDraftRecords(draftRecords().filter(function (item) { return item.id !== id; }));
+  }
+
   function allBusinesses() {
-    return (window.RW_DATA.businesses || []).concat(createdList());
+    var list = (window.RW_DATA.businesses || []).concat(createdList());
+    if (!LIVE) {
+      draftRecords().forEach(function (draft) {
+        if (!list.some(function (item) { return item.id === draft.id; })) list.push(draft);
+      });
+    }
+    return list;
+  }
+
+  function draftActions(b) {
+    return '<a class="btn btn-sm btn-primary" href="add.html?draft=' + encodeURIComponent(b.id) + '">Resume setup</a> ' +
+      '<button class="btn btn-sm" type="button" data-action="delete-draft" data-id="' + esc(b.id) + '" data-name="' + esc(b.name) + '">Delete</button>';
+  }
+
+  function setupProgress(b) {
+    if (b && b.setupProgress && b.setupProgress.length) return b.setupProgress;
+    var phone = (b && b.phone) || {};
+    var test = checklistItem(b || {}, "test");
+    return [
+      { key: "details", label: "Details", done: !!(b && b.name && b.category), step: 0 },
+      { key: "receptionist", label: "Receptionist published", done: !!(b && b.assistantPublished), step: 5 },
+      { key: "number", label: "Number bought", done: !!(phone.aiNumber), step: 2 },
+      { key: "test", label: "Test call", done: test.status === "connected", step: 3 }
+    ];
+  }
+
+  function draftSetupCard(b) {
+    if (!b || b.status !== "draft") return "";
+    var rows = setupProgress(b).map(function (item) {
+      return '<div class="setting-row"><div><strong>' + esc(item.label) + '</strong><div class="help">' + (item.done ? "Done" : "Not done yet") + "</div></div>" +
+        '<a class="btn btn-sm" href="add.html?draft=' + encodeURIComponent(b.id) + "&step=" + encodeURIComponent(item.step) + '">Resume</a></div>';
+    }).join("");
+    return '<section class="card" style="margin-bottom:14px"><div class="card-h"><h2>Setup incomplete</h2>' +
+      '<a class="btn btn-sm btn-primary" href="add.html?draft=' + encodeURIComponent(b.id) + '">Resume setup</a></div><div class="card-b">' +
+      rows + '<button class="btn btn-sm" type="button" data-action="delete-draft" data-id="' + esc(b.id) + '" data-name="' + esc(b.name) + '">Delete draft</button></div></section>';
   }
 
   function findBiz(id) {
@@ -604,7 +671,7 @@
         "<div class='help'>" + (b.callsToday || 0) + " calls · " + (b.bookingsToday || 0) + " booked today</div></div></div></td>" +
         "<td>" + esc(b.plan) + "<div class='help'>" + esc(b.tier) + " · " + money(b.pilot ? 0 : b.price) + "</div></td>" +
         "<td>" + progress(b) + "</td><td>" + esc(phoneStatus(b)) + "</td><td>" + minuteCell(b) + "</td>" +
-        "<td>" + esc(next.text) + "<div class='help'>" + esc(next.owner) + "</div></td></tr>";
+        "<td>" + (b.status === "draft" ? draftActions(b) : esc(next.text) + "<div class='help'>" + esc(next.owner) + "</div>") + "</td></tr>";
     }).join("");
     var alerts = allAlerts().slice(0, 6).map(function (alert) {
       return '<a class="alert-row" href="client.html?id=' + encodeURIComponent(alert.id) + '"><strong>' + esc(alert.name) + "</strong><span>" + esc(alert.text) + "</span></a>";
@@ -683,13 +750,13 @@
       var next = nextAction(b);
       return "<tr><td><div class='who'>" + mark(b.name, b.category) + "<div><a href='client.html?id=" + encodeURIComponent(b.id) + "'>" + esc(b.name) +
         "</a><div class='help'>" + esc(b.city) + (b.pilot ? " · Pilot" : "") + "</div></div></div></td><td>" + esc(b.category) + "</td><td>" + esc(b.tier) +
-        "</td><td>" + esc(b.plan) + "</td><td>" + pill(b.status) + "</td><td>" + progress(b) + "</td><td>" + esc(next.text) +
-        "<div class='help'>" + esc(next.owner) + "</div></td></tr>";
+        "</td><td>" + esc(b.plan) + "</td><td>" + pill(b.status) + "</td><td>" + progress(b) + "</td><td>" +
+        (b.status === "draft" ? draftActions(b) : esc(next.text) + "<div class='help'>" + esc(next.owner) + "</div>") + "</td></tr>";
     }).join("");
     view.innerHTML = '<div class="page-head"><div><h1>Businesses</h1><p class="sub">' + list.length + " shown · pinned pilot stays at the top</p></div>" +
       '<a class="btn btn-primary" href="add.html">Add business</a></div>' +
       '<div class="filters"><div class="chips">' + chip("All", "") + chip("Needs attention", "attention") + chip("Waiting on client", "waiting") +
-      chip("In setup", "setup") + chip("Live", "live") + "</div>" +
+      chip("Setup incomplete", "draft") + chip("In setup", "setup") + chip("Live", "live") + "</div>" +
       '<select class="ctrl" style="width:auto" data-action="go-filter" data-key="type" aria-label="Business type">' + options(types, filters.type, "All types") + "</select>" +
       '<select class="ctrl" style="width:auto" data-action="go-filter" data-key="tier" aria-label="Size tier">' + options([["Solo", "Solo · 1–3"], ["Small", "Small · 4–15"], ["Growing", "Growing · 16+"]], filters.tier, "All tiers") + "</select>" +
       (filters.q || filters.type || filters.tier || filters.status ? '<a class="btn btn-sm" href="clients.html">Clear</a>' : "") + "</div>" +
@@ -966,9 +1033,11 @@
     var steps = STEPS.map(function (step, index) {
       return '<button class="step-btn' + (index === wizard.step || (wizard.step === 10 && index === 9) ? " on" : "") + '" type="button" data-action="goto-step" data-step="' + index + '"><i>' + (index + 1) + "</i><span>" + esc(step[0]) + "</span></button>";
     }).join("");
-    var nav = wizard.step === 10 ? "" : '<div class="wizard-nav"><button class="btn" type="button" data-action="back"' + (wizard.step === 0 ? " disabled" : "") + '>Back</button>' +
-      (wizard.step < 9 ? '<button class="btn btn-primary" type="button" data-action="next">Continue</button>' : "<span></span>") + "</div>";
-    view.innerHTML = '<div class="page-head"><div><h1>Add business</h1><p class="sub">About ten minutes. The owner only handles the steps a phone company or Google requires.</p></div></div>' +
+    var nav = wizard.step === 10 ? "" : '<div class="wizard-nav"><button class="btn" type="button" data-action="back"' + (wizard.step === 0 || wizard.saving ? " disabled" : "") + '>Back</button>' +
+      (wizard.step < 9 ? '<button class="btn btn-primary" type="button" data-action="next"' + (wizard.saving ? " disabled" : "") + ">" + (wizard.saving ? "Saving…" : "Continue") + "</button>" : "<span></span>") + "</div>";
+    var savedNote = wizard.saved && wizard.step !== 10 ? '<p class="help">Draft saved. This business stays on the Businesses list as Setup incomplete until you finish.</p>' : "";
+    var deleteDraft = wizard.draftId && wizard.step !== 10 ? '<button class="btn btn-sm" type="button" data-action="delete-draft" data-id="' + esc(wizard.draftId) + '" data-name="' + esc(wizard.name || "this draft") + '">Delete draft</button>' : "";
+    view.innerHTML = '<div class="page-head"><div><h1>Add business</h1><p class="sub">About ten minutes. The owner only handles the steps a phone company or Google requires.</p>' + savedNote + '</div>' + deleteDraft + "</div>" +
       '<div class="wizard"><aside class="step-list">' + steps + '</aside><section class="wizard-panel">' + wizardBody() + nav + "</section></div>" + legal();
   }
 
@@ -1005,6 +1074,128 @@
       var row = map[def[0]] || { status: "pending", detail: "Not started", owner: "Team" };
       return { key: def[0], label: def[1], status: row.status, detail: row.detail, owner: row.owner, next: row.next };
     });
+  }
+
+  function wizardSnapshot() {
+    var keep = ["step", "name", "category", "address", "city", "website", "hours", "timezone", "ownerName", "ownerMobile", "ownerEmail", "tier", "plan", "pilot", "multi", "phoneMode", "carrier", "forwardType", "businessNumber", "areaCode", "chosenNumber", "chosenE164", "clientDone", "testStatus", "testNote", "calendar", "greeting", "services", "faqs", "transfer", "voice", "spanish", "facebook", "instagram", "gbp", "siteChoice", "domain", "template", "legalName", "taxId", "sampleSms", "consent", "createdId", "draftId"];
+    var snap = {};
+    keep.forEach(function (key) { snap[key] = wizard[key]; });
+    snap.step = wizard.step;
+    snap.draftId = wizard.draftId || "";
+    return snap;
+  }
+
+  function draftRecord() {
+    var business = buildBusiness();
+    business.id = wizard.draftId || business.id;
+    business.status = "draft";
+    business.wizardStep = wizard.step;
+    business.wizard = wizardSnapshot();
+    business.phone = Object.assign({}, business.phone, { aiNumber: "" });
+    business.assistantPublished = false;
+    business.setupProgress = [
+      { key: "details", label: "Details", done: true, step: 0 },
+      { key: "receptionist", label: "Receptionist published", done: false, step: 5 },
+      { key: "number", label: "Number bought", done: false, step: 2 },
+      { key: "test", label: "Test call", done: checklistItem(business, "test").status === "connected", step: 3 }
+    ];
+    return business;
+  }
+
+  function canSaveDraft() {
+    return !wizard.finished && wizard.step !== 10 && !!wizard.name.trim() && !!wizard.category;
+  }
+
+  function saveDraft() {
+    if (!canSaveDraft()) return Promise.resolve(null);
+    if (!LIVE) {
+      if (!wizard.draftId) wizard.draftId = slug(wizard.name.trim());
+      var business = draftRecord();
+      business.id = wizard.draftId;
+      business.wizard.draftId = wizard.draftId;
+      upsertDraftRecord(business);
+      wizard.saved = true;
+      return Promise.resolve(business);
+    }
+    var body = draftRecord();
+    var url = wizard.draftId
+      ? "api/businesses/" + encodeURIComponent(wizard.draftId) + "/draft"
+      : "api/businesses/draft";
+    return api(wizard.draftId ? "PUT" : "POST", url, body).then(function (data) {
+      wizard.draftId = data.business.id;
+      wizard.saved = true;
+      replaceBiz(data.business);
+      return data.business;
+    });
+  }
+
+  function persistDraftOnLeave() {
+    if ((document.body.dataset.page || "") !== "add") return;
+    readWizard();
+    if (wizard.finished || wizard.step === 10) return;
+    if (!wizard.name.trim() || !wizard.category) return;
+    if (!wizard.draftId && wizard.step === 0) return;
+    if (!LIVE) {
+      if (!wizard.draftId) wizard.draftId = slug(wizard.name.trim());
+      var business = draftRecord();
+      business.id = wizard.draftId;
+      upsertDraftRecord(business);
+      return;
+    }
+    var body = JSON.stringify(draftRecord());
+    var url = wizard.draftId
+      ? "api/businesses/" + encodeURIComponent(wizard.draftId) + "/draft"
+      : "api/businesses/draft";
+    try {
+      fetch(url, {
+        method: wizard.draftId ? "PUT" : "POST",
+        body: body,
+        keepalive: true,
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "X-RW-Client": "portal" }
+      });
+    } catch (e) {}
+  }
+
+  function afterDraftSave(render) {
+    wizard.saving = false;
+    if (render) renderWizard();
+  }
+
+  function failDraftSave(err, previousStep) {
+    wizard.saving = false;
+    if (previousStep != null) wizard.step = previousStep;
+    wizard.error = (err && err.message) || "Could not save the draft.";
+    renderWizard();
+    if (LIVE && err && err.status === 401) liveFail(err);
+  }
+
+  function resumeDraft() {
+    if ((document.body.dataset.page || "") !== "add") return;
+    var params = new URLSearchParams(location.search);
+    var id = params.get("draft");
+    if (!id) return;
+    var biz = findBiz(id);
+    if (!biz) return;
+    var snap = biz.wizard || {};
+    wizard = Object.assign(defaultWizard(), snap);
+    wizard.draftId = biz.id;
+    wizard.saved = true;
+    wizard.finished = false;
+    wizard.saving = false;
+    wizard.error = "";
+    wizard.numberError = "";
+    wizard.numberOptions = [];
+    wizard.numberStatus = "idle";
+    if (!wizard.name) wizard.name = biz.name || "";
+    if (!wizard.category) wizard.category = biz.category || "";
+    if (wizard.chosenE164) {
+      wizard.numberStatus = "ready";
+      wizard.numberOptions = [{ e164: wizard.chosenE164, friendly: wizard.chosenNumber || wizard.chosenE164, locality: "Saved choice", region: "" }];
+    }
+    var requested = params.get("step");
+    var step = requested != null && requested !== "" ? Number(requested) : Number(biz.wizardStep != null ? biz.wizardStep : wizard.step);
+    wizard.step = Math.max(0, Math.min(9, step || 0));
   }
 
   function buildBusiness() {
@@ -1145,7 +1336,7 @@
       ["Staff", (b.staff || "—") + " · " + (b.locations || 1) + " location" + ((b.locations || 1) > 1 ? "s" : "")],
       ["Plan", b.tier + " · " + b.plan + " · " + (b.pilot ? "$0 pilot" : money(b.price) + "/mo")]
     ];
-    return minuteBanner(b) + '<div class="split"><section class="card"><div class="card-h"><h2>Setup checklist</h2><span class="help">' + setupCount(b).done + " of " + setupCount(b).total + ' connected</span></div><div class="card-b checklist">' +
+    return draftSetupCard(b) + minuteBanner(b) + '<div class="split"><section class="card"><div class="card-h"><h2>Setup checklist</h2><span class="help">' + setupCount(b).done + " of " + setupCount(b).total + ' connected</span></div><div class="card-b checklist">' +
       checks + '</div></section><div class="stack"><section class="card"><div class="card-h"><h2>Needs action</h2></div><div class="card-b">' + (alerts || '<div class="empty">Nothing is blocked.</div>') +
       '</div></section><section class="card"><div class="card-h"><h2>Activity</h2></div><div class="card-b">' + activity +
       '</div></section><section class="card"><div class="card-h"><h2>Business</h2></div><div class="card-b"><dl class="kvs">' + facts.map(function (row) {
@@ -1359,7 +1550,8 @@
     view.innerHTML = '<section class="card client-head"><div class="client-ident"><div class="avatar" style="background:' + colorFor(b.category) + '">' + esc(initials(b.name)) +
       "</div><div><h1 class='client-title'>" + esc(b.name) + "</h1><p class='sub'>" + esc(b.category) + " · " + esc(b.city) + " · " + esc((b.owner && b.owner.name) || "") +
       "</p><div class='pills'>" + pill(b.status) + '<span class="pill neutral">' + esc(b.plan) + "</span>" + (b.pilot ? '<span class="pill pilot">Pilot</span>' : "") + "</div></div></div>" +
-      '<div class="head-actions"><button class="btn" type="button" data-action="call-receptionist" data-id="' + esc(b.id) + '">Call the receptionist</button>' +
+      '<div class="head-actions">' + (b.status === "draft" ? '<a class="btn btn-primary" href="add.html?draft=' + encodeURIComponent(b.id) + '">Resume setup</a>' : '') +
+      '<button class="btn" type="button" data-action="call-receptionist" data-id="' + esc(b.id) + '">Call the receptionist</button>' +
       '<button class="btn btn-primary" type="button" data-action="send-steps" data-id="' + esc(b.id) + '">Send owner their steps</button></div></section>' +
       '<nav class="tabs">' + tabs + "</nav>" + body + legal();
   }
@@ -1565,13 +1757,17 @@
     },
     back: function () {
       readWizard();
+      if (wizard.saving) return;
       if (wizard.step > 0) wizard.step -= 1;
       wizard.error = "";
-      renderWizard();
+      if (wizard.step === 5) ensureGreeting();
+      wizard.saving = true;
+      saveDraft().then(function () { afterDraftSave(true); }).catch(function (err) { failDraftSave(err); });
     },
     next: function () {
       readWizard();
       syncAreaCode();
+      if (wizard.saving) return;
       wizard.error = "";
       if (wizard.step === 0 && !wizard.name.trim()) wizard.error = "Enter the business name.";
       else if (wizard.step === 0 && !wizard.category) wizard.error = "Choose a business type.";
@@ -1582,16 +1778,32 @@
         wizard.tier = "Growing";
         wizard.plan = "Pro";
       }
+      var previous = wizard.step;
       if (wizard.step < 9) wizard.step += 1;
       if (wizard.step === 5) ensureGreeting();
+      wizard.saving = true;
       renderWizard();
+      saveDraft().then(function () { afterDraftSave(true); }).catch(function (err) { failDraftSave(err, previous); });
     },
     "goto-step": function (el) {
       readWizard();
-      wizard.step = Number(el.dataset.step) || 0;
+      if (wizard.saving) return;
+      var nextStep = Number(el.dataset.step) || 0;
+      if (wizard.step === 0 && nextStep !== 0) {
+        if (!wizard.name.trim()) wizard.error = "Enter the business name.";
+        else if (!wizard.category) wizard.error = "Choose a business type.";
+        if (wizard.error) { renderWizard(); return; }
+      }
+      var previous = wizard.step;
+      wizard.step = nextStep;
       wizard.error = "";
       if (wizard.step === 5) ensureGreeting();
-      renderWizard();
+      if (!(wizard.name.trim() && wizard.category) || (previous === 0 && nextStep === 0 && !wizard.draftId)) {
+        renderWizard();
+        return;
+      }
+      wizard.saving = true;
+      saveDraft().then(function () { afterDraftSave(true); }).catch(function (err) { failDraftSave(err, previous); });
     },
     "reset-wizard": function () {
       wizard = defaultWizard();
@@ -1606,13 +1818,49 @@
         return;
       }
       var business = buildBusiness();
+      business.status = "setup";
+      if (wizard.draftId) business.id = wizard.draftId;
+      removeDraftRecord(business.id);
       var all = createdList();
       all.push(business);
+      extraCache = all;
       storageSet("rw_created", JSON.stringify(all));
+      wizard.finished = true;
       wizard.createdId = business.id;
       wizard.step = 10;
       toast(business.name + " added.");
       renderWizard();
+    },
+    "delete-draft": function (el) {
+      var name = el.dataset.name || "this draft";
+      openModal("Delete this draft?", "<p><strong>" + esc(name) + "</strong> will be removed from the Businesses list. A draft has not bought a number or published a receptionist.</p>",
+        '<button class="btn" type="button" data-action="close-modal">Cancel</button><button class="btn btn-primary" type="button" data-action="confirm-delete-draft" data-id="' + esc(el.dataset.id || "") + '">Delete draft</button>');
+    },
+    "confirm-delete-draft": function (el) {
+      var id = el.dataset.id || "";
+      function done() {
+        closeModal();
+        toast("Draft deleted.");
+        if (wizard.draftId === id) {
+          wizard = defaultWizard();
+          if ((document.body.dataset.page || "") === "add") {
+            history.replaceState(null, "", "add.html");
+            renderWizard();
+            return;
+          }
+        }
+        if (currentRender) currentRender();
+      }
+      if (LIVE) {
+        api("DELETE", "api/businesses/" + encodeURIComponent(id)).then(function () {
+          var list = window.RW_DATA.businesses || [];
+          window.RW_DATA.businesses = list.filter(function (item) { return item.id !== id; });
+          done();
+        }).catch(liveFail);
+        return;
+      }
+      removeDraftRecord(id);
+      done();
     },
     "toggle-check": function (el) {
       openCheck = openCheck === el.dataset.key ? "" : el.dataset.key;
@@ -1993,13 +2241,22 @@
         renderWizard();
         return;
       }
-      api("POST", "api/businesses", buildBusiness()).then(function (data) {
+      wizard.finished = true;
+      var body = buildBusiness();
+      var req = wizard.draftId
+        ? api("POST", "api/businesses/" + encodeURIComponent(wizard.draftId) + "/draft/finish", body)
+        : api("POST", "api/businesses", body);
+      req.then(function (data) {
         replaceBiz(data.business);
         wizard.createdId = data.business.id;
+        wizard.draftId = data.business.id;
         wizard.step = 10;
         toast(data.business.name + " added.");
         renderWizard();
-      }).catch(liveFail);
+      }).catch(function (err) {
+        wizard.finished = false;
+        liveFail(err);
+      });
     },
     "save-draft": function (el) {
       var b = findBiz(el.dataset.id);
@@ -2370,8 +2627,10 @@
     var list = ordered(allBusinesses());
     var rows = list.map(function (b) {
       return "<tr><td><a href='client.html?id=" + encodeURIComponent(b.id) + "'>" + esc(b.name) + "</a>" + (b.pilot ? " <span class='pill pilot'>Pilot</span>" : "") +
-        "</td><td>" + (b.callsToday || 0) + "</td><td>" + (b.bookingsToday || 0) + "</td><td>" + esc(phoneStatus(b)) + "</td><td><a href='phone.html?id=" +
-        encodeURIComponent(b.id) + "'>Phone</a> · <a href='settings.html?id=" + encodeURIComponent(b.id) + "'>Settings</a></td></tr>";
+        (b.status === "draft" ? " " + pill("draft") : "") +
+        "</td><td>" + (b.callsToday || 0) + "</td><td>" + (b.bookingsToday || 0) + "</td><td>" + esc(phoneStatus(b)) + "</td><td>" +
+        (b.status === "draft" ? draftActions(b) : "<a href='phone.html?id=" + encodeURIComponent(b.id) + "'>Phone</a> · <a href='settings.html?id=" + encodeURIComponent(b.id) + "'>Settings</a>") +
+        "</td></tr>";
     }).join("");
     view.innerHTML = '<div class="page-head"><div><h1>Overview</h1><p class="sub">' + esc(todayLabel()) + " · calls stored for the businesses you manage</p></div>" +
       '<div class="head-actions"><button class="btn" type="button" data-action="sync-dashboard">Sync from Vapi</button><a class="btn btn-primary" href="settings.html">Receptionist settings</a></div></div>' +
@@ -2692,7 +2951,9 @@
       else if (page === "integrations") renderIntegrations(view);
       refreshBell();
     };
+    if (page === "add") resumeDraft();
     currentRender();
+    if (page === "add") window.addEventListener("pagehide", persistDraftOnLeave);
   }
 
   document.addEventListener("click", onClick);

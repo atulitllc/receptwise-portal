@@ -931,4 +931,142 @@ describe('control panel API', () => {
     assert.equal(new URLSearchParams(twilioBuy.opts.body).get('PhoneNumber'), chosen);
     assert.equal(httpCalls.filter((c) => c.method === 'POST' && c.url.includes('IncomingPhoneNumbers.json')).length, 1);
   });
+
+  it('saves a wizard draft without creating an assistant or buying a number', async () => {
+    const missing = await request('POST', '/api/businesses/draft', {
+      cookie,
+      body: { name: 'Draft Bakery' }
+    });
+    assert.equal(missing.status, 400);
+
+    const before = httpCalls.length;
+    const created = await request('POST', '/api/businesses/draft', {
+      cookie,
+      body: {
+        name: 'Draft Bakery',
+        category: 'Retail',
+        city: 'Waltham, MA',
+        timezone: 'Eastern Time',
+        hours: 'Mon–Fri 8–4',
+        greeting: 'Thanks for calling Draft Bakery.',
+        wizardStep: 2,
+        phone: { mode: 'new', requestedE164: '+17812000007', aiNumber: '(781) 555-0148' },
+        wizard: {
+          step: 2,
+          name: 'Draft Bakery',
+          category: 'Retail',
+          city: 'Waltham, MA',
+          hours: 'Mon–Fri 8–4',
+          greeting: 'Thanks for calling Draft Bakery.',
+          areaCode: '781',
+          chosenE164: '+17812000007',
+          chosenNumber: '(781) 200-0007'
+        }
+      }
+    });
+    assert.equal(created.status, 201, created.text);
+    const draft = created.json.business;
+    assert.equal(draft.status, 'draft');
+    assert.equal(draft.name, 'Draft Bakery');
+    assert.equal(draft.category, 'Retail');
+    assert.equal(draft.wizardStep, 2);
+    assert.equal(draft.wizard.greeting, 'Thanks for calling Draft Bakery.');
+    assert.equal(draft.wizard.chosenE164, '+17812000007');
+    assert.equal(draft.phone.aiNumber, '');
+    assert.equal(draft.phone.requestedE164, '+17812000007');
+    assert.equal(draft.assistantPublished, false);
+    const progress = Object.fromEntries(draft.setupProgress.map((item) => [item.key, item.done]));
+    assert.equal(progress.details, true);
+    assert.equal(progress.receptionist, false);
+    assert.equal(progress.number, false);
+    assert.equal(progress.test, false);
+    const calls = httpCalls.slice(before);
+    assert.equal(calls.some((c) => /vapi|twilio/i.test(c.url)), false);
+    const assistants = await db.query('SELECT vapi_assistant_id FROM assistants WHERE business_id = $1', [draft.dbId]);
+    const numbers = await db.query('SELECT e164 FROM phone_numbers WHERE business_id = $1', [draft.dbId]);
+    assert.equal(assistants.rows.length, 0);
+    assert.equal(numbers.rows.length, 0);
+
+    const listed = await request('GET', '/api/businesses', { cookie });
+    assert.equal(listed.status, 200, listed.text);
+    const row = listed.json.businesses.find((b) => b.id === draft.id);
+    assert.ok(row);
+    assert.equal(row.status, 'draft');
+    assert.equal(row.wizardStep, 2);
+
+    const resumed = await request('GET', '/api/businesses/' + draft.id, { cookie });
+    assert.equal(resumed.status, 200, resumed.text);
+    assert.equal(resumed.json.business.wizardStep, 2);
+    assert.equal(resumed.json.business.wizard.chosenE164, '+17812000007');
+    assert.equal(resumed.json.business.wizard.hours, 'Mon–Fri 8–4');
+    assert.equal(resumed.json.business.hours, 'Mon–Fri 8–4');
+
+    const updatedBefore = httpCalls.length;
+    const updated = await request('PUT', '/api/businesses/' + draft.id + '/draft', {
+      cookie,
+      body: {
+        name: 'Draft Bakery',
+        category: 'Retail',
+        city: 'Waltham, MA',
+        address: '12 Main Street',
+        wizardStep: 4,
+        wizard: {
+          step: 4,
+          name: 'Draft Bakery',
+          category: 'Retail',
+          address: '12 Main Street',
+          greeting: 'Thanks for calling Draft Bakery. We book visits.',
+          chosenE164: '+17812000007'
+        }
+      }
+    });
+    assert.equal(updated.status, 200, updated.text);
+    assert.equal(updated.json.business.status, 'draft');
+    assert.equal(updated.json.business.wizardStep, 4);
+    assert.equal(updated.json.business.address, '12 Main Street');
+    assert.equal(updated.json.business.wizard.greeting, 'Thanks for calling Draft Bakery. We book visits.');
+    assert.equal(updated.json.business.wizard.chosenE164, '+17812000007');
+    assert.equal(httpCalls.slice(updatedBefore).some((c) => /vapi|twilio/i.test(c.url)), false);
+
+    const stuck = await request('PUT', '/api/businesses/' + draft.id, {
+      cookie,
+      body: { status: 'live', name: 'Draft Bakery' }
+    });
+    assert.equal(stuck.status, 200, stuck.text);
+    assert.equal(stuck.json.business.status, 'draft');
+
+    const notDraft = await request('PUT', '/api/businesses/receptwise/draft', {
+      cookie,
+      body: { name: 'ReceptWise', category: 'Professional services' }
+    });
+    assert.equal(notDraft.status, 409);
+    const keepPilot = await request('DELETE', '/api/businesses/receptwise', { cookie });
+    assert.equal(keepPilot.status, 409);
+
+    const finished = await request('POST', '/api/businesses/' + draft.id + '/draft/finish', {
+      cookie,
+      body: { name: 'Draft Bakery', category: 'Retail', city: 'Waltham, MA' }
+    });
+    assert.equal(finished.status, 200, finished.text);
+    assert.equal(finished.json.business.status, 'setup');
+    assert.equal(finished.json.business.wizardStep, 9);
+    assert.equal(finished.json.business.wizard.chosenE164, '+17812000007');
+    assert.equal(finished.json.business.phone.aiNumber, '');
+    const finishedDelete = await request('DELETE', '/api/businesses/' + draft.id, { cookie });
+    assert.equal(finishedDelete.status, 409);
+
+    const second = await request('POST', '/api/businesses/draft', {
+      cookie,
+      body: { name: 'Discarded Draft', category: 'Salon', wizardStep: 1, wizard: { step: 1, name: 'Discarded Draft', category: 'Salon' } }
+    });
+    assert.equal(second.status, 201, second.text);
+    const removed = await request('DELETE', '/api/businesses/' + second.json.business.id, { cookie });
+    assert.equal(removed.status, 200, removed.text);
+    assert.equal(removed.json.ok, true);
+    const gone = await request('GET', '/api/businesses/' + second.json.business.id, { cookie });
+    assert.equal(gone.status, 404);
+    const afterList = await request('GET', '/api/businesses', { cookie });
+    assert.equal(afterList.json.businesses.some((b) => b.id === second.json.business.id), false);
+    assert.equal(afterList.json.businesses.some((b) => b.id === draft.id && b.status === 'setup'), true);
+  });
 });

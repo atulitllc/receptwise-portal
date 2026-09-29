@@ -305,7 +305,7 @@ a.avatar.me {
   white-space: nowrap;
 }
 .pill.connected, .pill.live { background: var(--green-soft); color: var(--green); }
-.pill.pending, .pill.setup, .pill.waiting { background: var(--amber-soft); color: var(--amber); }
+.pill.pending, .pill.setup, .pill.waiting, .pill.draft { background: var(--amber-soft); color: var(--amber); }
 .pill.action, .pill.attention { background: var(--red-soft); color: var(--red); }
 .pill.pilot { background: var(--teal-soft); color: var(--teal-dark); }
 .pill.neutral { background: #eef2f6; color: var(--ink-soft); }

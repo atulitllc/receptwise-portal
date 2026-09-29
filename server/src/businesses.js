@@ -88,24 +88,64 @@ async function uniqueSlug(client, base) {
   return base + '-' + Date.now();
 }
 
-async function createBusiness(input, userId) {
+const WIZARD_STRINGS = [
+  'name', 'category', 'address', 'city', 'website', 'hours', 'timezone', 'ownerName', 'ownerMobile', 'ownerEmail',
+  'tier', 'plan', 'phoneMode', 'carrier', 'forwardType', 'businessNumber', 'areaCode', 'chosenNumber', 'chosenE164',
+  'testStatus', 'testNote', 'calendar', 'greeting', 'services', 'faqs', 'transfer', 'voice', 'facebook', 'instagram',
+  'gbp', 'siteChoice', 'domain', 'template', 'legalName', 'taxId', 'sampleSms', 'consent', 'createdId', 'draftId'
+];
+const WIZARD_BOOLS = ['pilot', 'multi', 'clientDone', 'spanish'];
+
+function wizardFrom(input) {
+  const src = Object.assign({}, (input && input.wizard) || {});
+  const out = {};
+  WIZARD_STRINGS.forEach((key) => {
+    if (src[key] != null) out[key] = String(src[key]).slice(0, 8000);
+  });
+  WIZARD_BOOLS.forEach((key) => {
+    if (src[key] != null) out[key] = Boolean(src[key]);
+  });
+  const raw = input && input.wizardStep != null ? input.wizardStep : src.step;
+  const step = Number(raw);
+  out.step = Number.isFinite(step) ? Math.max(0, Math.min(9, Math.floor(step))) : 0;
+  return out;
+}
+
+function assertDraftIdentity(input) {
+  const name = String((input && input.name) || '').trim();
+  const category = String((input && input.category) || '').trim();
+  if (!name) { const e = new Error('Business name is required.'); e.status = 400; throw e; }
+  if (!category) { const e = new Error('Choose a business type.'); e.status = 400; throw e; }
+}
+
+function checklistFromClient(input) {
+  const fromClient = {};
+  (input.checklist || []).forEach((row) => {
+    if (row && row.key && !['number', 'test'].includes(row.key)) fromClient[row.key] = row;
+  });
+  return fromClient;
+}
+
+async function createBusiness(input, userId, opts) {
   const name = String(input.name || '').trim();
   if (!name) { const e = new Error('Business name is required.'); e.status = 400; throw e; }
+  const status = opts && opts.status === 'draft' ? 'draft' : 'setup';
+  const profile = pickProfile(input);
+  if (opts && opts.wizard) {
+    profile.wizard = opts.wizard;
+    profile.wizardStep = opts.wizard.step;
+  }
   return db.tx(async (c) => {
     const slug = await uniqueSlug(c, slugify(input.slug || name));
     const { rows } = await c.query(
       `INSERT INTO businesses (slug, name, category, city, timezone, status, pilot, profile, created_by)
-       VALUES ($1, $2, $3, $4, $5, 'setup', $6, $7, $8) RETURNING *`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
       [slug, name, String(input.category || ''), String(input.city || ''), tzFromLabel(input.timezone),
-        Boolean(input.pilot), pickProfile(input), userId || null]
+        status, Boolean(input.pilot), profile, userId || null]
     );
     const biz = rows[0];
     // Client-supplied checklist is advisory; the number/test steps are server-owned.
-    const fromClient = {};
-    (input.checklist || []).forEach((row) => {
-      if (row && row.key && !['number', 'test'].includes(row.key)) fromClient[row.key] = row;
-    });
-    await upsertSteps(c, biz.id, defaultSteps(fromClient));
+    await upsertSteps(c, biz.id, defaultSteps(checklistFromClient(input)));
     await c.query('INSERT INTO audit_log (user_id, business_id, action) VALUES ($1, $2, $3)', [userId || null, biz.id, 'business.create']);
     return biz;
   });
@@ -120,7 +160,8 @@ async function updateBusiness(slug, input, userId) {
     category: input.category !== undefined ? String(input.category) : biz.category,
     city: input.city !== undefined ? String(input.city) : biz.city,
     timezone: input.timezone !== undefined ? tzFromLabel(input.timezone) : biz.timezone,
-    status: ['setup', 'live', 'paused'].includes(input.status) ? input.status : biz.status
+    // A draft stays a draft until the wizard is finished. A normal update cannot invent draft status either.
+    status: biz.status === 'draft' ? 'draft' : (['setup', 'live', 'paused'].includes(input.status) ? input.status : biz.status)
   };
   const { rows } = await db.query(
     `UPDATE businesses SET name = $2, category = $3, city = $4, timezone = $5, status = $6, profile = $7, updated_at = now()
@@ -130,6 +171,73 @@ async function updateBusiness(slug, input, userId) {
   await db.query('INSERT INTO audit_log (user_id, business_id, action, detail) VALUES ($1, $2, $3, $4)',
     [userId || null, biz.id, 'business.update', { keys: Object.keys(input || {}).slice(0, 40) }]);
   return rows[0];
+}
+
+async function createDraft(input, userId) {
+  assertDraftIdentity(input);
+  return createBusiness(input, userId, { status: 'draft', wizard: wizardFrom(input) });
+}
+
+async function updateDraft(biz, input, userId) {
+  if (!biz || biz.status !== 'draft') {
+    const e = new Error('Only a draft can be updated this way.');
+    e.status = 409;
+    throw e;
+  }
+  assertDraftIdentity(input);
+  const wizard = wizardFrom(input);
+  const profile = Object.assign({}, biz.profile || {}, pickProfile(input), { wizard, wizardStep: wizard.step });
+  const { rows } = await db.query(
+    `UPDATE businesses SET name = $2, category = $3, city = $4, timezone = $5, pilot = $6, profile = $7, status = 'draft', updated_at = now()
+     WHERE id = $1 RETURNING *`,
+    [biz.id, String(input.name).trim(), String(input.category).trim(),
+      input.city !== undefined ? String(input.city) : biz.city,
+      input.timezone !== undefined ? tzFromLabel(input.timezone) : biz.timezone,
+      input.pilot !== undefined ? Boolean(input.pilot) : biz.pilot,
+      profile]
+  );
+  await db.query('INSERT INTO audit_log (user_id, business_id, action, detail) VALUES ($1, $2, $3, $4)',
+    [userId || null, biz.id, 'business.draft', { wizardStep: wizard.step }]);
+  return rows[0];
+}
+
+async function finishDraft(biz, input, userId) {
+  if (!biz || biz.status !== 'draft') {
+    const e = new Error('Only a draft can be finished this way.');
+    e.status = 409;
+    throw e;
+  }
+  assertDraftIdentity(input);
+  const incoming = wizardFrom(Object.assign({}, input, { wizardStep: 9 }));
+  const wizard = Object.assign({}, (biz.profile && biz.profile.wizard) || {}, incoming);
+  wizard.step = 9;
+  const profile = Object.assign({}, biz.profile || {}, pickProfile(input), { wizard, wizardStep: 9 });
+  return db.tx(async (c) => {
+    const { rows } = await c.query(
+      `UPDATE businesses SET name = $2, category = $3, city = $4, timezone = $5, pilot = $6, profile = $7, status = 'setup', updated_at = now()
+       WHERE id = $1 RETURNING *`,
+      [biz.id, String(input.name).trim(), String(input.category).trim(),
+        input.city !== undefined ? String(input.city) : biz.city,
+        input.timezone !== undefined ? tzFromLabel(input.timezone) : biz.timezone,
+        input.pilot !== undefined ? Boolean(input.pilot) : biz.pilot,
+        profile]
+    );
+    await upsertSteps(c, biz.id, checklistFromClient(input));
+    await c.query('INSERT INTO audit_log (user_id, business_id, action) VALUES ($1, $2, $3)', [userId || null, biz.id, 'business.draft.finish']);
+    return rows[0];
+  });
+}
+
+async function deleteDraft(biz, userId) {
+  if (!biz || biz.status !== 'draft') {
+    const e = new Error('Only a draft can be deleted.');
+    e.status = 409;
+    throw e;
+  }
+  await db.query('INSERT INTO audit_log (user_id, business_id, action, detail) VALUES ($1, $2, $3, $4)',
+    [userId || null, biz.id, 'business.draft.delete', { slug: biz.slug, name: biz.name }]);
+  await db.query('DELETE FROM businesses WHERE id = $1 AND status = \'draft\'', [biz.id]);
+  return { ok: true };
 }
 
 async function getBySlug(slug) {
@@ -189,7 +297,7 @@ function callToUi(c, tz) {
 // Full UI object for one business row.
 async function toUi(biz) {
   const tz = biz.timezone || 'America/New_York';
-  const [steps, phones, calls, bookings, stats] = await Promise.all([
+  const [steps, phones, calls, bookings, stats, assistant] = await Promise.all([
     db.query('SELECT * FROM business_setup WHERE business_id = $1', [biz.id]),
     db.query('SELECT * FROM phone_numbers WHERE business_id = $1 AND status = \'active\' ORDER BY id DESC LIMIT 1', [biz.id]),
     db.query('SELECT * FROM calls WHERE business_id = $1 ORDER BY coalesce(started_at, created_at) DESC LIMIT 50', [biz.id]),
@@ -199,6 +307,7 @@ async function toUi(biz) {
          coalesce(sum(duration_sec) FILTER (WHERE started_at >= date_trunc('month', now() AT TIME ZONE $2) AT TIME ZONE $2), 0)::int AS month_sec,
          count(*) FILTER (WHERE started_at >= date_trunc('day', now() AT TIME ZONE $2) AT TIME ZONE $2)::int AS today
        FROM calls WHERE business_id = $1`, [biz.id, tz]),
+    db.query('SELECT vapi_assistant_id FROM assistants WHERE business_id = $1', [biz.id])
   ]);
   const bookedToday = await db.query(
     `SELECT count(*)::int AS n FROM bookings WHERE business_id = $1 AND created_at >= date_trunc('day', now() AT TIME ZONE $2) AT TIME ZONE $2`, [biz.id, tz]);
@@ -211,6 +320,14 @@ async function toUi(biz) {
   });
   const phone = Object.assign({ mode: 'forward', carrier: '', forwardType: 'missed', businessNumber: '', tests: [] }, p.phone || {});
   phone.aiNumber = phones.rows[0] ? prettyPhone(phones.rows[0].e164) : '';
+  const assistantPublished = Boolean(assistant.rows[0] && assistant.rows[0].vapi_assistant_id);
+  const testStep = byKey.test;
+  const setupProgress = [
+    { key: 'details', label: 'Details', done: Boolean(biz.name && biz.category), step: 0 },
+    { key: 'receptionist', label: 'Receptionist published', done: assistantPublished, step: 5 },
+    { key: 'number', label: 'Number bought', done: Boolean(phones.rows[0]), step: 2 },
+    { key: 'test', label: 'Test call', done: Boolean(testStep && testStep.status === 'connected'), step: 3 }
+  ];
   return Object.assign({
     owner: { name: '', mobile: '', email: '' },
     greeting: '', voice: '', languages: ['English'], transfer: '',
@@ -227,8 +344,12 @@ async function toUi(biz) {
     category: biz.category,
     city: biz.city,
     timezone: tzLabel(tz),
-    status: p.paused ? 'paused' : biz.status,
+    status: biz.status === 'draft' ? 'draft' : (p.paused ? 'paused' : biz.status),
     pilot: biz.pilot,
+    wizardStep: Number(p.wizardStep != null ? p.wizardStep : (p.wizard && p.wizard.step) || 0),
+    wizard: p.wizard || null,
+    setupProgress,
+    assistantPublished,
     phone,
     texts: 0,
     minutesUsed: Math.round((stats.rows[0].month_sec || 0) / 60),
@@ -334,6 +455,7 @@ async function seedPilot() {
 }
 
 module.exports = {
-  STEPS, STEP_KEYS, slugify, createBusiness, updateBusiness, getBySlug, toUi, listUi, seedPilot,
+  STEPS, STEP_KEYS, slugify, createBusiness, updateBusiness, createDraft, updateDraft, finishDraft, deleteDraft,
+  getBySlug, toUi, listUi, seedPilot,
   setStep, prettyPhone, callToUi, tzFromLabel, defaultReceptionist
 };
