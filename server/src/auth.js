@@ -200,17 +200,22 @@ function isPublicDemoRequest(req) {
   return path === '/api/public/demo-requests';
 }
 
+function isPublicIngest(req) {
+  const path = String(req.originalUrl || req.url || '').split('?')[0];
+  return path === '/api/public/demo-requests' || path === '/api/public/analytics/event';
+}
+
 // CSRF defence for cookie-authenticated writes: SameSite=Lax cookie + a custom header that
-// cross-site forms cannot set without a CORS preflight. The marketing form is the exception:
-// POST and OPTIONS /api/public/demo-requests are public and do not send X-RW-Client.
+// cross-site forms cannot set without a CORS preflight. The marketing form and the analytics
+// beacon are the exceptions: those public POSTs do not send X-RW-Client.
 function requireAppHeader(req, res, next) {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
-  if (isPublicDemoRequest(req)) return next();
+  if (isPublicIngest(req)) return next();
   if (req.get('X-RW-Client') !== 'portal') return res.status(403).json({ error: 'Missing client header.' });
   next();
 }
 
 module.exports = {
-  login, logout, loadUser, requireUser, requireAdmin, requireAppHeader, isPublicDemoRequest,
+  login, logout, loadUser, requireUser, requireAdmin, requireAppHeader, isPublicDemoRequest, isPublicIngest,
   createUser, ensureBootstrapAdmin, parseCookies, hashToken, COOKIE
 };

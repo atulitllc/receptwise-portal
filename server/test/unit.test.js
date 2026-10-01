@@ -522,6 +522,51 @@ test('demo request CORS allows the marketing origins only', () => {
   assert.equal(demoRequests.hashIp('203.0.113.10').length, 64);
 });
 
+test('analytics events are day-bucketed and do not keep the raw IP', () => {
+  const analytics = require('../src/analytics');
+  const page = analytics.prepareEvent({
+    site_key: 'receptwise',
+    event: 'Pageview',
+    path: '/pricing?token=secret#plans',
+    referrer: 'https://www.google.com/search?q=cafe',
+    utm_source: 'google',
+    utm_medium: 'cpc',
+    title: 'Pricing',
+    hp: ''
+  });
+  assert.equal(page.action, 'store');
+  assert.equal(page.event.event, 'pageview');
+  assert.equal(page.event.path, '/pricing');
+  assert.equal(page.event.referrer, 'www.google.com');
+  assert.equal(page.event.utmSource, 'google');
+  assert.equal(page.event.utmMedium, 'cpc');
+  assert.equal(analytics.prepareEvent({ site_key: 'receptwise', event: 'pageview', hp: 'filled' }).action, 'honeypot');
+  assert.equal(analytics.prepareEvent({ site_key: 'receptwise', event: 'purchase' }).action, 'error');
+  assert.equal(analytics.pathFromSource('https://www.receptwise.com/pricing?x=1#chat'), '/pricing#chat');
+  const hash = analytics.visitorHash('receptwise', '2026-10-01', '203.0.113.10', 'Test/1.0');
+  assert.equal(hash, analytics.visitorHash('receptwise', '2026-10-01', '203.0.113.10', 'Test/1.0'));
+  assert.notEqual(hash, analytics.visitorHash('receptwise', '2026-10-02', '203.0.113.10', 'Test/1.0'));
+  assert.equal(hash.includes('203.0.113.10'), false);
+  assert.equal(hash.length, 64);
+  assert.deepEqual(analytics.classifyOrigin('https://www.receptwise.com'), { decision: 'allow' });
+  assert.equal(analytics.classifyOrigin('https://abc123.receptwise-site.pages.dev').decision, 'allow');
+  assert.deepEqual(analytics.classifyOrigin('https://harbor.receptwise.com'), { decision: 'hosted', slug: 'harbor' });
+  assert.equal(analytics.classifyOrigin('https://harbor-admin.receptwise.com').decision, 'deny');
+  assert.equal(analytics.classifyOrigin('https://panel.receptwise.com').decision, 'deny');
+  assert.equal(analytics.classifyOrigin('https://www.receptwise.com.evil.test').decision, 'custom');
+  assert.deepEqual(analytics.classifyOrigin('https://abc.rw-harbor-site.pages.dev'), { decision: 'pages', project: 'rw-harbor-site' });
+  assert.deepEqual(analytics.classifyOrigin('https://rw-harbor-site.pages.dev'), { decision: 'pages', project: 'rw-harbor-site' });
+  assert.equal(analytics.classifyOrigin('http://harbor.receptwise.com').decision, 'deny');
+  assert.equal(analytics.classifyOrigin('https://cafe.example').decision, 'custom');
+  assert.equal(analytics.classifyOrigin('https://cafe.example').host, 'cafe.example');
+  const start = 1_700_000_000_000;
+  analytics.resetLimits();
+  for (let i = 0; i < analytics.MAX_PER_WINDOW; i++) assert.equal(analytics.allowIp('203.0.113.80', start), true);
+  assert.equal(analytics.allowIp('203.0.113.80', start), false);
+  assert.equal(analytics.allowIp('203.0.113.81', start), true);
+  analytics.resetLimits();
+});
+
 test('support access hides caller and booking details unless the grant matches', () => {
   const privacy = require('../src/privacy');
   const grants = new Set([7]);

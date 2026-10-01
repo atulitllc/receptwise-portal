@@ -231,11 +231,16 @@ async function receive(req, res) {
     return res.status(prepared.status || 400).json({ error: prepared.error, field: prepared.field || '' });
   }
   const lead = prepared.lead;
+  const sourcePage = lead.sourcePage || clipHeader(req.get('referer') || req.get('referrer') || '', LIMITS.sourcePage);
+  const userAgent = clipHeader(req.get('user-agent') || '', 300);
   await insertLead(lead, {
-    sourcePage: lead.sourcePage || clipHeader(req.get('referer') || req.get('referrer') || '', LIMITS.sourcePage),
-    userAgent: clipHeader(req.get('user-agent') || '', 300),
+    sourcePage,
+    userAgent,
     ipHash: hashIp(ip)
   });
+  // Lazy require: analytics loads this module for the shared marketing origin list.
+  const analytics = require('./analytics');
+  await analytics.recordDemoRequest({ sourcePage, ip, userAgent });
   res.json({ ok: true });
 }
 

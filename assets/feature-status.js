@@ -107,6 +107,11 @@
       label: "Demo requests",
       status: "real",
       note: "The marketing site form saves into Leads. Admins can mark each request new, contacted, or closed."
+    },
+    site_analytics: {
+      label: "Site analytics",
+      status: "real",
+      note: "Pageviews, visitors, top pages, referrers, and call or form conversions come from the first-party beacon. No third-party tracker."
     }
   };
 });

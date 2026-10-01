@@ -12,6 +12,7 @@ const {
   TEMPLATE_IDS, TEMPLATE_ROOT, industryStyle, resolveTemplate, repoBaseName,
   buildSite, renderFiles, previewHtml
 } = require('../src/website/render');
+const analyticsBeacon = require('../src/analytics');
 
 function sampleBiz(extra) {
   return Object.assign({
@@ -239,6 +240,19 @@ test('about and reviews render only from business data', () => {
   assert.equal(saved.headline, 'A short menu and a long evening');
   assert.equal(saved.reviews[0].author, 'Dana Whitfield');
   assert.equal(saved.about.includes('Twelve tables'), true);
+});
+
+test('a subdomain adds the analytics beacon without putting the brand in the page copy', () => {
+  const site = buildSite(Object.assign(sampleBiz(), { subdomain: 'harbor' }), '+12065550199');
+  const html = renderFiles(site, 'classic')['index.html'];
+  const src = analyticsBeacon.scriptSrc().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  assert.match(html, new RegExp('<script src="' + src + '" data-site="harbor" defer></script>'));
+  assert.match(html, /tel:\+12065550199/);
+  const visible = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+  assert.doesNotMatch(visible, /\bReceptWise\b|\bAtulit\b/i);
+  assert.doesNotMatch(previewHtml(site, 'classic'), /<script/i);
+  const plain = renderFiles(buildSite(sampleBiz(), '+12065550199'), 'modern')['index.html'];
+  assert.doesNotMatch(plain, /analytics\.js/);
 });
 
 test('generated files keep site.json and do not call the network', () => {

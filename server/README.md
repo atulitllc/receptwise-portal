@@ -29,6 +29,10 @@ Session cookie plus `X-RW-Client: portal` on every write. `GET /api/health` does
 | --- | --- | --- |
 | POST | `/api/public/demo-requests` | No session. Exempt from `X-RW-Client`. Live form fields: `name`, `business_name`, `phone`, `email`, `business_type`, `preferred_time`, `message`, `source_page`, honeypot `website`. 16kb JSON, 5 posts per IP per hour. |
 | OPTIONS | `/api/public/demo-requests` | CORS preflight, also exempt from `X-RW-Client`. Allows `https://www.receptwise.com`, `https://receptwise.com`, `https://receptwise-site.pages.dev`, `https://*.receptwise-site.pages.dev`, and `https://atulitllc.github.io`. |
+| POST | `/api/public/analytics/event` | No session. Beacon JSON: `site_key`, `event` (`pageview`, `call_click`, `form_submit`, `demo_request`, `browser_call`), `path`, `referrer`, optional `utm_*`, honeypot `hp`. 8kb, 60 events per IP per minute. Unknown site keys are rejected. Day-bucketed rows; the visitor id is a daily hash of IP and user agent, and the raw IP is not stored. |
+| OPTIONS | `/api/public/analytics/event` | CORS preflight. Same marketing origins as demo requests, plus a known customer site (`<subdomain>.receptwise.com`, a saved custom domain, or that site's Pages host). |
+| GET | `/analytics.js` | The beacon. No session. Customer site templates include it when the business has a subdomain. |
+| GET | `/api/analytics?days=7` | Signed-in. `days` is `7` (default) or `30`. On the main panel, admins see site key `receptwise` unless `business=<slug>` is set. On `<slug>-admin`, only that business. |
 | GET | `/api/demo-requests` | Admin. Newest first. |
 | PATCH | `/api/demo-requests/:id` | Admin. Body `{ "status": "new" }`, `"contacted"`, or `"closed"`. |
 | POST | `/api/auth/login`, `/api/auth/logout` | bcrypt, rate limit, httpOnly cookie |

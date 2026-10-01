@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const { slugify, prettyPhone } = require('../businesses');
+const analytics = require('../analytics');
 const { PRESETS, presetFor, iconSvg } = require('./types');
 
 const TEMPLATE_ROOT = path.join(__dirname, '..', '..', 'site-templates');
@@ -324,6 +325,7 @@ function buildSite(biz, e164) {
   else if (phone.phoneHref) ctaText = fillCta(copy.ctaPhone, name, place);
   else if (booking) ctaText = fillCta(copy.ctaBook, name, place);
   const bookHref = booking || phone.phoneHref;
+  const siteKey = analytics.siteKeyFor(biz);
   const site = {
     name,
     headline,
@@ -367,7 +369,9 @@ function buildSite(biz, e164) {
     bookClass: preset.bookEmphasis && bookHref ? ' btn-emphasis' : '',
     ctaText,
     privacy: name + ' shares this page so people can see services, hours, and how to get in touch. This page does not take form submissions. Do not send medical, financial, or account details here.',
-    year: String(new Date().getFullYear())
+    year: String(new Date().getFullYear()),
+    siteKey,
+    analyticsSrc: siteKey ? analytics.scriptSrc() : ''
   };
   const laid = buildSections(site, preset);
   site.sections = laid.sections;
