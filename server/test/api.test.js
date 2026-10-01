@@ -226,6 +226,7 @@ const auth = require('../src/auth');
 const businesses = require('../src/businesses');
 const vapi = require('../src/integrations/vapi');
 const demoRequests = require('../src/demoRequests');
+const analytics = require('../src/analytics');
 const { createApp } = require('../src/server');
 
 let server;
@@ -302,7 +303,7 @@ describe('control panel API', () => {
     await db.migrate();
     await db.query(`TRUNCATE TABLE
       support_access, port_requests, ring_first_numbers, phone_forwarding,
-      demo_requests, trello_cards, assistant_backups, oauth_states, bookings, calls, integrations, audit_log,
+      analytics_events, demo_requests, trello_cards, assistant_backups, oauth_states, bookings, calls, integrations, audit_log,
       phone_numbers, assistants, business_setup, businesses, sessions, users
       RESTART IDENTITY CASCADE`);
     await auth.ensureBootstrapAdmin();
@@ -3017,5 +3018,226 @@ describe('control panel API', () => {
       'owner2@panel-both.test:owner',
       'staff@panel-both.test:staff'
     ]);
+  });
+
+  it('stores beacon events and scopes the analytics page', async () => {
+    analytics.resetLimits();
+    analytics.resetOriginCache();
+    await db.query('DELETE FROM analytics_events');
+    await db.query("DELETE FROM businesses WHERE subdomain = 'analytics-cafe'");
+
+    const anon = await request('GET', '/api/analytics', { headers: { 'X-RW-Client': '' } });
+    assert.equal(anon.status, 401);
+
+    const unknown = await request('POST', '/api/public/analytics/event', {
+      headers: { 'X-RW-Client': '', Origin: 'https://www.receptwise.com' },
+      body: { site_key: 'not-a-real-site', event: 'pageview', path: '/' }
+    });
+    assert.equal(unknown.status, 404);
+
+    const blocked = await request('POST', '/api/public/analytics/event', {
+      headers: { 'X-RW-Client': '', Origin: 'https://evil.example' },
+      body: { site_key: 'receptwise', event: 'pageview', path: '/' }
+    });
+    assert.equal(blocked.status, 403);
+
+    const honeypot = await request('POST', '/api/public/analytics/event', {
+      headers: { 'X-RW-Client': '', Origin: 'https://www.receptwise.com', 'X-Forwarded-For': '203.0.113.70' },
+      body: { site_key: 'receptwise', event: 'pageview', path: '/secret', hp: 'http://spam.test' }
+    });
+    assert.equal(honeypot.status, 200, honeypot.text);
+    assert.equal(honeypot.json.ok, true);
+
+    const saved = await request('POST', '/api/public/analytics/event', {
+      headers: {
+        'X-RW-Client': '',
+        Origin: 'https://www.receptwise.com',
+        'User-Agent': 'AnalyticsTest/1.0',
+        'X-Forwarded-For': '203.0.113.71'
+      },
+      body: {
+        site_key: 'receptwise',
+        event: 'pageview',
+        path: '/pricing?token=secret#plans',
+        referrer: 'https://www.google.com/search?q=receptwise',
+        utm_source: 'google',
+        title: 'Pricing'
+      }
+    });
+    assert.equal(saved.status, 200, saved.text);
+    assert.equal(saved.json.ok, true);
+    assert.equal(saved.headers['access-control-allow-origin'], 'https://www.receptwise.com');
+
+    const call = await request('POST', '/api/public/analytics/event', {
+      headers: {
+        'X-RW-Client': '',
+        'User-Agent': 'AnalyticsTest/1.0',
+        'X-Forwarded-For': '203.0.113.71'
+      },
+      body: { site_key: 'receptwise', event: 'call_click', path: '/' }
+    });
+    assert.equal(call.status, 200, call.text);
+
+    const plain = await requestRaw('POST', '/api/public/analytics/event', {
+      headers: {
+        'Content-Type': 'text/plain',
+        Origin: 'https://receptwise.com',
+        'User-Agent': 'AnalyticsTest/1.0',
+        'X-Forwarded-For': '203.0.113.74'
+      },
+      body: JSON.stringify({ site_key: 'receptwise', event: 'browser_call', path: '/#call' })
+    });
+    assert.equal(plain.status, 200, plain.text);
+
+    const stored = await db.query(
+      `SELECT site_key, event, path, referrer_host, utm_source, visitor_hash, business_id
+       FROM analytics_events ORDER BY id`
+    );
+    assert.equal(stored.rows.length, 3);
+    assert.equal(stored.rows[0].event, 'pageview');
+    assert.equal(stored.rows[0].path, '/pricing');
+    assert.equal(stored.rows[0].referrer_host, 'www.google.com');
+    assert.equal(stored.rows[0].utm_source, 'google');
+    assert.equal(stored.rows[0].business_id, null);
+    assert.equal(String(stored.rows[0].visitor_hash).includes('203.0.113.71'), false);
+    assert.equal(stored.rows[0].visitor_hash, stored.rows[1].visitor_hash);
+    assert.notEqual(stored.rows[0].visitor_hash, stored.rows[2].visitor_hash);
+
+    const beforeLead = await request('GET', '/api/analytics?days=7', { cookie });
+    assert.equal(beforeLead.status, 200, beforeLead.text);
+    assert.equal(beforeLead.json.siteKey, 'receptwise');
+    assert.equal(beforeLead.json.label, 'www.receptwise.com');
+    assert.equal(beforeLead.json.businessName, 'ReceptWise marketing site');
+    assert.equal(beforeLead.json.pageviews, 1);
+    assert.equal(beforeLead.json.visitors, 1);
+    assert.equal(beforeLead.json.calls, 1);
+    assert.equal(beforeLead.json.browserCalls, 1);
+    assert.equal(beforeLead.json.forms, 0);
+    assert.equal(beforeLead.json.pages[0].path, '/pricing');
+    assert.equal(beforeLead.json.referrers[0].host, 'www.google.com');
+    assert.equal(beforeLead.json.series.length, 7);
+    const month = await request('GET', '/api/analytics?days=30', { cookie });
+    assert.equal(month.json.days, 30);
+    assert.equal(month.json.series.length, 30);
+    assert.equal(month.json.pageviews, 1);
+
+    const created = await request('POST', '/api/businesses', {
+      cookie,
+      body: { name: 'Analytics Cafe', category: 'Cafe', subdomain: 'analytics-cafe' }
+    });
+    assert.equal(created.status, 201, created.text);
+    const slug = created.json.business.id;
+    assert.equal(created.json.business.subdomain, 'analytics-cafe');
+    const idRow = await db.query('SELECT id FROM businesses WHERE slug = $1', [slug]);
+    await db.query(
+      `INSERT INTO business_websites (business_id, repo_full_name, repo_url, template, cloudflare_project, cloudflare_domain)
+       VALUES ($1, 'atulitllc/analytics-cafe-site', 'https://github.com/atulitllc/analytics-cafe-site', 'classic', 'rw-analytics-cafe-site', 'cafe.example')`,
+      [idRow.rows[0].id]
+    );
+    analytics.resetOriginCache();
+
+    const cafe = await request('POST', '/api/public/analytics/event', {
+      headers: {
+        'X-RW-Client': '',
+        Origin: 'https://analytics-cafe.receptwise.com',
+        'X-Forwarded-For': '203.0.113.72'
+      },
+      body: { site_key: 'analytics-cafe', event: 'pageview', path: '/#menu' }
+    });
+    assert.equal(cafe.status, 200, cafe.text);
+    assert.equal(cafe.headers['access-control-allow-origin'], 'https://analytics-cafe.receptwise.com');
+
+    const byId = await request('POST', '/api/public/analytics/event', {
+      headers: { 'X-RW-Client': '', Origin: 'https://abc.rw-analytics-cafe-site.pages.dev', 'X-Forwarded-For': '203.0.113.75' },
+      body: { site_key: String(idRow.rows[0].id), event: 'form_submit', path: '/contact' }
+    });
+    assert.equal(byId.status, 200, byId.text);
+
+    const custom = await request('POST', '/api/public/analytics/event', {
+      headers: { 'X-RW-Client': '', Origin: 'https://www.cafe.example', 'X-Forwarded-For': '203.0.113.76' },
+      body: { site_key: 'analytics-cafe', event: 'pageview', path: '/' }
+    });
+    assert.equal(custom.status, 200, custom.text);
+
+    const missingHost = await request('POST', '/api/public/analytics/event', {
+      headers: { 'X-RW-Client': '', Origin: 'https://missing-cafe.receptwise.com' },
+      body: { site_key: 'analytics-cafe', event: 'pageview', path: '/' }
+    });
+    assert.equal(missingHost.status, 403);
+
+    const preflight = await request('OPTIONS', '/api/public/analytics/event', {
+      headers: {
+        'X-RW-Client': '',
+        Origin: 'https://analytics-cafe.receptwise.com',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'Content-Type'
+      }
+    });
+    assert.equal(preflight.status, 204);
+    assert.equal(preflight.headers['access-control-allow-origin'], 'https://analytics-cafe.receptwise.com');
+
+    const marketing = await request('GET', '/api/analytics', { cookie, headers: { Host: 'panel.receptwise.com' } });
+    assert.equal(marketing.json.siteKey, 'receptwise');
+    assert.equal(marketing.json.pageviews, 1);
+
+    const adminCafe = await request('GET', '/api/analytics?business=' + encodeURIComponent(slug), {
+      cookie,
+      headers: { Host: 'panel.receptwise.com' }
+    });
+    assert.equal(adminCafe.status, 200, adminCafe.text);
+    assert.equal(adminCafe.json.siteKey, 'analytics-cafe');
+    assert.equal(adminCafe.json.pageviews, 2);
+    assert.equal(adminCafe.json.forms, 1);
+    assert.equal(adminCafe.json.pages.some((row) => row.path === '/#menu'), true);
+
+    const onCafe = await request('GET', '/api/analytics?business=receptwise', {
+      cookie,
+      headers: { Host: 'analytics-cafe-admin.receptwise.com' }
+    });
+    assert.equal(onCafe.status, 404);
+    const ownCafe = await request('GET', '/api/analytics', {
+      cookie,
+      headers: { Host: 'analytics-cafe-admin.receptwise.com' }
+    });
+    assert.equal(ownCafe.status, 200, ownCafe.text);
+    assert.equal(ownCafe.json.siteKey, 'analytics-cafe');
+    assert.equal(ownCafe.json.pageviews, 2);
+    assert.equal(JSON.stringify(ownCafe.json).includes('/pricing'), false);
+
+    const beacon = await request('GET', '/analytics.js', {
+      headers: { 'X-RW-Client': '', Host: 'missing-admin.receptwise.com' }
+    });
+    assert.equal(beacon.status, 200);
+    assert.match(beacon.headers['content-type'], /javascript/);
+    assert.match(beacon.text, /pageview/);
+    assert.match(beacon.text, /call_click/);
+    assert.match(beacon.text, /browser_call/);
+
+    demoRequests.resetLimits();
+    const lead = await request('POST', '/api/public/demo-requests', {
+      headers: {
+        'X-RW-Client': '',
+        Origin: 'https://www.receptwise.com',
+        'X-Forwarded-For': '203.0.113.73'
+      },
+      body: {
+        name: 'Grace Hopper',
+        email: 'grace@example.com',
+        source_page: 'https://www.receptwise.com/pricing',
+        website: ''
+      }
+    });
+    assert.equal(lead.status, 200, lead.text);
+    const forms = await db.query("SELECT path, site_key FROM analytics_events WHERE event = 'demo_request'");
+    assert.equal(forms.rows.length, 1);
+    assert.equal(forms.rows[0].site_key, 'receptwise');
+    assert.equal(forms.rows[0].path, '/pricing');
+    const after = await request('GET', '/api/analytics', { cookie });
+    assert.equal(after.json.forms, 1);
+    assert.equal(after.json.pageviews, 1);
+    assert.ok(after.json.conversionRate > 0);
+
+    await db.query('DELETE FROM analytics_events');
+    await db.query('DELETE FROM businesses WHERE slug = $1', [slug]);
   });
 });

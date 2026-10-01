@@ -22,6 +22,7 @@ Sign-in on the static demo accepts any email and password. Sample data includes 
 | Billing and plans | `billing.html` | Solo / Small / Growing tiers |
 | Team and settings | `team.html` | Teammates and the legal entity |
 | Leads | `leads.html` | Demo requests from the marketing site. Admins only on the live panel. |
+| Analytics | `analytics.html` | Pageviews, visitors, top pages, referrers, and call or form conversions. |
 
 On the live server, `assets/data.js` is generated per request. When `window.RW_LIVE` is present, the pages call the API. On GitHub Pages nothing calls a server.
 
@@ -48,6 +49,52 @@ The public form on the marketing site posts JSON to `POST /api/public/demo-reque
 The live form on `https://www.receptwise.com` posts that JSON and does not send `X-RW-Client`. `POST` and its `OPTIONS` preflight are exempt from that check. `name` is required, plus a `phone` or an `email`. The other fields are optional. A 10-digit US phone (or 11 digits starting with 1) is stored as E.164 (`(781) 555-0100` becomes `+17815550100`). `website` is the honeypot: the form leaves it empty. A filled honeypot returns `{ "ok": true }` and is not stored. The same response is a real save. Older names (`business`, `time`, `businessType`, `company_website`) are still accepted.
 
 CORS allows `https://www.receptwise.com`, `https://receptwise.com`, `https://receptwise-site.pages.dev`, `https://*.receptwise-site.pages.dev`, and `https://atulitllc.github.io`. Other origins, including other `pages.dev` hosts, are rejected. There is no email notification; this app has no mail provider.
+
+## First-party analytics
+
+Pageviews and conversions are stored in this app. There is no Cloudflare, Plausible, or Google tag. The beacon sets no cookie.
+
+`POST /api/public/analytics/event` takes JSON (`application/json` or `text/plain`). No sign-in and no `X-RW-Client` header. A filled `hp` field is a honeypot: the response is `{ "ok": true }` and nothing is stored. Unknown `site_key` values are rejected. Each IP can send 60 events per minute.
+
+```json
+{
+  "site_key": "receptwise",
+  "event": "pageview",
+  "path": "/",
+  "referrer": "https://www.google.com/",
+  "utm_source": "google",
+  "utm_medium": "cpc",
+  "utm_campaign": "fall",
+  "hp": ""
+}
+```
+
+`event` is `pageview`, `call_click`, `form_submit`, `demo_request`, or `browser_call`. The marketing site key is `receptwise`. A customer site uses that business's `subdomain` (a numeric business id is accepted and stored under the subdomain). The marketing site and the ReceptWise public site share `receptwise`, because that is the pilot subdomain.
+
+Each row stores the America/New_York calendar day, not the clock time. The visitor id is the SHA-256 of a salt, the site key, that day, the client IP, and the User-Agent. The raw IP and User-Agent are not stored. The hash changes the next day, so it does not follow someone across days. The salt is `TOKEN_ENCRYPTION_KEY` when that is set. Referrers are stored as the host only. Paths drop the query string. Rows older than 180 days are deleted. The in-app data export does not include these rows.
+
+CORS matches the demo-request list, and also allows a customer site origin when that host is already one of ours: `https://<subdomain>.receptwise.com`, a saved custom domain, or that business's Cloudflare Pages host (`https://<project>.pages.dev` and a one-label preview in front of it).
+
+On `panel.receptwise.com`, an admin sees the marketing site (`receptwise`). Open **Analytics**, or the Site analytics card on Overview. Last 7 days is the default; Last 30 days is the other range. `?business=<slug>` on the main panel shows that customer site instead. On `<slug>-admin.receptwise.com` the same page is only that business.
+
+A saved demo request also writes a `demo_request` conversion for site key `receptwise`, using the `source_page` path. Do not also call `rwAnalytics.track('form_submit')` for that form, or the form count goes up twice.
+
+Check a sample event, then look at **Analytics** on the panel:
+
+```bash
+curl -sS -X POST https://panel.receptwise.com/api/public/analytics/event \
+  -H 'Content-Type: application/json' \
+  -H 'Origin: https://www.receptwise.com' \
+  -d '{"site_key":"receptwise","event":"pageview","path":"/","referrer":"https://www.google.com/","hp":""}'
+```
+
+The marketing site (`receptwise-site`) is a separate repo. Add this before `</body>` on each page:
+
+```html
+<script src="https://panel.receptwise.com/analytics.js" data-site="receptwise" defer></script>
+```
+
+The script sends a pageview on load and on hash changes. A click on `a[href^="tel:"]`, `.btn-call`, or `[data-rw-call]` sends `call_click`. `[data-rw-browser-call]` or `.btn-browser-call` sends `browser_call`. After some other form succeeds, call `rwAnalytics.track('form_submit')`. The demo form does not need that call. Regenerated customer sites already include the script; the address is `APP_BASE_URL` or `https://panel.receptwise.com`, and `data-site` is the business subdomain.
 
 ## What works once keys are set
 

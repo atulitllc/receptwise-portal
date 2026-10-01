@@ -18,6 +18,7 @@ const meta = require('./integrations/meta');
 const trelloSync = require('./trelloSync');
 const exportData = require('./exportData');
 const demoRequests = require('./demoRequests');
+const analytics = require('./analytics');
 const calendarConnection = require('./calendarConnection');
 const businessCalendar = require('./businessCalendar');
 const voices = require('./voices');
@@ -31,7 +32,7 @@ const panelLogin = require('./panelLogin');
 
 // The portal pages live at the repo root (also published as the GitHub Pages demo).
 const SITE_ROOT = path.join(__dirname, '..', '..');
-const PAGES = ['index', 'dashboard', 'appointments', 'clients', 'add', 'client', 'billing', 'team', 'phone', 'settings', 'integrations', 'leads'];
+const PAGES = ['index', 'dashboard', 'appointments', 'clients', 'add', 'client', 'billing', 'team', 'phone', 'settings', 'integrations', 'leads', 'analytics'];
 // Same object the admin badges read from assets/feature-status.js.
 const featureStatus = require(path.join(SITE_ROOT, 'assets', 'feature-status'));
 
@@ -195,8 +196,10 @@ function createApp() {
     }
   }));
 
-  // Public marketing form. Own body limit, no session and no X-RW-Client header.
+  // Public marketing form and the site beacon. Own body limits, no session and no X-RW-Client header.
   demoRequests.mountPublic(app, wrap);
+  analytics.mountPublic(app, wrap);
+  app.get('/analytics.js', analytics.sendBeacon);
 
   // <slug>-admin.receptwise.com is that business's panel. <slug>.receptwise.com is the public site.
   // panel, www, api, and every other host stay the main panel.
@@ -537,6 +540,10 @@ function createApp() {
   api.patch('/appointments/:id', auth.requireUser, wrap(async (req, res) => {
     const appointment = await appointments.update(req.params.id, req.body || {}, req.user.id, req.businessScope, req.user);
     res.json({ appointment });
+  }));
+
+  api.get('/analytics', auth.requireUser, wrap(async (req, res) => {
+    res.json(await analytics.reportFor(req));
   }));
 
   api.get('/metrics', auth.requireUser, wrap(async (req, res) => {

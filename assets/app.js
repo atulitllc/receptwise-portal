@@ -897,11 +897,13 @@
       phone: "Phone",
       settings: "Receptionist",
       integrations: "Integrations",
-      leads: "Leads"
+      leads: "Leads",
+      analytics: "Analytics"
     };
     var single = onCustomerHost();
     var mainNav = [
       ["dashboard.html", "Overview", "dashboard"],
+      ["analytics.html", "Analytics", "analytics"],
       ["appointments.html", "Appointments", "appointments"],
       ["phone.html", "Phone", "phone"],
       ["settings.html", "Receptionist", "settings"],
@@ -1751,9 +1753,16 @@
     return draftSetupCard(b) + minuteBanner(b) + '<div class="split"><section class="card"><div class="card-h"><h2>Setup checklist</h2><span class="help">' + setupCount(b).done + " of " + setupCount(b).total + ' connected</span></div><div class="card-b checklist">' +
       checks + '</div></section><div class="stack"><section class="card"><div class="card-h"><h2>Needs action</h2></div><div class="card-b">' + (alerts || '<div class="empty">Nothing is blocked.</div>') +
       '</div></section><section class="card"><div class="card-h"><h2>Activity</h2></div><div class="card-b">' + activity +
-      '</div></section><section class="card"><div class="card-h"><h2>Business</h2></div><div class="card-b"><dl class="kvs">' + facts.map(function (row) {
+      '</div></section>' + analyticsCard(b) + '<section class="card"><div class="card-h"><h2>Business</h2></div><div class="card-b"><dl class="kvs">' + facts.map(function (row) {
         return "<dt>" + esc(row[0]) + "</dt><dd>" + esc(row[1]) + "</dd>";
       }).join("") + "</dl></div></section>" + panelLoginCard(b) + domainsCard(b) + supportCard(b) + "</div></div>" + phonePanel(b);
+  }
+
+  function analyticsCard(b) {
+    var href = onCustomerHost() ? "analytics.html" : ("analytics.html?business=" + encodeURIComponent(b.id));
+    return '<section class="card"><div class="card-h"><h2>Site analytics</h2><div>' + badge("site_analytics") +
+      '</div></div><div class="card-b"><p class="help">Pageviews, visitors, top pages, referrers, and call or form conversions for this site.</p>' +
+      '<a class="btn btn-sm" href="' + href + '">Open analytics</a></div></section>';
   }
 
   function panelLoginCard(b) {
@@ -4088,6 +4097,7 @@
       '<article class="stat"><em>Answered, 7 days</em><b>' + (answered.d7 || 0) + "</b><span>Missed " + (missed.d7 || 0) + " · today " + (answered.today || 0) + " answered, " + (missed.today || 0) + " missed</span></article>" +
       '<article class="stat"><em>Avg length, 7 days</em><b>' + clock(avg.d7) + "</b><span>Answered calls · today " + clock(avg.today) + "</span></article>" +
       '<article class="stat"><em>Bookings</em><b>' + (bookings.today || 0) + "</b><span>Confirmed on the call · 7 days " + (bookings.d7 || 0) + " · 30 days " + (bookings.d30 || 0) + "</span></article></section>" +
+      '<section class="card" id="analytics-card" style="margin-top:14px"><div class="card-h"><h2>Site analytics</h2><a href="analytics.html">Open</a></div><div class="card-b"><p class="sub">Loading site analytics…</p></div></section>' +
       '<section class="card"><div class="card-h"><h2>Recent calls</h2></div><div class="table-wrap"><table class="data"><thead><tr><th>When</th><th>Caller</th><th>Business</th><th>Outcome</th><th>Duration</th><th>Summary</th><th>Recording</th></tr></thead><tbody>' +
       (recent || '<tr><td colspan="7"><div class="empty">No calls yet. Point the Vapi server URL at this app, or use Sync from Vapi once the API key is set.</div></td></tr>') +
       "</tbody></table></div></section>" +
@@ -4096,6 +4106,47 @@
       "</div></section></div>" + legal();
     var focused = view.querySelector(".call-focus");
     if (focused && focused.scrollIntoView) focused.scrollIntoView({ block: "center" });
+    loadAnalyticsCard();
+  }
+
+  function analyticsHref(days, business) {
+    var params = new URLSearchParams();
+    if (days && String(days) !== "7") params.set("days", String(days));
+    if (business) params.set("business", business);
+    var text = params.toString();
+    return "analytics.html" + (text ? "?" + text : "");
+  }
+
+  function analyticsQuery() {
+    var params = new URLSearchParams(location.search);
+    return {
+      days: params.get("days") === "30" ? "30" : "7",
+      business: params.get("business") || ""
+    };
+  }
+
+  function loadAnalyticsCard() {
+    var slot = document.getElementById("analytics-card");
+    if (!slot) return;
+    api("GET", "api/analytics?days=7").then(function (data) {
+      var card = document.getElementById("analytics-card");
+      if (!card) return;
+      var body = card.querySelector(".card-b");
+      if (!body) return;
+      var label = data.businessName || data.label || "This site";
+      if (!data.pageviews && !data.calls && !data.forms && !data.browserCalls) {
+        body.innerHTML = '<div class="empty">No pageviews in the last 7 days for ' + esc(label) + ". They show up after analytics.js is on the site.</div>";
+        return;
+      }
+      body.innerHTML = "<p><strong>" + (data.pageviews || 0) + "</strong> pageviews · <strong>" + (data.visitors || 0) +
+        "</strong> visitors · <strong>" + (data.calls || 0) + "</strong> call clicks · <strong>" + (data.forms || 0) +
+        "</strong> form submits</p><p class='help'>" + esc(label) + (data.label ? " · " + esc(data.label) : "") + "</p>";
+    }).catch(function (err) {
+      var card = document.getElementById("analytics-card");
+      if (!card) return;
+      var body = card.querySelector(".card-b");
+      if (body) body.innerHTML = '<div class="empty">' + esc(err.message || "Analytics could not be loaded.") + "</div>";
+    });
   }
 
   function phoneStateBanner(data) {
@@ -5021,6 +5072,79 @@
     return bits.length ? "<div class='help'>" + bits.join(" · ") + "</div>" : "";
   }
 
+  function analyticsBars(series) {
+    var rows = series || [];
+    var counts = rows.map(function (row) { return row.pageviews || 0; });
+    var max = Math.max(4, Math.max.apply(null, counts.length ? counts : [0]));
+    var wide = counts.length > 7;
+    var names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    return counts.map(function (n, i) {
+      var row = rows[i] || {};
+      var day = String(row.day || "");
+      var label = "";
+      if (!wide) {
+        var when = new Date(day + "T12:00:00Z");
+        label = names[when.getUTCDay()] || "";
+      } else if (i === 0 || i === counts.length - 1 || i % 5 === 0) {
+        label = day.slice(8);
+      }
+      return '<div class="bar-col' + (i === counts.length - 1 ? " today" : "") + '" title="' + esc(day + ": " + n) +
+        '"><i style="height:' + Math.max(8, Math.round((n / max) * 100)) + '%"></i><em>' + esc(label) + "</em></div>";
+    }).join("");
+  }
+
+  function renderAnalytics(view) {
+    if (!LIVE) {
+      view.innerHTML = '<div class="page-head"><div><h1>Analytics</h1><p class="sub">Pageviews, visitors, and conversions</p></div></div>' +
+        featureBar(["site_analytics"]) +
+        '<div class="banner warn">This demo does not collect site analytics. On the live panel this page shows pageviews, unique visitors, top pages, referrers, and call or form conversions.</div>' + legal();
+      return;
+    }
+    var query = analyticsQuery();
+    view.innerHTML = '<p class="sub">Loading analytics…</p>';
+    var path = "api/analytics?days=" + encodeURIComponent(query.days) +
+      (query.business ? "&business=" + encodeURIComponent(query.business) : "");
+    api("GET", path).then(function (data) {
+      var fresh = document.getElementById("view");
+      if (!fresh) return;
+      var business = query.business;
+      var range = '<a class="btn' + (String(data.days) === "7" ? " btn-primary" : "") + '" href="' + analyticsHref(7, business) + '">Last 7 days</a>' +
+        '<a class="btn' + (String(data.days) === "30" ? " btn-primary" : "") + '" href="' + analyticsHref(30, business) + '">Last 30 days</a>';
+      var empty = !data.pageviews && !data.calls && !data.forms && !data.browserCalls;
+      var pages = (data.pages || []).map(function (row) {
+        return "<tr><td>" + esc(row.path || "/") + "</td><td>" + (row.pageviews || 0) + "</td></tr>";
+      }).join("");
+      var refs = (data.referrers || []).map(function (row) {
+        return "<tr><td>" + esc(row.host || "") + "</td><td>" + (row.pageviews || 0) + "</td></tr>";
+      }).join("");
+      var seriesRows = (data.series || []).map(function (row) {
+        return "<tr><td>" + esc(row.day) + "</td><td>" + (row.pageviews || 0) + "</td><td>" + (row.visitors || 0) +
+          "</td><td>" + (row.calls || 0) + "</td><td>" + (row.forms || 0) + "</td><td>" + (row.browserCalls || 0) + "</td></tr>";
+      }).join("");
+      var rate = data.pageviews ? String(data.conversionRate || 0) + "%" : "—";
+      fresh.innerHTML = '<div class="page-head"><div><h1>Analytics</h1>' + featureBar(["site_analytics"]) +
+        '<p class="sub">' + esc(data.businessName || "Site") + " · " + esc(data.label || "") +
+        " · " + esc(data.from || "") + " to " + esc(data.to || "") + "</p></div>" +
+        '<div class="head-actions">' + range + "</div></div>" +
+        '<section class="stats"><article class="stat"><em>Pageviews</em><b>' + (data.pageviews || 0) + "</b><span>Beacon hits in this range</span></article>" +
+        '<article class="stat"><em>Unique visitors</em><b>' + (data.visitors || 0) + "</b><span>Daily hash of IP and browser. A return the next day counts again.</span></article>" +
+        '<article class="stat"><em>Call clicks</em><b>' + (data.calls || 0) + "</b><span>tel: links and call pills" +
+        ((data.browserCalls || 0) ? " · browser calls " + data.browserCalls : "") + "</span></article>" +
+        '<article class="stat"><em>Form submits</em><b>' + (data.forms || 0) + "</b><span>Demo requests and contact forms · conversion " + rate + "</span></article></section>" +
+        (empty ? '<div class="banner warn">No pageviews in this range yet. Send a sample event, or add analytics.js to the site.</div>' : "") +
+        '<section class="card"><div class="card-h"><h2>Pageviews by day</h2></div><div class="card-b"><div class="bars">' + analyticsBars(data.series) + "</div></div>" +
+        '<div class="table-wrap"><table class="data"><thead><tr><th>Day</th><th>Pageviews</th><th>Visitors</th><th>Call clicks</th><th>Forms</th><th>Browser calls</th></tr></thead><tbody>' +
+        seriesRows + "</tbody></table></div></section>" +
+        '<div class="grid-2" style="margin-top:14px"><section class="card"><div class="card-h"><h2>Top pages</h2></div><div class="table-wrap"><table class="data"><thead><tr><th>Path</th><th>Pageviews</th></tr></thead><tbody>' +
+        (pages || '<tr><td colspan="2"><div class="empty">No pages yet.</div></td></tr>') +
+        '</tbody></table></div></section><section class="card"><div class="card-h"><h2>Top referrers</h2></div><div class="table-wrap"><table class="data"><thead><tr><th>Host</th><th>Pageviews</th></tr></thead><tbody>' +
+        (refs || '<tr><td colspan="2"><div class="empty">No referrers yet. Direct visits are not listed.</div></td></tr>') +
+        "</tbody></table></div></section></div>" + legal();
+    }).catch(function (err) {
+      view.innerHTML = '<div class="banner bad">' + esc(err.message) + "</div>" + legal();
+    });
+  }
+
   function renderLeads(view) {
     if (!LIVE) {
       view.innerHTML = '<div class="page-head"><div><h1>Leads</h1><p class="sub">Demo requests from the marketing site</p></div></div>' +
@@ -5098,6 +5222,7 @@
       else if (page === "integrations") renderIntegrations(view);
       else if (page === "appointments") renderAppointments(view);
       else if (page === "leads") renderLeads(view);
+      else if (page === "analytics") renderAnalytics(view);
       refreshBell();
     };
     if (page === "add") resumeDraft();
