@@ -119,6 +119,12 @@ function createApp() {
   const app = express();
   app.set('trust proxy', 1);
   app.disable('x-powered-by');
+  // Tell crawlers not to index this app. Runs before redirects, static files, and routes
+  // so the tag is on every response, including the apex redirect and API responses.
+  app.use((_req, res, next) => {
+    res.set('X-Robots-Tag', 'noindex, nofollow');
+    next();
+  });
   // receptwise.com is on this service as a DNS-only custom domain. Send it to www
   // before any other route. www, panel, api, <slug>.receptwise.com, and <slug>-admin.receptwise.com are not redirected.
   app.use((req, res, next) => {
@@ -652,6 +658,11 @@ function createApp() {
     res.send(staticData + '\n;(function (L) {\n  window.RW_LIVE = L.live;\n  window.RW_DATA.businesses = L.businesses;\n  window.RW_DATA.team = L.team;\n  window.RW_DATA.feed = L.feed;\n  window.RW_DATA.callsByDay = L.callsByDay;\n  window.RW_DATA.metrics = L.metrics || null;\n})(' + safeJson(payload) + ');\n');
   }));
   app.use('/assets', express.static(path.join(SITE_ROOT, 'assets'), { index: false, maxAge: '5m' }));
+  // Allow crawling so Google can fetch pages and honor noindex. Do not Disallow.
+  app.get('/robots.txt', (_req, res) => {
+    res.type('text/plain');
+    res.send('User-agent: *\nAllow: /\n');
+  });
   app.get('/', (_req, res) => res.sendFile(path.join(SITE_ROOT, 'index.html')));
   PAGES.forEach((p) => app.get('/' + p + '.html', (_req, res) => {
     res.set('Cache-Control', 'no-cache');

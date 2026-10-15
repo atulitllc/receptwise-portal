@@ -741,6 +741,7 @@ test('customer panel hosts are one label under receptwise.com', () => {
   const page = notFoundPage('missing');
   assert.match(page, /This panel was not found/);
   assert.match(page, /missing-admin\.receptwise\.com/);
+  assert.match(page, /<meta name="robots" content="noindex, nofollow">/);
   assert.equal(page.includes('data-page="login"'), false);
   assert.equal(normalizeSubdomain('Harbor-Cafe'), 'harbor-cafe');
   assert.equal(normalizeSubdomain('panel'), 'panel');
