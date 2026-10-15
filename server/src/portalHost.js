@@ -47,6 +47,7 @@ function notFoundPage(label) {
   const host = safe + PANEL_SUFFIX + '.receptwise.com';
   return '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+    '<meta name="robots" content="noindex, nofollow">' +
     '<title>Panel not found · ReceptWise</title>' +
     '<style>body{margin:0;background:#f4f7f8;color:#142033;font-family:Georgia,serif}' +
     'main{max-width:36rem;margin:12vh auto;padding:32px;background:#fff;border-radius:16px}' +
